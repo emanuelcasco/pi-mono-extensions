@@ -1,12 +1,11 @@
 {
-  "name": "pi-extensions",
+  "name": "pi-extension-team-mode",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.2.1",
-  "description": "Monorepo for Emanuel Casco's custom pi extensions (pnpm)",
+  "description": "Pi extension for orchestrating background multi-agent teams",
   "keywords": [
     "pi-package",
-    "monorepo"
+    "pi-extension"
   ],
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
@@ -16,10 +15,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./index.ts"
     ]
-  },
-  "dependencies": {
-    "diff": "^8.0.4"
   }
 }

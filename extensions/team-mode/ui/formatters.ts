@@ -24,7 +24,7 @@ import type {
 	TaskStatus,
 	TeamSummary,
 	TeammateSummary,
-} from "./types.js";
+} from "../core/types.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

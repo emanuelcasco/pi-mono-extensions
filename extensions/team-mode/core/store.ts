@@ -20,10 +20,12 @@ import { join } from "node:path";
 
 import type {
 	ApprovalRequest,
+	LeaderProcess,
 	MailboxMessage,
 	Signal,
 	TaskRecord,
 	TeamRecord,
+	TeammateProcess,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -414,6 +416,58 @@ export class TeamStore {
 			updatedAt: new Date().toISOString(),
 		};
 		await this.saveTeam(updated);
+	}
+
+	// -------------------------------------------------------------------------
+	// Teammate process state
+	// -------------------------------------------------------------------------
+
+	/** Save teammate process state to `teammates/{role}/process.json`. */
+	async saveTeammateProcess(teamId: string, process: TeammateProcess): Promise<void> {
+		const dir = this.getTeammateDir(teamId, process.role);
+		await mkdir(dir, { recursive: true });
+		await writeJson(join(dir, 'process.json'), process);
+	}
+
+	/** Load teammate process state. Returns null if not found. */
+	async loadTeammateProcess(teamId: string, role: string): Promise<TeammateProcess | null> {
+		const dir = this.getTeammateDir(teamId, role);
+		return readJson<TeammateProcess>(join(dir, 'process.json'));
+	}
+
+	/** Load all teammate process states for a team. */
+	async loadAllTeammateProcesses(teamId: string): Promise<TeammateProcess[]> {
+		const team = await this.loadTeam(teamId);
+		if (!team) return [];
+		const processes: TeammateProcess[] = [];
+		for (const role of team.teammates) {
+			const proc = await this.loadTeammateProcess(teamId, role);
+			if (proc) processes.push(proc);
+		}
+		return processes;
+	}
+
+	/** Save teammate output to `teammates/{role}/outputs/{filename}`. */
+	async saveTeammateOutput(teamId: string, role: string, filename: string, content: string): Promise<void> {
+		const dir = join(this.getTeammateDir(teamId, role), 'outputs');
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, filename), content, 'utf8');
+	}
+
+	// -------------------------------------------------------------------------
+	// Leader process state
+	// -------------------------------------------------------------------------
+
+	/** Save leader process state to `leader/process.json`. */
+	async saveLeaderProcess(teamId: string, process: LeaderProcess): Promise<void> {
+		const dir = join(this.getTeamDir(teamId), 'leader');
+		await mkdir(dir, { recursive: true });
+		await writeJson(join(dir, 'process.json'), process);
+	}
+
+	/** Load leader process state. Returns null if not found. */
+	async loadLeaderProcess(teamId: string): Promise<LeaderProcess | null> {
+		return readJson<LeaderProcess>(join(this.getTeamDir(teamId), 'leader', 'process.json'));
 	}
 }
 

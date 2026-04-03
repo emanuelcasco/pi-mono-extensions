@@ -1,0 +1,3 @@
+packages:
+  - "extensions/*"
+minimumReleaseAge: 1440

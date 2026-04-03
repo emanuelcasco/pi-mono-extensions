@@ -8,8 +8,8 @@
  * filtering, and convenience queries on top.
  */
 
-import type { MailboxFilter, MailboxMessage } from "./types.js";
-import type { TeamStore } from "./store.js";
+import type { MailboxFilter, MailboxMessage } from "../core/types.js";
+import type { TeamStore } from "../core/store.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

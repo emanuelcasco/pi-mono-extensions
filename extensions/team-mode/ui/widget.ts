@@ -19,7 +19,7 @@
  */
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { TeamRecord, TeamSummary } from "./types.js";
+import type { TeamRecord, TeamSummary } from "../core/types.js";
 
 const WIDGET_ID = "team-mode";
 

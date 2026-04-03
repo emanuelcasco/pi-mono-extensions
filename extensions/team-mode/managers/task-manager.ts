@@ -9,8 +9,8 @@
  * responsibility if side-effects are needed.
  */
 
-import type { TaskBoard, TaskFilter, TaskRecord, TaskStatus } from "./types.js";
-import type { TeamStore } from "./store.js";
+import type { TaskBoard, TaskFilter, TaskRecord, TaskStatus } from "../core/types.js";
+import type { TeamStore } from "../core/store.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

@@ -9,8 +9,8 @@
  * no dependency on `SignalManager`.
  */
 
-import type { ApprovalRequest, Signal } from "./types.js";
-import type { TeamStore } from "./store.js";
+import type { ApprovalRequest, Signal } from "../core/types.js";
+import type { TeamStore } from "../core/store.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

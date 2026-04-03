@@ -24,9 +24,9 @@ import type {
 	TeamStatus,
 	TeamSummary,
 	TeammateSummary,
-} from "./types.js";
-import { TEAM_TEMPLATES } from "./types.js";
-import { type TeamStore, generateId } from "./store.js";
+} from "../core/types.js";
+import { TEAM_TEMPLATES } from "../core/types.js";
+import { type TeamStore, generateId } from "../core/store.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -170,10 +170,11 @@ export class TeamManager {
 	 * `team.json`, `tasks.json`, `signals.ndjson`, and `approvals.json`.
 	 */
 	async getTeamSummary(teamId: string): Promise<TeamSummary> {
-		const [team, tasks, approvals] = await Promise.all([
+		const [team, tasks, approvals, teammateProcesses] = await Promise.all([
 			this.store.loadTeam(teamId),
 			this.store.loadTasks(teamId),
 			this.store.loadApprovals(teamId),
+			this.store.loadAllTeammateProcesses(teamId),
 		]);
 
 		if (!team) throw new Error(`Team not found: ${teamId}`);
@@ -204,6 +205,7 @@ export class TeamManager {
 
 		// --- Per-teammate status snapshot ---
 		const teammates = team.teammates.map((role) => {
+			const process = teammateProcesses.find((item) => item.role === role);
 			const activeTask = tasks.find(
 				(t) =>
 					t.owner === role &&
@@ -218,9 +220,11 @@ export class TeamManager {
 
 			return {
 				name: role,
-				status: activeTask?.status ?? (anyTask ? "idle" : "not_started"),
-				currentTask: activeTask?.title,
-				summary: activeTask
+				status: process?.state === "running" ? "in_progress" : activeTask?.status ?? (anyTask ? "idle" : "not_started"),
+				currentTask: activeTask?.title ?? tasks.find((t) => t.id === process?.taskId)?.title,
+				summary: process?.state === "running"
+					? `Running ${tasks.find((t) => t.id === process.taskId)?.title ?? "assigned task"}`
+					: activeTask
 					? `Working on: ${activeTask.title}`
 					: anyTask
 						? `Last: ${anyTask.title}`
@@ -406,6 +410,7 @@ export class TeamManager {
 		if (!team || !team.teammates.includes(role)) return null;
 
 		const tasks = await this.store.loadTasks(teamId);
+		const process = await this.store.loadTeammateProcess(teamId, role);
 		const roleTasks = tasks.filter((t) => t.owner === role);
 
 		// Current task: the first actively-progressing task for this role
@@ -448,10 +453,22 @@ export class TeamManager {
 					status: currentTask.status,
 					blocker: currentTask.blockers[0],
 				}
-			: undefined;
+			: process?.taskId
+				? (() => {
+						const task = tasks.find((item) => item.id === process.taskId);
+						return task
+							? {
+									id: task.id,
+									title: task.title,
+									status: task.status,
+									blocker: task.blockers[0],
+								}
+							: undefined;
+					})()
+				: undefined;
 
 		const status =
-			currentTask?.status ??
+			(process?.state === "running" ? "in_progress" : currentTask?.status) ??
 			(roleTasks.length > 0 ? "idle" : "not_started");
 
 		return {
@@ -460,7 +477,8 @@ export class TeamManager {
 			role,
 			status,
 			currentTask: currentTaskSummary,
-			lastOutput,
+			lastOutput: process?.output ?? lastOutput,
+			worktree: process?.cwd,
 			artifacts,
 			signalsSinceLastCheck: roleSignalCount,
 			updatedAt: new Date().toISOString(),

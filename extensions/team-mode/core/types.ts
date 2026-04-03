@@ -379,6 +379,112 @@ export type TeamTemplate = {
 };
 
 // ---------------------------------------------------------------------------
+// Leader & Teammate runtime types
+// ---------------------------------------------------------------------------
+
+/** Tracks the state of a running teammate process. */
+export interface TeammateProcess {
+	/** Teammate role name. */
+	role: string;
+	/** The team this teammate belongs to. */
+	teamId: string;
+	/** Task ID currently assigned to this teammate. */
+	taskId?: string;
+	/** Process state. */
+	state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+	/** PID of the pi subprocess, if running. */
+	pid?: number;
+	/** Working directory for this teammate. */
+	cwd?: string;
+	/** ISO 8601 timestamp — when the process started. */
+	startedAt?: string;
+	/** ISO 8601 timestamp — when the process completed. */
+	completedAt?: string;
+	/** Output text from the process. */
+	output?: string;
+	/** Error message if the process failed. */
+	error?: string;
+}
+
+/** Tracks the state of the leader process for a team. */
+export interface LeaderProcess {
+	/** The team this leader orchestrates. */
+	teamId: string;
+	/** Process state. */
+	state: 'running' | 'completed' | 'failed' | 'cancelled';
+	/** PID of the leader pi subprocess. */
+	pid?: number;
+	/** ISO 8601 timestamp — when the leader started. */
+	startedAt: string;
+	/** ISO 8601 timestamp — when the leader completed. */
+	completedAt?: string;
+}
+
+/** Role-specific system prompt templates for teammates. */
+export const TEAMMATE_ROLE_PROMPTS: Record<string, string> = {
+	researcher: [
+		'You are a research specialist on a team.',
+		'Your job is to investigate, gather information, and produce research findings.',
+		'Use read, bash (for searching), and other read-only tools to explore the codebase.',
+		'Document your findings clearly with specific file paths and code references.',
+		'When done, summarize your discoveries concisely.',
+	].join('\n'),
+	planner: [
+		'You are a planning specialist on a team.',
+		'Your job is to create detailed implementation plans based on research findings.',
+		'Break work into clear, actionable steps with dependencies.',
+		'Identify risks and suggest mitigations.',
+		'Produce plans as structured markdown documents.',
+	].join('\n'),
+	backend: [
+		'You are a backend developer on a team.',
+		'Your job is to implement server-side code: APIs, services, database changes, etc.',
+		'Write clean, tested, production-ready code.',
+		'Follow existing code patterns and conventions in the project.',
+		'Document any API contracts or interfaces you create.',
+	].join('\n'),
+	frontend: [
+		'You are a frontend developer on a team.',
+		'Your job is to implement user-facing code: components, pages, hooks, styles, etc.',
+		'Write clean, accessible, production-ready code.',
+		'Follow existing component patterns and styling conventions.',
+		'Ensure your work matches any API contracts provided.',
+	].join('\n'),
+	reviewer: [
+		'You are a code reviewer on a team.',
+		'Your job is to review code changes for correctness, security, and quality.',
+		'Read the specified files and check for: logic errors, security issues,',
+		'missing error handling, style violations, and incomplete implementations.',
+		'Produce a structured review with actionable feedback.',
+	].join('\n'),
+	tester: [
+		'You are a test engineer on a team.',
+		'Your job is to write and run tests for the implemented code.',
+		'Create unit tests, integration tests, and edge case tests.',
+		'Follow existing test patterns and frameworks in the project.',
+		'Report test results clearly.',
+	].join('\n'),
+	docs: [
+		'You are a documentation specialist on a team.',
+		'Your job is to write and update documentation.',
+		'Create clear READMEs, API docs, and inline code documentation.',
+		'Follow existing documentation conventions in the project.',
+	].join('\n'),
+};
+
+/** Watch mode subscription state. */
+export interface WatchSubscription {
+	/** The team being watched. */
+	teamId: string;
+	/** ISO 8601 timestamp — last signal cursor. */
+	lastCursor: string;
+	/** Polling interval handle. */
+	intervalHandle?: ReturnType<typeof setInterval>;
+	/** Whether the watch is active. */
+	active: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -414,6 +520,7 @@ export const TEAM_TEMPLATES: Record<string, TeamTemplate> = {
 export const BUBBLE_SIGNAL_TYPES: SignalType[] = [
 	"approval_requested",
 	"blocked",
+	"team_summary",
 	"team_completed",
 	"error",
 ];

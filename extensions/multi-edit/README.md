@@ -145,13 +145,22 @@ In `multi` mode, items that omit `path` automatically inherit the top-level `pat
 
 ## Installation
 
-Place `multi-edit.ts` in your pi extensions directory and reference it from your pi configuration. The extension registers itself under the tool name `edit`, shadowing the built-in tool.
+Install just this package:
 
-```jsonc
-// pi config (e.g. .pi/config.json)
-{
-  "extensions": ["./extensions/multi-edit/multi-edit.ts"],
-}
+```bash
+pi install /Users/emanuelcasco/Projects/waterplan/pi-extensions/extensions/multi-edit
+```
+
+Or install the whole workspace:
+
+```bash
+pi install /Users/emanuelcasco/Projects/waterplan/pi-extensions
+```
+
+For quick testing without a permanent install:
+
+```bash
+pi -e /Users/emanuelcasco/Projects/waterplan/pi-extensions/extensions/multi-edit/index.ts
 ```
 
 > Because the extension registers as `"edit"`, it completely replaces the built-in edit tool for all sessions that load it.

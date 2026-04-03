@@ -8,8 +8,8 @@
  * filtering, and convenience queries on top.
  */
 
-import { BUBBLE_SIGNAL_TYPES, type Signal, type SignalFilter } from "./types.js";
-import type { TeamStore } from "./store.js";
+import { BUBBLE_SIGNAL_TYPES, type Signal, type SignalFilter } from "../core/types.js";
+import type { TeamStore } from "../core/store.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

@@ -1,12 +1,11 @@
 {
-  "name": "pi-extensions",
+  "name": "pi-extension-btw",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.2.1",
-  "description": "Monorepo for Emanuel Casco's custom pi extensions (pnpm)",
+  "description": "Pi extension that answers side questions while the main agent keeps running",
   "keywords": [
     "pi-package",
-    "monorepo"
+    "pi-extension"
   ],
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
@@ -16,10 +15,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./index.ts"
     ]
-  },
-  "dependencies": {
-    "diff": "^8.0.4"
   }
 }

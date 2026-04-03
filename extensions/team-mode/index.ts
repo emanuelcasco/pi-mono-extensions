@@ -5,29 +5,31 @@
  * manage background teams of sub-agents that work concurrently on complex tasks.
  *
  * Registers:
- *  - 10 LLM-callable tools   (team_create, team_status, team_list, …)
- *  - 1  slash command        (/team)
- *  - 3  lifecycle handlers   (session_start, session_switch, agent_end)
+ *  - 12+ LLM-callable tools  (team_create, team_status, team_list, team_watch, ...)
+ *  - 1   slash command       (/team)
+ *  - 4   lifecycle handlers  (session_start, session_switch, agent_end, session_shutdown)
  */
 
 import type { ExtensionAPI, ExtensionContext, SessionSwitchEvent } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 
-import { TeamStore } from "./store.js";
-import { TeamManager } from "./team-manager.js";
-import { TaskManager } from "./task-manager.js";
-import { SignalManager } from "./signal-manager.js";
-import { MailboxManager } from "./mailbox-manager.js";
-import { ApprovalManager } from "./approval-manager.js";
+import { TeamStore } from "./core/store.js";
+import { TeamManager } from "./managers/team-manager.js";
+import { TaskManager } from "./managers/task-manager.js";
+import { SignalManager } from "./managers/signal-manager.js";
+import { MailboxManager } from "./managers/mailbox-manager.js";
+import { ApprovalManager } from "./managers/approval-manager.js";
 import {
 	formatDashboard,
 	formatSignals,
 	formatTaskBoard,
 	formatTeamSummary,
 	formatTeammateSummary,
-} from "./formatters.js";
-import { updateTeamWidget } from "./widget.js";
+} from "./ui/formatters.js";
+import { updateTeamWidget } from "./ui/widget.js";
+import { LeaderRuntime } from "./runtime/leader-runtime.js";
+import { WatchManager } from "./runtime/watch-mode.js";
 
 // ---------------------------------------------------------------------------
 // Manager bundle — initialized on session_start / session_switch
@@ -41,6 +43,8 @@ type ManagerBundle = {
 	signalManager: SignalManager;
 	mailboxManager: MailboxManager;
 	approvalManager: ApprovalManager;
+	leaderRuntime: LeaderRuntime;
+	watchManager: WatchManager;
 };
 
 let managers: ManagerBundle | undefined;
@@ -48,13 +52,20 @@ let managers: ManagerBundle | undefined;
 /** (Re-)create all manager instances for the given project root. */
 function initManagers(cwd: string): void {
 	const store = new TeamStore(cwd);
+	const teamManager = new TeamManager(store);
+	const taskManager = new TaskManager(store);
+	const signalManager = new SignalManager(store);
+	const mailboxManager = new MailboxManager(store);
+	const approvalManager = new ApprovalManager(store);
 	managers = {
 		store,
-		teamManager: new TeamManager(store),
-		taskManager: new TaskManager(store),
-		signalManager: new SignalManager(store),
-		mailboxManager: new MailboxManager(store),
-		approvalManager: new ApprovalManager(store),
+		teamManager,
+		taskManager,
+		signalManager,
+		mailboxManager,
+		approvalManager,
+		leaderRuntime: new LeaderRuntime(store, teamManager, taskManager, signalManager, mailboxManager),
+		watchManager: new WatchManager(store, signalManager),
 	};
 }
 
@@ -120,7 +131,7 @@ export default function (pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { teamManager } = getManagers();
+			const { teamManager, leaderRuntime } = getManagers();
 
 			try {
 				const team = await teamManager.createTeam(params.objective, {
@@ -132,6 +143,15 @@ export default function (pi: ExtensionAPI): void {
 
 				await refreshWidget(ctx);
 
+				let leaderLaunchNote = "";
+				let effectiveStatus = team.status;
+				try {
+					await leaderRuntime.launchLeader(team.id);
+					effectiveStatus = "running";
+				} catch (leaderErr) {
+					leaderLaunchNote = `\n\nNote: Leader launch failed: ${leaderErr instanceof Error ? leaderErr.message : String(leaderErr)}. Use team_control to retry.`;
+				}
+
 				const rosterLine =
 					team.teammates.length > 0
 						? `Roster: ${team.teammates.join(", ")}`
@@ -139,10 +159,10 @@ export default function (pi: ExtensionAPI): void {
 
 				const text = [
 					`Team created: ${team.name} (${team.id})`,
-					`Status: ${team.status}`,
+					`Status: ${effectiveStatus}`,
 					rosterLine,
 					`Objective: ${team.objective}`,
-				].join("\n");
+				].join("\n") + leaderLaunchNote;
 
 				return {
 					content: [{ type: "text", text }],
@@ -443,7 +463,7 @@ export default function (pi: ExtensionAPI): void {
 			taskId: Type.String({ description: "The task ID whose plan should be approved" }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { approvalManager } = getManagers();
+			const { approvalManager, taskManager } = getManagers();
 
 			try {
 				const pending = await approvalManager.getApprovalForTask(params.teamId, params.taskId);
@@ -454,6 +474,10 @@ export default function (pi: ExtensionAPI): void {
 				}
 
 				const updated = await approvalManager.approve(params.teamId, pending.id, "user");
+				await taskManager.updateTask(params.teamId, params.taskId, {
+					status: "ready",
+					blockers: [],
+				});
 				await refreshWidget(ctx);
 
 				const text = [
@@ -489,7 +513,7 @@ export default function (pi: ExtensionAPI): void {
 			feedback: Type.String({ description: "Specific feedback explaining what needs to change" }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { approvalManager } = getManagers();
+			const { approvalManager, taskManager } = getManagers();
 
 			try {
 				const pending = await approvalManager.getApprovalForTask(params.teamId, params.taskId);
@@ -505,6 +529,10 @@ export default function (pi: ExtensionAPI): void {
 					"user",
 					params.feedback,
 				);
+				await taskManager.updateTask(params.teamId, params.taskId, {
+					status: "blocked",
+					blockers: [params.feedback],
+				});
 				await refreshWidget(ctx);
 
 				const text = [
@@ -540,14 +568,20 @@ export default function (pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { teamManager } = getManagers();
+			const { teamManager, leaderRuntime } = getManagers();
 
 			try {
 				let updated;
 				if (params.action === "stop") {
+					await leaderRuntime.stopTeam(params.teamId);
 					updated = await teamManager.stopTeam(params.teamId);
 				} else {
 					updated = await teamManager.resumeTeam(params.teamId);
+					try {
+						await leaderRuntime.launchLeader(params.teamId);
+					} catch {
+						// Non-fatal: the team is resumed even if the leader fails to relaunch.
+					}
 				}
 
 				await refreshWidget(ctx);
@@ -561,6 +595,81 @@ export default function (pi: ExtensionAPI): void {
 				throw new Error(
 					`Failed to ${params.action} team: ${err instanceof Error ? err.message : String(err)}`,
 				);
+			}
+		},
+	});
+
+	// -------------------------------------------------------------------------
+	// Tool: team_spawn_teammate
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_spawn_teammate",
+		label: "Spawn Teammate",
+		description:
+			"Spawn a teammate subprocess to work on a specific task. The teammate runs as an isolated pi process with its own context.",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			role: Type.String({ description: "Teammate role (backend, frontend, researcher, reviewer, etc.)" }),
+			taskId: Type.String({ description: "The task ID to assign to the teammate" }),
+			taskDescription: Type.String({ description: "Full, self-contained description of what the teammate should do" }),
+			context: Type.Optional(Type.String({ description: "Additional context (research findings, contracts, etc.)" })),
+			cwd: Type.Optional(Type.String({ description: "Working directory for the teammate process" })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const m = getManagers();
+			try {
+				const process = await m.leaderRuntime.spawnTeammate(
+					params.teamId,
+					params.role,
+					params.taskId,
+					params.taskDescription,
+					params.context,
+					params.cwd,
+				);
+				await refreshWidget(ctx);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Teammate ${params.role} spawned for task ${params.taskId} in team ${params.teamId}. PID: ${process.pid ?? "N/A"}`,
+						},
+					],
+					details: process,
+				};
+			} catch (err) {
+				throw new Error(`Failed to spawn teammate: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		},
+	});
+
+	// -------------------------------------------------------------------------
+	// Tool: team_watch
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_watch",
+		label: "Watch Team",
+		description: "Start live monitoring of a team. Shows compact signal updates in a widget below the editor.",
+		promptSnippet: "Start streaming live updates for a team",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID to watch" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const m = getManagers();
+			try {
+				await m.watchManager.startWatch(params.teamId, ctx);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Now watching team ${params.teamId}. Updates will appear below the editor. Use /team unwatch to stop.`,
+						},
+					],
+					details: { teamId: params.teamId, watching: true },
+				};
+			} catch (err) {
+				throw new Error(`Failed to start watch: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		},
 	});
@@ -585,7 +694,7 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.notify("Team managers not initialized", "error");
 				return;
 			}
-			const { teamManager, taskManager, signalManager } = managers;
+			const { teamManager, taskManager, signalManager, leaderRuntime, watchManager } = managers;
 
 			const parts = (args?.trim() ?? "").split(/\s+/).filter(Boolean);
 			const subcommand = parts[0]?.toLowerCase() ?? "";
@@ -599,6 +708,11 @@ export default function (pi: ExtensionAPI): void {
 					}
 					try {
 						const team = await teamManager.createTeam(objective);
+						try {
+							await leaderRuntime.launchLeader(team.id);
+						} catch {
+							// non-fatal
+						}
 						await refreshWidget(ctx);
 						ctx.ui.notify(`Team "${team.name}" created (${team.id})`, "info");
 					} catch (err) {
@@ -682,6 +796,7 @@ export default function (pi: ExtensionAPI): void {
 						return;
 					}
 					try {
+						await leaderRuntime.stopTeam(teamId);
 						await teamManager.stopTeam(teamId);
 						await refreshWidget(ctx);
 						ctx.ui.notify(`Team ${teamId} stopped`, "info");
@@ -702,6 +817,11 @@ export default function (pi: ExtensionAPI): void {
 					}
 					try {
 						await teamManager.resumeTeam(teamId);
+						try {
+							await leaderRuntime.launchLeader(teamId);
+						} catch {
+							// non-fatal
+						}
 						await refreshWidget(ctx);
 						ctx.ui.notify(`Team ${teamId} resumed`, "info");
 					} catch (err) {
@@ -710,6 +830,30 @@ export default function (pi: ExtensionAPI): void {
 							"error",
 						);
 					}
+					break;
+				}
+
+				case "watch": {
+					const teamId = parts[1];
+					if (!teamId) {
+						ctx.ui.notify("Usage: /team watch <id>", "warning");
+						return;
+					}
+					try {
+						await watchManager.startWatch(teamId, ctx);
+						ctx.ui.notify(`Now watching team ${teamId}`, "info");
+					} catch (err) {
+						ctx.ui.notify(
+							`Failed to start watch: ${err instanceof Error ? err.message : String(err)}`,
+							"error",
+						);
+					}
+					break;
+				}
+
+				case "unwatch": {
+					watchManager.stopWatch(ctx);
+					ctx.ui.notify("Watch stopped", "info");
 					break;
 				}
 
@@ -740,11 +884,25 @@ export default function (pi: ExtensionAPI): void {
 	/** Initialize managers when a session starts. */
 	pi.on("session_start", async (_event, ctx) => {
 		initManagers(ctx.cwd);
+		if (managers) {
+			const runningTeams = await managers.teamManager.listTeams({ status: ["running"] });
+			for (const team of runningTeams) {
+				try {
+					await managers.leaderRuntime.launchLeader(team.id);
+				} catch {
+					// best effort only
+				}
+			}
+		}
 		await refreshWidget(ctx);
 	});
 
 	/** Re-initialize managers when switching sessions (cwd may differ). */
 	pi.on("session_switch", async (_event: SessionSwitchEvent, ctx) => {
+		if (managers) {
+			await managers.leaderRuntime.cleanup();
+			managers.watchManager.cleanup();
+		}
 		initManagers(ctx.cwd);
 		await refreshWidget(ctx);
 	});
@@ -752,5 +910,13 @@ export default function (pi: ExtensionAPI): void {
 	/** Refresh the widget after every agent turn to reflect any team state changes. */
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshWidget(ctx);
+	});
+
+	/** Clean up all team processes and watches on shutdown. */
+	pi.on("session_shutdown", async (_event, _ctx) => {
+		if (managers) {
+			await managers.leaderRuntime.cleanup();
+			managers.watchManager.cleanup();
+		}
 	});
 }

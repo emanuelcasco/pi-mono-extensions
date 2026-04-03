@@ -1,12 +1,11 @@
 {
-  "name": "pi-extensions",
+  "name": "pi-extension-multi-edit",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.2.1",
-  "description": "Monorepo for Emanuel Casco's custom pi extensions (pnpm)",
+  "description": "Pi extension that replaces edit with batch edits and Codex-style patches",
   "keywords": [
     "pi-package",
-    "monorepo"
+    "pi-extension"
   ],
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
@@ -14,12 +13,12 @@
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
-  "pi": {
-    "extensions": [
-      "./extensions"
-    ]
-  },
   "dependencies": {
     "diff": "^8.0.4"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

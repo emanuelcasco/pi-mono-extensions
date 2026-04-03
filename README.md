@@ -2,11 +2,28 @@
 
 Custom pi extensions.
 
+This repo is now a pnpm workspace monorepo:
+
+- install the root package to load every extension
+- install any folder under `extensions/` to load just that extension
+- see [`extensions/README.md`](extensions/README.md) for per-package install paths
+
+**Note:** Uses `pnpm`. To install dependencies from this repo:
+
+```bash
+pnpm install
+```
+
 ## Extensions
 
+- **ask-user-question** — interactive forms for structured user input
 - **btw** — side-question command (`/btw`)
 - **clear** — fresh session command (`/clear`, `Ctrl+L`)
-- **git-branch-footer** — shows git branch in the footer
+- **loop** — loop completion controls
+- **multi-edit** — enhanced `edit` tool with batch edits and patch support
+- **review** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
+- **status-line** — shows git branch and richer runtime stats in the footer
+- **team-mode** — background multi-agent team orchestration
 
 ## btw
 
@@ -23,10 +40,16 @@ The `btw` extension adds Claude Code-style `/btw` behavior to pi for asking a qu
 
 ### Install
 
-From this folder:
+Install everything from the repo root:
 
 ```bash
 pi install /Users/emanuelcasco/Projects/waterplan/pi-extensions
+```
+
+Or install only `btw`:
+
+```bash
+pi install /Users/emanuelcasco/Projects/waterplan/pi-extensions/extensions/btw
 ```
 
 Or load it directly for testing:
@@ -56,6 +79,29 @@ pi -e /Users/emanuelcasco/Projects/waterplan/pi-extensions/extensions/btw/index.
 - `/btw` is implemented by intercepting raw input that starts with `/btw`, not by registering a normal extension command.
 - This avoids pi's normal queued command behavior and makes it closer to Claude Code's side-question flow.
 - Hidden history is stored through `pi.appendEntry()` using custom session entries, so it does not affect future model context.
+
+## review
+
+The `review` extension adds both `/review` and `/review-tui`.
+
+### Usage
+
+```text
+/review https://github.com/org/repo/pull/123
+/review https://gitlab.com/group/project/-/merge_requests/45
+/review-tui
+```
+
+### Behavior
+
+- `/review <url>` detects GitHub vs GitLab from the URL
+- fetches the diff under the hood with the appropriate CLI
+- runs the review with the active pi model
+- prints the review summary in the terminal
+- stores the review for `/review-tui`
+- `/review-tui` opens the saved review in a side pane
+- lets you approve, dismiss, or edit each comment
+- submits approved comments directly to GitHub or GitLab based on the saved review URL
 
 ## clear
 
