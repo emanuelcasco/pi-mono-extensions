@@ -1,28 +1,33 @@
 # pi-mono-extensions
 
-Custom pi extensions.
+This repo is a pnpm workspace monorepo. Each extension under `extensions/` can be installed individually, or install the root to load all extensions at once.
 
-This repo is now a pnpm workspace monorepo:
+## Installation
 
-- install the root package to load every extension
-- install any folder under `extensions/` to load just that extension
-- see [`extensions/README.md`](extensions/README.md) for per-package install paths
-
-**Note:** Uses `pnpm`. To install dependencies from this repo:
+Install individual extensions by path:
 
 ```bash
-pnpm install
+pi install npm:pi-mono-btw
+pi install npm:pi-mono-team-mode
+```
+
+Load temporarily for testing (without installing):
+
+```bash
+pi -e /path/to/pi-extensions/extensions/btw/index.ts
 ```
 
 ## Extensions
 
-- **ask-user-question** — interactive forms for structured user input
+- **ask-user-question** — interactive forms for structured user input (`ask_user_question` tool)
 - **btw** — side-question command (`/btw`)
 - **clear** — fresh session command (`/clear`, `Ctrl+L`)
+- **context-guard** — keeps context window lean by auto-limiting `read` calls and bounding `rg` output (`/context-guard`)
+- **grep** — ripgrep wrapper with head_limit, output_mode, and pagination (replaces raw rg in bash)
 - **multi-edit** — enhanced `edit` tool with batch edits and patch support
 - **review** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
 - **status-line** — shows git branch and richer runtime stats in the footer
-- **team-mode** — background multi-agent team orchestration
+- **team-mode** — background multi-agent team orchestration (`/team` commands)
 
 ## btw
 
@@ -39,16 +44,10 @@ The `btw` extension adds Claude Code-style `/btw` behavior to pi for asking a qu
 
 ### Install
 
-Install everything from the repo root:
+Install by package, for example to install only `btw`:
 
 ```bash
-pi install npm:@power-pi
-```
-
-Or install only `btw`:
-
-```bash
-pi install npm:pi-btw
+pi install npm:pi-mono-btw
 ```
 
 Or load it directly for testing:

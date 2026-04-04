@@ -1,0 +1,23 @@
+{
+  "name": "pi-mono-context-guard",
+  "version": "1.0.0",
+  "description": "Pi extension that guards context window growth by auto-limiting read and rg output",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-extensions.git",
+    "directory": "extensions/context-guard"
+  }
+}

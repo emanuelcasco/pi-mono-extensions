@@ -463,11 +463,25 @@ function parsePatch(patchText: string): PatchOperation[] {
 	return operations;
 }
 
-function createRealWorkspace(): Workspace {
+function createRealWorkspace(pi: ExtensionAPI): Workspace {
+	const readCache = new Map<string, string>();
 	return {
-		readText: (absolutePath: string) => fsReadFile(absolutePath, "utf-8"),
-		writeText: (absolutePath: string, content: string) => fsWriteFile(absolutePath, content, "utf-8"),
-		deleteFile: (absolutePath: string) => fsUnlink(absolutePath),
+		readText: async (absolutePath: string) => {
+			if (readCache.has(absolutePath)) return readCache.get(absolutePath)!;
+			const content = await fsReadFile(absolutePath, "utf-8");
+			readCache.set(absolutePath, content);
+			return content;
+		},
+		writeText: async (absolutePath: string, content: string) => {
+			readCache.delete(absolutePath);
+			await fsWriteFile(absolutePath, content, "utf-8");
+			pi.events.emit("context-guard:file-modified", { path: absolutePath });
+		},
+		deleteFile: async (absolutePath: string) => {
+			readCache.delete(absolutePath);
+			await fsUnlink(absolutePath);
+			pi.events.emit("context-guard:file-modified", { path: absolutePath });
+		},
 		exists: async (absolutePath: string) => {
 			try {
 				await fsAccess(absolutePath, constants.F_OK);
@@ -750,7 +764,7 @@ export default function (pi: ExtensionAPI) {
 				await applyPatchOperations(ops, createVirtualWorkspace(ctx.cwd), ctx.cwd, signal, { collectDiff: false });
 
 				// Apply for real.
-				const applied = await applyPatchOperations(ops, createRealWorkspace(), ctx.cwd, signal, { collectDiff: true });
+				const applied = await applyPatchOperations(ops, createRealWorkspace(pi), ctx.cwd, signal, { collectDiff: true });
 				const summary = applied.map((r, i) => `${i + 1}. ${r.message}`).join("\n");
 				const combinedDiff = applied
 					.filter((r) => r.diff)
@@ -821,7 +835,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Apply for real.
-			const results = await applyClassicEdits(edits, createRealWorkspace(), ctx.cwd, signal, { collectDiff: true });
+			const results = await applyClassicEdits(edits, createRealWorkspace(pi), ctx.cwd, signal, { collectDiff: true });
 
 			if (results.length === 1) {
 				const r = results[0];
