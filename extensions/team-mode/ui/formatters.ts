@@ -155,7 +155,7 @@ export function formatTeamSummary(summary: TeamSummary): string {
 
 	// Header
 	const phase = summary.currentPhase ? ` (${summary.currentPhase} phase)` : "";
-	lines.push(`Team ${summary.name} — ${summary.status}${phase}`);
+	lines.push(`Team ${summary.name} [${summary.teamId}] — ${summary.status}${phase}`);
 	lines.push(`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`);
 
 	// Determine which teammates are blocked
@@ -379,8 +379,7 @@ export function formatDashboard(dashboard: MultiTeamDashboard): string {
 		lines.push("");
 		lines.push("Needs Attention");
 		for (const item of dashboard.needsAttention) {
-			const icon = item.severity === "error" ? "⚠" : "⚠";
-			lines.push(`${icon} Team ${item.teamId}: ${item.reason}`);
+			lines.push(`⚠ ${item.teamId}: ${item.reason}`);
 		}
 	}
 
@@ -389,7 +388,7 @@ export function formatDashboard(dashboard: MultiTeamDashboard): string {
 		lines.push("Recent Updates");
 		for (const update of dashboard.recentUpdates) {
 			const icon = update.type === "team_completed" || update.type === "task_completed" ? "✓" : "⚙";
-			lines.push(`${icon} Team ${update.teamId}: ${update.message}`);
+			lines.push(`${icon} ${update.teamId}: ${update.message}`);
 		}
 	}
 
@@ -397,7 +396,7 @@ export function formatDashboard(dashboard: MultiTeamDashboard): string {
 		lines.push("");
 		lines.push("Running Smoothly");
 		for (const item of dashboard.noAttentionNeeded) {
-			lines.push(`⚙ Team ${item.teamId}: ${item.progress}`);
+			lines.push(`⚙ ${item.teamId} (${item.status}): ${item.progress}`);
 		}
 	}
 

@@ -2,10 +2,14 @@
   "name": "pi-mono-team-mode",
   "version": "1.1.0",
   "description": "Pi extension for orchestrating background multi-agent teams",
+  "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
+  "scripts": {
+    "test": "npx tsx --test '__tests__/**/*.test.ts'"
+  },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",

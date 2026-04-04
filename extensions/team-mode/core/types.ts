@@ -159,6 +159,14 @@ export interface Signal {
 	message: string;
 	/** Related artifact paths or URIs. */
 	links: string[];
+	/**
+	 * When `true`, this signal was emitted by a teammate subprocess rather than
+	 * the leader or system. Sidechain signals can be filtered out when replaying
+	 * the main conversation transcript without losing orchestration-level context.
+	 *
+	 * Inspired by Claurst's `is_sidechain` flag in `session_storage.rs`.
+	 */
+	isSidechain?: boolean;
 }
 
 /** A structured message in the team mailbox. Stored in `mailbox.ndjson`. */

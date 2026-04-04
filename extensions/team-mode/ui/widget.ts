@@ -50,8 +50,9 @@ function buildSingleTeamLine(
 	// Prefix
 	const prefix = theme.fg("accent", "Team:");
 
-	// Name
+	// Name + ID (show ID so users can reference the team in commands)
 	const name = theme.fg("accent", team.name);
+	const id = theme.fg("dim", `(${team.id})`);
 
 	// Status + phase
 	const phase = summary?.currentPhase ? ` (${summary.currentPhase})` : "";
@@ -88,7 +89,7 @@ function buildSingleTeamLine(
 		attentionPart = " " + theme.fg("warning", "⚠ failed");
 	}
 
-	return `${prefix} ${name} — ${status}${progressPart}${attentionPart}`;
+	return `${prefix} ${name} ${id} — ${status}${progressPart}${attentionPart}`;
 }
 
 /**

@@ -42,20 +42,6 @@ The `btw` extension adds Claude Code-style `/btw` behavior to pi for asking a qu
 - keeps the answer out of the visible transcript and out of future LLM context
 - persists the question/answer as hidden custom session metadata
 
-### Install
-
-Install by package, for example to install only `btw`:
-
-```bash
-pi install npm:pi-mono-btw
-```
-
-Or load it directly for testing:
-
-```bash
-pi -e npm:pi-btw/index.ts
-```
-
 ### Usage
 
 ```text

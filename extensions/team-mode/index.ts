@@ -13,6 +13,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionSwitchEvent } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
+import { Text } from "@mariozechner/pi-tui";
 
 import { TeamStore } from "./core/store.js";
 import { TeamManager } from "./managers/team-manager.js";
@@ -30,6 +31,26 @@ import {
 import { updateTeamWidget } from "./ui/widget.js";
 import { LeaderRuntime } from "./runtime/leader-runtime.js";
 import { WatchManager } from "./runtime/watch-mode.js";
+
+// ---------------------------------------------------------------------------
+// /team subcommand definitions — single source of truth for autocomplete + handler
+// ---------------------------------------------------------------------------
+
+const TEAM_SUBCOMMANDS = [
+	{ value: "create", label: "create", description: "Create a new team", needsTeamId: false },
+	{ value: "status", label: "status", description: "Show team summary", needsTeamId: true },
+	{ value: "tasks", label: "tasks", description: "Show task board", needsTeamId: true },
+	{ value: "signals", label: "signals", description: "Show recent signals", needsTeamId: true },
+	{ value: "ask", label: "ask", description: "Ask leader or teammate a question", needsTeamId: true },
+	{ value: "stop", label: "stop", description: "Stop a running team", needsTeamId: true },
+	{ value: "resume", label: "resume", description: "Resume a stopped team", needsTeamId: true },
+	{ value: "watch", label: "watch", description: "Start live monitoring", needsTeamId: true },
+	{ value: "unwatch", label: "unwatch", description: "Stop live monitoring", needsTeamId: false },
+] as const;
+
+const TEAM_ID_SUBCOMMANDS: ReadonlySet<string> = new Set(
+	TEAM_SUBCOMMANDS.filter((s) => s.needsTeamId).map((s) => s.value),
+);
 
 // ---------------------------------------------------------------------------
 // Manager bundle — initialized on session_start / session_switch
@@ -97,6 +118,14 @@ async function refreshWidget(ctx: ExtensionContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI): void {
+	// -------------------------------------------------------------------------
+	// Message renderer for /team command output
+	// -------------------------------------------------------------------------
+
+	pi.registerMessageRenderer("team-output", (message, _options, theme) => {
+		return new Text(theme.fg("accent", "teams ") + message.content, 0, 0);
+	});
+
 	// -------------------------------------------------------------------------
 	// Tool: team_create
 	// -------------------------------------------------------------------------
@@ -409,6 +438,147 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// Tool: team_ask
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_ask",
+		label: "Ask Team",
+		description:
+			"Ask the team leader or a specific teammate a question. " +
+			"Returns a synthesized answer from current team state (tasks, signals, and last output). " +
+			"The question is also forwarded to the target's mailbox for async follow-up if they are running.",
+		promptSnippet: "Ask leader or teammate a question about their work",
+		promptGuidelines: [
+			"Use team_ask when the user wants a specific answer about what a teammate is doing or why something is blocked",
+			"Prefer team_ask over team_teammate when the user has a concrete question (not just a status check)",
+		],
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			target: Type.String({
+				description:
+					"Who to ask: a teammate role name (e.g. 'backend', 'reviewer') or 'leader' for the team orchestrator",
+			}),
+			question: Type.String({ description: "The question to ask" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { teamManager, mailboxManager } = getManagers();
+
+			const team = await teamManager.getTeam(params.teamId);
+			if (!team) {
+				throw new Error(`Team not found: ${params.teamId}`);
+			}
+
+			const lines: string[] = [];
+			lines.push(`Question for ${params.target} in team ${team.name} (${params.teamId}):`);
+			lines.push(`"${params.question}"`);
+			lines.push("");
+
+			if (params.target === "leader") {
+				// Synthesize answer from full team state
+				const summary = await teamManager.getTeamSummary(params.teamId);
+
+				lines.push(`**Answer from current team state:**`);
+				lines.push(`Phase: ${summary.currentPhase ?? "unknown"}`);
+				lines.push(`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`);
+
+				if (summary.blockers.length > 0) {
+					lines.push(`Blockers:`);
+					for (const b of summary.blockers) {
+						lines.push(`  - ${b.taskId} (${b.owner}): ${b.reason}`);
+					}
+				} else {
+					lines.push(`Blockers: none`);
+				}
+
+				if (summary.approvalsPending.length > 0) {
+					lines.push(`Approvals pending:`);
+					for (const a of summary.approvalsPending) {
+						lines.push(`  - ${a.taskId} (${a.owner}): ${a.artifact}`);
+					}
+				}
+
+				const activeTeammates = summary.teammates.filter(
+					(t) => t.status === "in_progress",
+				);
+				if (activeTeammates.length > 0) {
+					lines.push(`Active teammates:`);
+					for (const t of activeTeammates) {
+						lines.push(`  - ${t.name}: ${t.summary ?? t.currentTask ?? "running"}`);
+					}
+				}
+
+				if (summary.nextMilestone) {
+					lines.push(`Next milestone: ${summary.nextMilestone}`);
+				}
+			} else {
+				// Synthesize answer from teammate state
+				const teammate = await teamManager.getTeammateSummary(params.teamId, params.target);
+				if (!teammate) {
+					throw new Error(
+						`Teammate "${params.target}" not found in team "${params.teamId}". ` +
+							`Available roles: ${team.teammates.join(", ")}`,
+					);
+				}
+
+				lines.push(`**Answer from ${params.target}'s current state:**`);
+				lines.push(`Status: ${teammate.status}`);
+
+				if (teammate.currentTask) {
+					lines.push(
+						`Current task: ${teammate.currentTask.id} — ${teammate.currentTask.title} (${teammate.currentTask.status})`,
+					);
+					if (teammate.currentTask.blocker) {
+						lines.push(`Blocker: ${teammate.currentTask.blocker}`);
+					}
+				} else {
+					lines.push(`Current task: none assigned`);
+				}
+
+				if (teammate.worktree) {
+					lines.push(`Worktree: ${teammate.worktree}`);
+				}
+
+				if (teammate.artifacts.length > 0) {
+					lines.push(`Artifacts: ${teammate.artifacts.join(", ")}`);
+				}
+
+				if (teammate.lastOutput) {
+					// Surface the first ~300 chars of the last output as a hint
+					const preview = teammate.lastOutput.trim().slice(0, 300);
+					lines.push(`Last output preview:`);
+					lines.push(preview.replace(/^/gm, "  "));
+					if (teammate.lastOutput.length > 300) lines.push("  ...");
+				}
+			}
+
+			lines.push("");
+			lines.push(
+				`Note: question forwarded to ${params.target}'s mailbox for explicit follow-up.`,
+			);
+
+			// Forward the question via mailbox so the target sees it in their next cycle
+			try {
+				await mailboxManager.send(params.teamId, {
+					from: "user",
+					to: params.target,
+					type: "question",
+					message: params.question,
+					attachments: [],
+				});
+			} catch {
+				// Mailbox send is best-effort — don't fail the whole call
+			}
+
+			const text = lines.join("\n");
+			return {
+				content: [{ type: "text", text }],
+				details: { teamId: params.teamId, target: params.target, question: params.question },
+			};
+		},
+	});
+
+	// -------------------------------------------------------------------------
 	// Tool: team_message
 	// -------------------------------------------------------------------------
 
@@ -644,6 +814,67 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// Tool: team_memory
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_memory",
+		label: "Write Team Memory",
+		description:
+			"Write durable team knowledge to long-lived memory that persists after the team completes. " +
+			"Use 'discoveries' for codebase findings, 'decisions' for choices made and why, " +
+			"and 'contracts' for agreed API schemas or interface specifications. " +
+			"Content is appended to the named memory document and injected into future teammate contexts.",
+		promptSnippet: "Record important team knowledge that persists across team runs",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			type: StringEnum(
+				["discoveries", "decisions", "contracts"] as const,
+				{
+					description:
+						"Which memory document to write to: 'discoveries' (codebase findings), " +
+						"'decisions' (choices + rationale), or 'contracts' (API/interface specs)",
+				},
+			),
+			content: Type.String({
+				description: "Content to append to the memory document (Markdown supported)",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { store } = getManagers();
+
+			try {
+				const existing =
+					await store.loadMemory(
+						params.teamId,
+						params.type as "discoveries" | "decisions" | "contracts",
+					) ?? "";
+				const separator = existing.trim() ? "\n\n---\n\n" : "";
+				const updated = `${existing}${separator}${params.content}`;
+				await store.saveMemory(
+					params.teamId,
+					params.type as "discoveries" | "decisions" | "contracts",
+					updated,
+				);
+
+				const text = [
+					`Team memory updated: ${params.type} for team ${params.teamId}.`,
+					`Document length: ${updated.length} characters.`,
+				].join("\n");
+
+				return {
+					content: [{ type: "text", text }],
+					details: { teamId: params.teamId, type: params.type, length: updated.length },
+				};
+			} catch (err) {
+				throw new Error(
+					`Failed to write team memory: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		},
+	});
+
+	// -------------------------------------------------------------------------
 	// Tool: team_watch
 	// -------------------------------------------------------------------------
 
@@ -689,6 +920,40 @@ export default function (pi: ExtensionAPI): void {
 	 */
 	pi.registerCommand("team", {
 		description: "Manage background teams. Use /team <subcommand> — or /team for a dashboard.",
+		getArgumentCompletions: async (prefix: string) => {
+			const parts = prefix.trimStart().split(/\s+/);
+
+			if (parts.length <= 1) {
+				const partial = (parts[0] ?? "").toLowerCase();
+				const matches = TEAM_SUBCOMMANDS.filter((s) => s.value.startsWith(partial));
+				return matches.length > 0 ? matches.map((s) => ({ value: s.value, label: s.label, description: s.description })) : null;
+			}
+
+			const sub = parts[0].toLowerCase();
+			if (TEAM_ID_SUBCOMMANDS.has(sub) && parts.length === 2) {
+				if (!managers) return null;
+				try {
+					const teams = await managers.teamManager.listTeams();
+					const partial = parts[1].toLowerCase();
+					const items = teams
+						.filter(
+							(t) =>
+								t.id.toLowerCase().startsWith(partial) ||
+								t.name.toLowerCase().startsWith(partial),
+						)
+						.map((t) => ({
+							value: `${sub} ${t.id}`,
+							label: t.id,
+							description: `${t.name} (${t.status})`,
+						}));
+					return items.length > 0 ? items : null;
+				} catch {
+					return null;
+				}
+			}
+
+			return null;
+		},
 		handler: async (args, ctx) => {
 			if (!managers) {
 				ctx.ui.notify("Team managers not initialized", "error");
@@ -789,6 +1054,70 @@ export default function (pi: ExtensionAPI): void {
 					break;
 				}
 
+				case "ask": {
+					// /team ask <teamId> <target> <question...>
+					const teamId = parts[1];
+					const target = parts[2];
+					const question = parts.slice(3).join(" ").trim();
+					if (!teamId || !target || !question) {
+						ctx.ui.notify("Usage: /team ask <teamId> <target> <question>", "warning");
+						return;
+					}
+					try {
+						const { teamManager: tm, mailboxManager: mb } = managers;
+						const team = await tm.getTeam(teamId);
+						if (!team) {
+							ctx.ui.notify(`Team not found: ${teamId}`, "error");
+							return;
+						}
+						const lines: string[] = [`Q: "${question}" → ${target}`, ""];
+						if (target === "leader") {
+							const summary = await tm.getTeamSummary(teamId);
+							lines.push(`Phase: ${summary.currentPhase ?? "unknown"}`);
+							lines.push(`Progress: ${summary.progress.done}/${summary.progress.total}`);
+							if (summary.blockers.length > 0) {
+								lines.push(`Blockers: ${summary.blockers.map((b) => b.reason).join("; ")}`);
+							}
+							if (summary.nextMilestone) lines.push(`Next: ${summary.nextMilestone}`);
+						} else {
+							const teammate = await tm.getTeammateSummary(teamId, target);
+							if (!teammate) {
+								ctx.ui.notify(`Teammate "${target}" not found`, "error");
+								return;
+							}
+							lines.push(`Status: ${teammate.status}`);
+							if (teammate.currentTask) {
+								lines.push(`Task: ${teammate.currentTask.id} — ${teammate.currentTask.title}`);
+								if (teammate.currentTask.blocker) lines.push(`Blocker: ${teammate.currentTask.blocker}`);
+							}
+							if (teammate.lastOutput) {
+								lines.push(`Last output: ${teammate.lastOutput.trim().slice(0, 200)}`);
+							}
+						}
+						lines.push("");
+						lines.push(`Question forwarded to ${target}'s mailbox.`);
+						try {
+							await mb.send(teamId, {
+								from: "user",
+								to: target,
+								type: "question",
+								message: question,
+								attachments: [],
+							});
+						} catch { /* best effort */ }
+						pi.sendMessage(
+							{ customType: "team-output", content: lines.join("\n"), display: true },
+							{ triggerTurn: false },
+						);
+					} catch (err) {
+						ctx.ui.notify(
+							`Failed to ask: ${err instanceof Error ? err.message : String(err)}`,
+							"error",
+						);
+					}
+					break;
+				}
+
 				case "stop": {
 					const teamId = parts[1];
 					if (!teamId) {
@@ -883,6 +1212,10 @@ export default function (pi: ExtensionAPI): void {
 
 	/** Initialize managers when a session starts. */
 	pi.on("session_start", async (_event, ctx) => {
+		if (managers) {
+			await managers.leaderRuntime.cleanup();
+			managers.watchManager.cleanup();
+		}
 		initManagers(ctx.cwd);
 		if (managers) {
 			const runningTeams = await managers.teamManager.listTeams({ status: ["running"] });

@@ -65,7 +65,36 @@ function applyFilter(tasks: TaskRecord[], filter: TaskFilter): TaskRecord[] {
 // ---------------------------------------------------------------------------
 
 export class TaskManager {
+	/**
+	 * Per-team write-serialization queues.
+	 *
+	 * Every mutating operation (createTask, updateTask, resolveDependencies)
+	 * chains onto this promise so that concurrent callers execute their
+	 * read-modify-write cycles one at a time per team.  Without this, two
+	 * concurrent `updateTask` calls could both read the same snapshot, apply
+	 * their own patch, and the second write would silently overwrite the
+	 * first's changes (lost-update anomaly).
+	 */
+	private readonly writeQueues = new Map<string, Promise<unknown>>();
+
 	constructor(private store: TeamStore) {}
+
+	/**
+	 * Enqueue a mutating operation for a team so that it runs serially
+	 * with respect to all other mutations on the same team.
+	 */
+	private enqueue<T>(teamId: string, fn: () => Promise<T>): Promise<T> {
+		const prev = this.writeQueues.get(teamId) ?? Promise.resolve();
+		const next = prev.then(fn, fn); // run even if the previous op failed
+		this.writeQueues.set(teamId, next);
+		// Clean up the queue entry once this operation settles so the Map
+		// does not grow without bound over the lifetime of the process.
+		void next.then(
+			() => { if (this.writeQueues.get(teamId) === next) this.writeQueues.delete(teamId); },
+			() => { if (this.writeQueues.get(teamId) === next) this.writeQueues.delete(teamId); },
+		);
+		return next;
+	}
 
 	// -------------------------------------------------------------------------
 	// Core CRUD
@@ -81,35 +110,37 @@ export class TaskManager {
 		teamId: string,
 		taskData: Omit<TaskRecord, "id" | "teamId" | "createdAt" | "updatedAt">,
 	): Promise<TaskRecord> {
-		const tasks = await this.store.loadTasks(teamId);
-		const now = new Date().toISOString();
+		return this.enqueue(teamId, async () => {
+			const tasks = await this.store.loadTasks(teamId);
+			const now = new Date().toISOString();
 
-		// Build with explicit nullish-coalescing so there are no duplicate
-		// literal keys in the object literal (avoids TS2783).
-		const task: TaskRecord = {
-			// Fields with defaults
-			status: taskData.status ?? "todo",
-			priority: taskData.priority ?? "medium",
-			riskLevel: taskData.riskLevel ?? "low",
-			approvalRequired: taskData.approvalRequired ?? false,
-			dependsOn: taskData.dependsOn ?? [],
-			artifacts: taskData.artifacts ?? [],
-			blockers: taskData.blockers ?? [],
-			// Pass-through fields from caller
-			title: taskData.title,
-			description: taskData.description,
-			owner: taskData.owner,
-			branch: taskData.branch,
-			worktree: taskData.worktree,
-			// System-managed fields — always overridden here
-			id: nextTaskId(tasks),
-			teamId,
-			createdAt: now,
-			updatedAt: now,
-		};
+			// Build with explicit nullish-coalescing so there are no duplicate
+			// literal keys in the object literal (avoids TS2783).
+			const task: TaskRecord = {
+				// Fields with defaults
+				status: taskData.status ?? "todo",
+				priority: taskData.priority ?? "medium",
+				riskLevel: taskData.riskLevel ?? "low",
+				approvalRequired: taskData.approvalRequired ?? false,
+				dependsOn: taskData.dependsOn ?? [],
+				artifacts: taskData.artifacts ?? [],
+				blockers: taskData.blockers ?? [],
+				// Pass-through fields from caller
+				title: taskData.title,
+				description: taskData.description,
+				owner: taskData.owner,
+				branch: taskData.branch,
+				worktree: taskData.worktree,
+				// System-managed fields — always overridden here
+				id: nextTaskId(tasks),
+				teamId,
+				createdAt: now,
+				updatedAt: now,
+			};
 
-		await this.store.saveTasks(teamId, [...tasks, task]);
-		return task;
+			await this.store.saveTasks(teamId, [...tasks, task]);
+			return task;
+		});
 	}
 
 	/**
@@ -125,27 +156,29 @@ export class TaskManager {
 		taskId: string,
 		patch: Partial<TaskRecord>,
 	): Promise<TaskRecord> {
-		const tasks = await this.store.loadTasks(teamId);
-		const index = tasks.findIndex((t) => t.id === taskId);
+		return this.enqueue(teamId, async () => {
+			const tasks = await this.store.loadTasks(teamId);
+			const index = tasks.findIndex((t) => t.id === taskId);
 
-		if (index === -1) throw new Error(`Task not found: ${taskId}`);
+			if (index === -1) throw new Error(`Task not found: ${taskId}`);
 
-		const existing = tasks[index];
-		const now = new Date().toISOString();
+			const existing = tasks[index];
+			const now = new Date().toISOString();
 
-		const updated: TaskRecord = {
-			...existing,
-			...patch,
-			// Protect immutable fields
-			id: existing.id,
-			teamId: existing.teamId,
-			createdAt: existing.createdAt,
-			updatedAt: now,
-		};
+			const updated: TaskRecord = {
+				...existing,
+				...patch,
+				// Protect immutable fields
+				id: existing.id,
+				teamId: existing.teamId,
+				createdAt: existing.createdAt,
+				updatedAt: now,
+			};
 
-		tasks[index] = updated;
-		await this.store.saveTasks(teamId, tasks);
-		return updated;
+			tasks[index] = updated;
+			await this.store.saveTasks(teamId, tasks);
+			return updated;
+		});
 	}
 
 	// -------------------------------------------------------------------------
@@ -248,32 +281,34 @@ export class TaskManager {
 	 * @returns The list of tasks that were promoted (possibly empty).
 	 */
 	async resolveDependencies(teamId: string): Promise<TaskRecord[]> {
-		const tasks = await this.store.loadTasks(teamId);
-		const doneIds = new Set(
-			tasks.filter((t) => t.status === "done").map((t) => t.id),
-		);
+		return this.enqueue(teamId, async () => {
+			const tasks = await this.store.loadTasks(teamId);
+			const doneIds = new Set(
+				tasks.filter((t) => t.status === "done").map((t) => t.id),
+			);
 
-		const now = new Date().toISOString();
-		const promoted: TaskRecord[] = [];
+			const now = new Date().toISOString();
+			const promoted: TaskRecord[] = [];
 
-		for (const task of tasks) {
-			// Only promote tasks that are waiting on something
-			if (task.status !== "todo" && task.status !== "blocked") continue;
-			// Tasks with no declared dependencies are not managed here
-			if (task.dependsOn.length === 0) continue;
-			// Promote only when every listed dependency is complete
-			if (task.dependsOn.every((depId) => doneIds.has(depId))) {
-				promoted.push({ ...task, status: "ready" as TaskStatus, updatedAt: now });
+			for (const task of tasks) {
+				// Only promote tasks that are waiting on something
+				if (task.status !== "todo" && task.status !== "blocked") continue;
+				// Tasks with no declared dependencies are not managed here
+				if (task.dependsOn.length === 0) continue;
+				// Promote only when every listed dependency is complete
+				if (task.dependsOn.every((depId) => doneIds.has(depId))) {
+					promoted.push({ ...task, status: "ready" as TaskStatus, updatedAt: now });
+				}
 			}
-		}
 
-		if (promoted.length > 0) {
-			// Merge promoted records back into the full task list
-			const promotedById = new Map(promoted.map((t) => [t.id, t]));
-			const merged = tasks.map((t) => promotedById.get(t.id) ?? t);
-			await this.store.saveTasks(teamId, merged);
-		}
+			if (promoted.length > 0) {
+				// Merge promoted records back into the full task list
+				const promotedById = new Map(promoted.map((t) => [t.id, t]));
+				const merged = tasks.map((t) => promotedById.get(t.id) ?? t);
+				await this.store.saveTasks(teamId, merged);
+			}
 
-		return promoted;
+			return promoted;
+		});
 	}
 }

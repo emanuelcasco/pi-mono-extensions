@@ -16,7 +16,7 @@
  * 3. `bash` using `rg` without any output-bounding operator
  *    → appends `| head -N` so grep dumps don't fill the context window.
  *
- * Guards 1–2 can be configured or disabled via `/context-guard`.
+ * All guards are enabled by default.
  */
 
 import { stat } from "node:fs/promises";
@@ -209,82 +209,4 @@ export default function (pi: ExtensionAPI): void {
 		}
 	});
 
-	// -------------------------------------------------------------------------
-	// /context-guard command
-	// -------------------------------------------------------------------------
-	pi.registerCommand("context-guard", {
-		description: "Show or toggle context-guard settings",
-		handler: async (args, ctx) => {
-			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-			const sub = parts[0]?.toLowerCase();
-
-			if (!sub || sub === "status") {
-				ctx.ui.notify(
-					[
-						"[context-guard] status:",
-						`  read guard:  ${cfg.readGuard  ? "on" : "off"}  (limit=${cfg.readLimit})`,
-						`  dedup guard: ${cfg.dedupGuard ? "on" : "off"}  (cache size=${readCache.size})`,
-						`  rg guard:    ${cfg.rgGuard    ? "on" : "off"}  (head=${cfg.rgHeadLimit})`,
-					].join("\n"),
-					"info",
-				);
-				return;
-			}
-
-			if (sub === "off") {
-				cfg.readGuard = cfg.dedupGuard = cfg.rgGuard = false;
-				ctx.ui.notify("[context-guard] all guards disabled", "warning");
-				return;
-			}
-
-			if (sub === "on") {
-				cfg.readGuard = cfg.dedupGuard = cfg.rgGuard = true;
-				ctx.ui.notify("[context-guard] all guards enabled", "info");
-				return;
-			}
-
-			if (sub === "read") {
-				const n = parseInt(parts[1] ?? "", 10);
-				if (!isNaN(n) && n > 0) {
-					cfg.readLimit = n;
-					ctx.ui.notify(`[context-guard] read limit → ${n}`, "info");
-				} else {
-					cfg.readGuard = !cfg.readGuard;
-					ctx.ui.notify(`[context-guard] read guard ${cfg.readGuard ? "on" : "off"}`, "info");
-				}
-				return;
-			}
-
-			if (sub === "dedup") {
-				cfg.dedupGuard = !cfg.dedupGuard;
-				if (!cfg.dedupGuard) readCache.clear();
-				ctx.ui.notify(`[context-guard] dedup guard ${cfg.dedupGuard ? "on" : "off"}`, "info");
-				return;
-			}
-
-			if (sub === "rg") {
-				const n = parseInt(parts[1] ?? "", 10);
-				if (!isNaN(n) && n > 0) {
-					cfg.rgHeadLimit = n;
-					ctx.ui.notify(`[context-guard] rg head limit → ${n}`, "info");
-				} else {
-					cfg.rgGuard = !cfg.rgGuard;
-					ctx.ui.notify(`[context-guard] rg guard ${cfg.rgGuard ? "on" : "off"}`, "info");
-				}
-				return;
-			}
-
-			ctx.ui.notify(
-				[
-					"[context-guard] usage:",
-					"  /context-guard           — show status",
-					"  /context-guard on|off    — enable/disable all guards",
-					"  /context-guard read [N]  — toggle read guard or set limit",
-					"  /context-guard dedup     — toggle read dedup",
-					"  /context-guard rg [N]    — toggle rg guard or set head limit",
-				].join("\n"),
-				"info",
-			);
-		},
-	});
 }

@@ -14,7 +14,7 @@
  * Dependencies: only `node:fs/promises` and `node:path`.
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -88,9 +88,23 @@ async function readJson<T>(path: string): Promise<T | null> {
 	}
 }
 
-/** Atomically write a JSON file (pretty-printed for human readability). */
-async function writeJson<T>(path: string, data: T): Promise<void> {
-	await writeFile(path, JSON.stringify(data, null, 2), "utf8");
+/**
+ * Atomically write a JSON file (pretty-printed for human readability).
+ *
+ * Writes to a sibling `.tmp` file first, then renames it over the target.
+ * `rename(2)` is atomic on POSIX/macOS when both paths are on the same
+ * filesystem, so a concurrent reader always sees either the old complete
+ * content or the new complete content — never an empty or partial file.
+ */
+async function writeJson<T>(filePath: string, data: T): Promise<void> {
+	const tmp = `${filePath}.${Date.now()}.tmp`;
+	try {
+		await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
+		await rename(tmp, filePath);
+	} catch (err) {
+		try { await unlink(tmp); } catch { /* ignore stale .tmp */ }
+		throw err;
+	}
 }
 
 /** Read all lines from an NDJSON file; skips blank lines. */

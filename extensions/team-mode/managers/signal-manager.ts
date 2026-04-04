@@ -68,17 +68,27 @@ export class SignalManager {
 	 *
 	 * Assigns a sequential ID (`sig-NNN`) and an ISO 8601 timestamp, then
 	 * appends the signal to the team's `signals.ndjson` file.
+	 *
+	 * Signals whose `source` is not `"leader"` or `"system"` are automatically
+	 * tagged with `isSidechain: true` (teammate subprocess activity). Callers
+	 * can override this by explicitly setting `isSidechain` in the input.
 	 */
 	async emit(
 		teamId: string,
 		signal: Omit<Signal, "id" | "teamId" | "timestamp">,
 	): Promise<Signal> {
 		const id = await nextSignalId(this.store, teamId);
+
+		// Auto-tag teammate signals as sidechain unless caller overrides.
+		const isTeammateSource = signal.source !== "leader" && signal.source !== "system";
+		const isSidechain = signal.isSidechain ?? isTeammateSource;
+
 		const full: Signal = {
 			...signal,
 			id,
 			teamId,
 			timestamp: new Date().toISOString(),
+			isSidechain,
 		};
 		await this.store.appendSignal(teamId, full);
 		return full;
@@ -129,6 +139,10 @@ export class SignalManager {
 	 * signals, only `warning` and `error` severity are considered bubble-worthy
 	 * (informational blocked events are suppressed).
 	 *
+	 * Sidechain signals (emitted by teammate subprocesses) are excluded unless
+	 * they are bubble-worthy types such as `blocked` or `error`, which always
+	 * need attention from the main session regardless of origin.
+	 *
 	 * @param since  Optional ISO 8601 timestamp to scope the query.
 	 */
 	async getBubbleSignals(teamId: string, since?: string): Promise<Signal[]> {
@@ -140,8 +154,39 @@ export class SignalManager {
 			if (!BUBBLE_SIGNAL_TYPES.includes(s.type)) return false;
 			// Suppress low-importance blocked events
 			if (s.type === "blocked" && s.severity === "info") return false;
+			// Suppress teammate-internal progress/completion noise from the main session.
+			// Only sidechain signals that require explicit attention (blocked, error,
+			// approval_requested, team_completed) are allowed through.
+			if (s.isSidechain) {
+				const sidechainBubble = new Set<string>([
+					"blocked",
+					"error",
+					"approval_requested",
+					"team_completed",
+				]);
+				if (!sidechainBubble.has(s.type)) return false;
+			}
 			return true;
 		});
+	}
+
+	/**
+	 * Return only sidechain signals — those emitted by teammate subprocesses.
+	 * Useful for debugging or expanding teammate activity on demand.
+	 */
+	async getSidechainSignals(teamId: string, filter?: SignalFilter): Promise<Signal[]> {
+		const all = await this.getSignals(teamId, filter);
+		return all.filter((s) => s.isSidechain === true);
+	}
+
+	/**
+	 * Return only orchestration signals — those emitted by the leader or system
+	 * (i.e. NOT sidechain). This is the "clean" transcript suitable for replay
+	 * without teammate noise.
+	 */
+	async getOrchestrationSignals(teamId: string, filter?: SignalFilter): Promise<Signal[]> {
+		const all = await this.getSignals(teamId, filter);
+		return all.filter((s) => !s.isSidechain);
 	}
 
 	/**
