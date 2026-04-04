@@ -26,6 +26,7 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 - **grep** — ripgrep wrapper with head_limit, output_mode, and pagination (replaces raw rg in bash)
 - **multi-edit** — enhanced `edit` tool with batch edits and patch support
 - **review** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
+- **simplify** — review changed code for reuse, quality, and efficiency, then fix any issues found (`/simplify`)
 - **status-line** — shows git branch and richer runtime stats in the footer
 - **team-mode** — background multi-agent team orchestration (`/team` commands)
 

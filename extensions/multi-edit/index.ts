@@ -178,7 +178,7 @@ interface Workspace {
 	writeText: (absolutePath: string, content: string) => Promise<void>;
 	deleteFile: (absolutePath: string) => Promise<void>;
 	exists: (absolutePath: string) => Promise<boolean>;
-	/** Check that the file is writable. Rejects if not. No-op on virtual workspaces. */
+	/** Check that the file is writable. Rejects if not. Virtual implementations may still touch the real FS so preflights fail fast on read-only files. */
 	checkWriteAccess: (absolutePath: string) => Promise<void>;
 }
 
@@ -632,7 +632,7 @@ function findActualString(
 	const exact = content.indexOf(oldText, offset);
 	if (exact !== -1) return { pos: exact, actualOldText: oldText };
 
-	const normalized = oldText.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+	const normalized = oldText.replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, '"');
 	if (normalized !== oldText) {
 		const norm = content.indexOf(normalized, offset);
 		if (norm !== -1) return { pos: norm, actualOldText: normalized };
@@ -665,15 +665,14 @@ async function applyClassicEdits(
 	const collectDiff = options?.collectDiff ?? false;
 	const rollbackOnError = options?.rollbackOnError ?? false;
 
-	// Group edits by resolved absolute path, preserving order.
+	// Group edits by resolved absolute path. `Map` preserves insertion order,
+	// which is the order we iterate later.
 	const fileGroups = new Map<string, { index: number; edit: EditItem }[]>();
-	const editOrder: string[] = []; // track insertion order of keys
 
 	for (let i = 0; i < edits.length; i++) {
 		const abs = isAbsolute(edits[i].path) ? resolvePath(edits[i].path) : resolvePath(cwd, edits[i].path);
 		if (!fileGroups.has(abs)) {
 			fileGroups.set(abs, []);
-			editOrder.push(abs);
 		}
 		fileGroups.get(abs)!.push({ index: i, edit: edits[i] });
 	}
@@ -681,16 +680,14 @@ async function applyClassicEdits(
 	const results: EditResult[] = new Array(edits.length);
 
 	// Verify write access to all target files before mutating anything.
-	for (const absPath of editOrder) {
-		await workspace.checkWriteAccess(absPath);
-	}
+	await Promise.all(Array.from(fileGroups.keys(), (absPath) => workspace.checkWriteAccess(absPath)));
 
 	// Snapshots of files successfully written during this batch — used to
 	// restore them if a later file fails and `rollbackOnError` is set.
 	const writtenSnapshots = new Map<string, string>();
 
 	try {
-	for (const absPath of editOrder) {
+	for (const absPath of fileGroups.keys()) {
 		const group = fileGroups.get(absPath)!;
 
 		if (signal?.aborted) {
@@ -749,7 +746,6 @@ async function applyClassicEdits(
 					success: false,
 					message: `Could not find the exact text in ${edit.path}. The old text must match exactly including all whitespace and newlines.`,
 				};
-				// Mark remaining edits in this group as pending and throw.
 				const remainingInGroup = group.slice(group.findIndex((e) => e.index === index) + 1);
 				for (const pending of remainingInGroup) {
 					results[pending.index] = {
@@ -774,8 +770,7 @@ async function applyClassicEdits(
 			};
 		}
 
-		// Write back the fully-edited file. Snapshot originals just before the
-		// write so a later failure can restore us to the pre-batch state.
+		// Snapshot the pre-edit content so a later failure can roll this file back.
 		writtenSnapshots.set(absPath, originalContent);
 		await workspace.writeText(absPath, content);
 
@@ -789,13 +784,12 @@ async function applyClassicEdits(
 	}
 	} catch (err) {
 		if (rollbackOnError) {
-			for (const [absPath, original] of writtenSnapshots) {
-				try {
-					await workspace.writeText(absPath, original);
-				} catch {
-					// best-effort restore; surface the original failure
-				}
-			}
+			// Best-effort restore — surface the original failure regardless.
+			await Promise.all(
+				Array.from(writtenSnapshots, ([absPath, original]) =>
+					workspace.writeText(absPath, original).catch(() => {}),
+				),
+			);
 		}
 		throw err;
 	}
@@ -818,7 +812,7 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: multiEditSchema,
 
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { path, oldText, newText, multi, patch } = params;
 
 			const hasAnyClassicParam = path !== undefined || oldText !== undefined || newText !== undefined || multi !== undefined;

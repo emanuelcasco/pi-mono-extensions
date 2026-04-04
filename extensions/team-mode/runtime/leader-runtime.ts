@@ -184,7 +184,9 @@ function spawnPiJsonMode(promptFilePath: string, userMessage: string, cwd: strin
     cwd,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
-    // Fix #1: prevent subprocess from launching its own leader instances
+    // Prevent the subprocess from bootstrapping its own leader runtime
+    // (which would spawn a ghost leader with empty activeTeammates and
+    // immediately flag every in_progress task as stalled).
     env: { ...process.env, PI_TEAM_SUBPROCESS: "1" },
   });
 }
@@ -312,12 +314,23 @@ const MAX_TASK_RETRIES = 3;
  */
 const STALL_GRACE_MS = LEADER_POLL_MS * 2;
 
+/**
+ * Marker phrase written into a task's blockers when its teammate process
+ * exits abnormally. Used as both the detection signal (to avoid duplicate
+ * stall reports) and the prefix of the human-readable blocker message, so
+ * the two must stay in sync.
+ */
+const STALL_BLOCKER_MARKER = "teammate process lost";
+const STALL_BLOCKER_MESSAGE = `${STALL_BLOCKER_MARKER} — process exited without completing task`;
+
 export class LeaderRuntime {
   private activeLeaders = new Map<string, ActiveLeader>();
   private activeTeammates = new Map<string, ActiveTeammate>();
   /** Per-team mailbox cursor: tracks how many messages have been processed by the leader. */
   private lastMailboxCount = new Map<string, number>();
-  /** Fix #4: guard against concurrent runLeaderCycle executions for the same team. */
+  /** Teams whose leader cycle is currently executing — used to serialise
+   *  cycles and prevent overlapping read-modify-write from the poll interval
+   *  and from teammate-completion handlers firing concurrently. */
   private readonly cycleRunning = new Set<string>();
 
   constructor(
@@ -868,17 +881,16 @@ export class LeaderRuntime {
   }
 
   private async runLeaderCycle(teamId: string): Promise<void> {
-    // Fix #4: skip if a cycle for this team is already in flight
     if (this.cycleRunning.has(teamId)) return;
     this.cycleRunning.add(teamId);
     try {
-      await this._runLeaderCycleInner(teamId);
+      await this.runLeaderCycleInner(teamId);
     } finally {
       this.cycleRunning.delete(teamId);
     }
   }
 
-  private async _runLeaderCycleInner(teamId: string): Promise<void> {
+  private async runLeaderCycleInner(teamId: string): Promise<void> {
     const team = await this.store.loadTeam(teamId);
     if (!team) return;
     if (
@@ -1275,14 +1287,14 @@ export class LeaderRuntime {
         // If the teammate is still running, this task is fine.
         if (this.isTeammateRunning(teamId, task.owner)) continue;
         // Skip if already flagged as stalled (avoid duplicate signals).
-        if (task.blockers.some((b) => b.includes("teammate process lost"))) continue;
+        if (task.blockers.some((b) => b.includes(STALL_BLOCKER_MARKER))) continue;
 
-        // Fix #2: only declare a task stalled after the grace period has elapsed.
-        // This prevents false positives on the very cycle that spawned the subprocess.
+        // Only declare a task stalled after the grace period has elapsed,
+        // to avoid false positives on the same cycle that spawned the subprocess.
         const age = Date.now() - Date.parse(task.updatedAt);
         if (age < STALL_GRACE_MS) continue;
 
-        // Fix #3: circuit breaker — permanently cancel after MAX_TASK_RETRIES.
+        // Circuit breaker — permanently cancel after MAX_TASK_RETRIES.
         const retryCount = (task.retryCount ?? 0) + 1;
         if (retryCount > MAX_TASK_RETRIES) {
           await this.taskManager.updateTask(teamId, task.id, {
@@ -1306,10 +1318,7 @@ export class LeaderRuntime {
 
         await this.taskManager.updateTask(teamId, task.id, {
           status: "blocked",
-          blockers: [
-            ...task.blockers,
-            "teammate process lost — process exited without completing task",
-          ],
+          blockers: [...task.blockers, STALL_BLOCKER_MESSAGE],
           retryCount,
         });
         await this.signalManager.emit(teamId, {
