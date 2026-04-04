@@ -473,6 +473,11 @@ function createRealWorkspace(pi: ExtensionAPI): Workspace {
 			return content;
 		},
 		writeText: async (absolutePath: string, content: string) => {
+			// Skip the write (and the file-modified event) when content is
+			// identical to what we last read. Prevents thrashing downstream
+			// consumers (watchers, context-guard) after no-op dedups.
+			const existing = readCache.get(absolutePath);
+			if (existing === content) return;
 			readCache.delete(absolutePath);
 			await fsWriteFile(absolutePath, content, "utf-8");
 			pi.events.emit("context-guard:file-modified", { path: absolutePath });
@@ -530,8 +535,10 @@ function createVirtualWorkspace(cwd: string): Workspace {
 			await ensureLoaded(absolutePath);
 			return state.get(absolutePath) !== null;
 		},
-		checkWriteAccess: async () => {
-			// No-op for virtual workspace — permission checks happen on the real pass.
+		checkWriteAccess: async (absolutePath: string) => {
+			// Check real-fs write permission during the virtual preflight so
+			// that read-only files fail fast *before* any real file is touched.
+			await fsAccess(absolutePath, constants.W_OK);
 		},
 	};
 }
@@ -608,6 +615,33 @@ async function applyPatchOperations(
 }
 
 /**
+ * Locate `oldText` inside `content` starting at `offset`. Falls back to
+ * normalized curly-quote matching when the exact search fails — this is the
+ * most frequent class of preflight failure (model writes curly quotes, file
+ * has straight ASCII, or vice versa).
+ *
+ * Returns `{ pos, actualOldText }` on match, `undefined` otherwise. Callers
+ * must use `actualOldText.length` (not `oldText.length`) when splicing, since
+ * the matched region may differ from the requested text after normalization.
+ */
+function findActualString(
+	content: string,
+	oldText: string,
+	offset: number,
+): { pos: number; actualOldText: string } | undefined {
+	const exact = content.indexOf(oldText, offset);
+	if (exact !== -1) return { pos: exact, actualOldText: oldText };
+
+	const normalized = oldText.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+	if (normalized !== oldText) {
+		const norm = content.indexOf(normalized, offset);
+		if (norm !== -1) return { pos: norm, actualOldText: normalized };
+	}
+
+	return undefined;
+}
+
+/**
  * Apply a list of classic edits (path/oldText/newText) sequentially via a Workspace.
  *
  * When multiple edits target the same file, they are sorted by their position in
@@ -616,15 +650,20 @@ async function applyPatchOperations(
  *
  * A forward cursor (`searchOffset`) advances after each replacement so that
  * duplicate oldText snippets are disambiguated by position.
+ *
+ * When `rollbackOnError` is set, any successfully written file is restored to
+ * its pre-edit content if a subsequent file fails — guaranteeing an atomic
+ * batch on the real filesystem.
  */
 async function applyClassicEdits(
 	edits: EditItem[],
 	workspace: Workspace,
 	cwd: string,
 	signal?: AbortSignal,
-	options?: { collectDiff?: boolean },
+	options?: { collectDiff?: boolean; rollbackOnError?: boolean },
 ): Promise<EditResult[]> {
 	const collectDiff = options?.collectDiff ?? false;
+	const rollbackOnError = options?.rollbackOnError ?? false;
 
 	// Group edits by resolved absolute path, preserving order.
 	const fileGroups = new Map<string, { index: number; edit: EditItem }[]>();
@@ -646,6 +685,11 @@ async function applyClassicEdits(
 		await workspace.checkWriteAccess(absPath);
 	}
 
+	// Snapshots of files successfully written during this batch — used to
+	// restore them if a later file fails and `rollbackOnError` is set.
+	const writtenSnapshots = new Map<string, string>();
+
+	try {
 	for (const absPath of editOrder) {
 		const group = fileGroups.get(absPath)!;
 
@@ -662,8 +706,8 @@ async function applyClassicEdits(
 		if (group.length > 1) {
 			const positions = new Map<{ index: number; edit: EditItem }, number>();
 			for (const entry of group) {
-				const pos = originalContent.indexOf(entry.edit.oldText);
-				positions.set(entry, pos === -1 ? Number.MAX_SAFE_INTEGER : pos);
+				const match = findActualString(originalContent, entry.edit.oldText, 0);
+				positions.set(entry, match === undefined ? Number.MAX_SAFE_INTEGER : match.pos);
 			}
 			group.sort((a, b) => positions.get(a)! - positions.get(b)!);
 		}
@@ -682,9 +726,11 @@ async function applyClassicEdits(
 			}
 
 			// Find oldText starting from the cursor position (positional ordering).
-			const pos = content.indexOf(edit.oldText, searchOffset);
+			// Falls back to curly→straight quote normalization for the frequent
+			// class of preflight failures where quotes differ between model and file.
+			const match = findActualString(content, edit.oldText, searchOffset);
 
-			if (pos === -1) {
+			if (match === undefined) {
 				// If the exact same oldText→newText pair was already applied in
 				// this file, the model likely just over-counted occurrences.
 				// Skip gracefully instead of aborting the entire batch.
@@ -703,12 +749,21 @@ async function applyClassicEdits(
 					success: false,
 					message: `Could not find the exact text in ${edit.path}. The old text must match exactly including all whitespace and newlines.`,
 				};
-				// Fill remaining edits in this group as skipped.
+				// Mark remaining edits in this group as pending and throw.
+				const remainingInGroup = group.slice(group.findIndex((e) => e.index === index) + 1);
+				for (const pending of remainingInGroup) {
+					results[pending.index] = {
+						path: pending.edit.path,
+						success: false,
+						message: `Skipped (earlier edit in ${pending.edit.path} failed).`,
+					};
+				}
 				const filled = Array.from({ length: edits.length }, (_, i) => results[i]).filter(Boolean);
 				throw new Error(formatResults(filled, edits.length));
 			}
 
-			content = content.slice(0, pos) + edit.newText + content.slice(pos + edit.oldText.length);
+			const { pos, actualOldText } = match;
+			content = content.slice(0, pos) + edit.newText + content.slice(pos + actualOldText.length);
 			searchOffset = pos + edit.newText.length;
 			appliedPairs.add(`${edit.oldText}\0${edit.newText}`);
 
@@ -719,7 +774,9 @@ async function applyClassicEdits(
 			};
 		}
 
-		// Write back the fully-edited file.
+		// Write back the fully-edited file. Snapshot originals just before the
+		// write so a later failure can restore us to the pre-batch state.
+		writtenSnapshots.set(absPath, originalContent);
 		await workspace.writeText(absPath, content);
 
 		// Generate a single diff for all edits to this file; attach to first edit.
@@ -729,6 +786,18 @@ async function applyClassicEdits(
 			results[firstIdx].diff = diffResult.diff;
 			results[firstIdx].firstChangedLine = diffResult.firstChangedLine;
 		}
+	}
+	} catch (err) {
+		if (rollbackOnError) {
+			for (const [absPath, original] of writtenSnapshots) {
+				try {
+					await workspace.writeText(absPath, original);
+				} catch {
+					// best-effort restore; surface the original failure
+				}
+			}
+		}
+		throw err;
 	}
 
 	return results;
@@ -834,8 +903,12 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Preflight failed before mutating files.\n${err.message ?? String(err)}`);
 			}
 
-			// Apply for real.
-			const results = await applyClassicEdits(edits, createRealWorkspace(pi), ctx.cwd, signal, { collectDiff: true });
+			// Apply for real. `rollbackOnError` restores any file we already
+			// wrote if a later file in the batch fails mid-write.
+			const results = await applyClassicEdits(edits, createRealWorkspace(pi), ctx.cwd, signal, {
+				collectDiff: true,
+				rollbackOnError: true,
+			});
 
 			if (results.length === 1) {
 				const r = results[0];

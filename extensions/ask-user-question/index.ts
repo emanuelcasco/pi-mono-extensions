@@ -214,7 +214,20 @@ Use this tool when you need user input to proceed — for clarifying requirement
 				};
 				const editor = new Editor(tui, editorTheme);
 
-				// ── Helpers ──────────────────────────────────────────────
+				function getNextTab(): number {
+					if (currentTab < questions.length - 1) {
+						return currentTab + 1;
+					}
+					return questions.length; // Submit tab
+				}
+
+				function advanceTab() {
+					if (!(questions.length > 1)) {
+						finishSubmit(false);
+					} else {
+						switchTab(getNextTab());
+					}
+				}
 
 				function refresh() {
 					cachedLines = undefined;
@@ -223,6 +236,21 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 				function curQ(): NormalizedQuestion | undefined {
 					return questions[currentTab];
+				}
+
+				/** Save "Other" editor text to the appropriate answer store and exit otherMode. */
+				function saveOtherModeText() {
+					if (!otherMode || !otherQuestionId) return;
+					const t = editor.getText().trim();
+					const oq = questions.find((q) => q.id === otherQuestionId);
+					if (oq?.type === "radio" && t) {
+						radioAnswers.set(oq.id, { value: t, label: t, wasCustom: true });
+					} else if (oq?.type === "checkbox" && t) {
+						checkCustom.set(oq.id, t);
+					}
+					otherMode = false;
+					otherQuestionId = null;
+					editor.setText("");
 				}
 
 				/** Total selectable rows for the current question */
@@ -314,29 +342,23 @@ Use this tool when you need user input to proceed — for clarifying requirement
 						otherQuestionId = null;
 						editor.setText("");
 
-						// Auto-advance for single question radio
-						if (!isMulti && q?.type === "radio") {
-							finishSubmit(false);
-							return;
-						}
-						refresh();
+						// Auto-advance
+						advanceTab();
 						return;
 					}
 
-					// Text question submit
+					// Text question submit (fallback — Enter is normally intercepted in handleInput
+					// before reaching the editor, but handle it here defensively using `value`
+					// since editor state is already cleared by the time onSubmit fires)
 					const q = curQ();
 					if (q?.type === "text") {
-						saveEditorText();
-						if (!isMulti) {
-							finishSubmit(false);
-							return;
-						}
-						// Advance to next
-						if (currentTab < questions.length - 1) {
-							switchTab(currentTab + 1);
+						const trimmedValue = value.trim();
+						if (trimmedValue) {
+							textAnswers.set(q.id, trimmedValue);
 						} else {
-							switchTab(questions.length); // Submit tab
+							textAnswers.delete(q.id);
 						}
+						advanceTab();
 					}
 				};
 
@@ -352,6 +374,18 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							refresh();
 							return;
 						}
+						// Enter: capture text directly from editor (before it clears itself) and advance
+						if (matchesKey(data, Key.enter)) {
+							saveOtherModeText();
+							advanceTab();
+							return;
+						}
+						// Tab navigation in multi-question forms: save text and switch tab
+						if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) {
+							saveOtherModeText();
+							switchTab(currentTab + (matchesKey(data, Key.shift("tab")) ? -1 : 1));
+							return;
+						}
 						editor.handleInput(data);
 						refresh();
 						return;
@@ -360,6 +394,12 @@ Use this tool when you need user input to proceed — for clarifying requirement
 					// Text question — route most input to editor
 					const q = curQ();
 					if (q?.type === "text") {
+						// Enter: save text (editor still has content here) and advance
+						if (matchesKey(data, Key.enter)) {
+							saveEditorText();
+							advanceTab();
+							return;
+						}
 						// Tab navigation still works
 						if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) {
 							saveEditorText();
@@ -444,16 +484,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 						const opt = q.options[cursorIdx];
 						if (opt) {
 							radioAnswers.set(q.id, { value: opt.value, label: opt.label, wasCustom: false });
-							if (!isMulti) {
-								finishSubmit(false);
-								return;
-							}
-							// Auto-advance
-							if (currentTab < questions.length - 1) {
-								switchTab(currentTab + 1);
-							} else {
-								switchTab(questions.length); // Submit tab
-							}
+							advanceTab();
 						}
 						return;
 					}
@@ -481,15 +512,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 					// Checkbox: Enter submits (single) or advances (multi)
 					if (q.type === "checkbox" && matchesKey(data, Key.enter)) {
-						if (!isMulti) {
-							finishSubmit(false);
-							return;
-						}
-						if (currentTab < questions.length - 1) {
-							switchTab(currentTab + 1);
-						} else {
-							switchTab(questions.length);
-						}
+						advanceTab();
 						return;
 					}
 				}
