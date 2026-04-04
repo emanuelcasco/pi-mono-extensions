@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-grep",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Pi extension adding a dedicated grep tool that wraps ripgrep with built-in output limits",
   "keywords": [
     "pi-package",

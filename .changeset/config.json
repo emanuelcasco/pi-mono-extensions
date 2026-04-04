@@ -9,8 +9,10 @@
       "pi-mono-clear",
       "pi-mono-context-guard",
       "pi-mono-grep",
+      "pi-mono-loop",
       "pi-mono-multi-edit",
       "pi-mono-review",
+      "pi-mono-simplify",
       "pi-mono-status-line",
       "pi-mono-team-mode"
     ]
