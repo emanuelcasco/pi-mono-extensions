@@ -1,6 +1,6 @@
 # Multi-Edit Tool
 
-**Status:** In progress
+**Status:** Priority fixes landed (quote normalization, W_OK preflight, skip-unchanged-writes, real-pass rollback, pending-results surface). Medium-priority items still open: read-first guard, stale-mtime, ambiguity rejection, forward-pass substring check, structured errors.
 **Last updated:** 2026-04-04
 
 ## Background

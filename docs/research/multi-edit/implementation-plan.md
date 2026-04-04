@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-04  
 **File:** `extensions/multi-edit/index.ts`  
-**Status:** Ready to implement
+**Status:** Implemented (all five fixes landed 2026-04-04)
 
 ## Overview
 
