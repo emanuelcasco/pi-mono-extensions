@@ -24,6 +24,7 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 - **clear** — fresh session command (`/clear`, `Ctrl+L`)
 - **context-guard** — keeps context window lean by auto-limiting `read` calls and bounding `rg` output (`/context-guard`)
 - **grep** — ripgrep wrapper with head_limit, output_mode, and pagination (replaces raw rg in bash)
+- **loop** — run a prompt or slash command on a recurring interval (`/loop [interval] <prompt>`)
 - **multi-edit** — enhanced `edit` tool with batch edits and patch support
 - **review** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
 - **simplify** — review changed code for reuse, quality, and efficiency, then fix any issues found (`/simplify`)
@@ -65,6 +66,52 @@ The `btw` extension adds Claude Code-style `/btw` behavior to pi for asking a qu
 - This avoids pi's normal queued command behavior and makes it closer to Claude Code's side-question flow.
 - Hidden history is stored through `pi.appendEntry()` using custom session entries, so it does not affect future model context.
 
+## loop
+
+The `loop` extension adds a `/loop` command that runs a prompt or slash command on a recurring interval.
+
+Adapted from the [`/loop` skill in claude-code](https://github.com/emanuelcasco/claude-code/blob/main/src/skills/bundled/loop.ts). The original relied on Claude Code's Kairos cron system; this version uses JS timers and `pi.sendUserMessage()` instead.
+
+### Usage
+
+```text
+/loop [interval] <prompt>
+/loop list
+/loop stop
+/loop stop <id>
+```
+
+Intervals use a number followed by a unit suffix: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Defaults to `10m` when no interval is given.
+
+### Examples
+
+```text
+/loop 5m /review
+/loop 30m check the deploy
+/loop 1h run the tests and report failures
+/loop check the deploy            # defaults to 10m
+/loop check the deploy every 20m  # trailing "every" clause
+/loop list
+/loop stop loop-1
+/loop stop
+```
+
+### Behavior
+
+- The prompt is executed immediately on the first invocation, then repeated at the given interval.
+- If the agent is busy when a timer fires, the next prompt is queued as a follow-up rather than interrupting the current turn.
+- Minimum interval is 10 seconds.
+- Loops auto-expire after 7 days.
+- All timers are cleaned up on session shutdown.
+
+### Interval parsing
+
+Arguments are parsed using this priority order:
+
+1. **Leading token** — if the first word matches `\d+[smhd]` it is the interval (e.g. `5m /review`)
+2. **Trailing "every" clause** — if the input ends with `every <N><unit>`, that is the interval (e.g. `check the deploy every 20m`)
+3. **Default** — no interval found; uses `10m` and the full input is the prompt
+
 ## review
 
 The `review` extension adds both `/review` and `/review-tui`.
@@ -87,6 +134,35 @@ The `review` extension adds both `/review` and `/review-tui`.
 - `/review-tui` opens the saved review in a side pane
 - lets you approve, dismiss, or edit each comment
 - submits approved comments directly to GitHub or GitLab based on the saved review URL
+
+## simplify
+
+The `simplify` extension adds a `/simplify` command that reviews all git-changed files for code reuse, quality, and efficiency — then fixes any issues found.
+
+### Usage
+
+```text
+/simplify
+/simplify <additional focus>
+```
+
+### Behavior
+
+- Runs `git diff` (or `git diff HEAD` for staged changes) to identify what changed
+- Launches three sub-agents **in parallel**, each receiving the full diff:
+  - **Code Reuse** — flags duplicated logic and inline patterns that should use existing utilities
+  - **Code Quality** — detects redundant state, copy-paste blocks, leaky abstractions, stringly-typed code, and unnecessary comments
+  - **Efficiency** — catches N+1s, missed concurrency, hot-path bloat, memory leaks, and overly broad data fetches
+- Aggregates findings, applies fixes directly, and summarizes what changed
+- Passing extra text after `/simplify` appends an **Additional Focus** section to steer all three agents
+
+### Examples
+
+```text
+/simplify
+/simplify focus on performance and memory usage
+/simplify pay extra attention to React re-renders
+```
 
 ## clear
 

@@ -1,0 +1,29 @@
+{
+  "name": "pi-mono-simplify",
+  "version": "1.0.0",
+  "description": "Pi extension that reviews changed code for reuse, quality, and efficiency, then fixes any issues found",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-extensions.git",
+    "directory": "extensions/simplify"
+  },
+  "bugs": {
+    "url": "https://github.com/emanuelcasco/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/emanuelcasco/pi-extensions#readme"
+}
