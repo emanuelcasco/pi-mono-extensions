@@ -1,5 +1,11 @@
 # pi-mono-ask-user-question
 
+## 1.1.1
+
+### Patch Changes
+
+- chore: update all packages for consistency and include team-mode fixes
+
 ## 1.1.0
 
 ## 1.0.0
