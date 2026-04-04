@@ -1,4 +1,4 @@
-# power-pi
+# pi-mono-extensions
 
 Custom pi extensions.
 
