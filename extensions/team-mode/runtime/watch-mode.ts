@@ -15,6 +15,7 @@ const WATCH_SIGNAL_TYPES: SignalType[] = [
 	"task_assigned",
 	"task_started",
 	"task_completed",
+	"progress_update",
 	"blocked",
 	"approval_requested",
 	"approval_granted",
@@ -44,6 +45,8 @@ function watchIcon(type: SignalType): string {
 			return "○";
 		case "task_started":
 			return "⚙";
+		case "progress_update":
+			return "⟳";
 		case "team_summary":
 			return "ℹ";
 		default:
@@ -63,6 +66,8 @@ function formatWatchLine(signal: Signal): string {
 export class WatchManager {
 	private subscription: WatchSubscription | null = null;
 	private watchLines: string[] = [];
+	/** Set of signal IDs already rendered, used to deduplicate across polls. */
+	private lastSeenIds: Set<string> = new Set();
 	private readonly maxLines = 20;
 	private readonly pollIntervalMs = 3000;
 	private ctx: ExtensionContext | null = null;
@@ -85,6 +90,7 @@ export class WatchManager {
 			active: true,
 		};
 		this.watchLines = [];
+		this.lastSeenIds = new Set();
 		this.renderWidget(ctx);
 
 		const poll = async () => {
@@ -94,13 +100,25 @@ export class WatchManager {
 
 			try {
 				const signals = await this.signalManager.getSignalsSince(teamId, this.subscription.lastCursor);
-				const filtered = signals.filter((signal) => WATCH_SIGNAL_TYPES.includes(signal.type));
+				// Deduplicate: skip signals already seen (cursor is inclusive via >=).
+				const newSignals = signals.filter((s) => !this.lastSeenIds.has(s.id));
+				const filtered = newSignals.filter((signal) => WATCH_SIGNAL_TYPES.includes(signal.type));
 
 				for (const signal of filtered) {
 					this.watchLines.push(formatWatchLine(signal));
 				}
 				if (this.watchLines.length > this.maxLines) {
 					this.watchLines = this.watchLines.slice(-this.maxLines);
+				}
+
+				// Track seen signal IDs to prevent duplicates on next poll.
+				for (const s of newSignals) {
+					this.lastSeenIds.add(s.id);
+				}
+				// Keep the set from growing unbounded — only retain the last 200 IDs.
+				if (this.lastSeenIds.size > 200) {
+					const ids = [...this.lastSeenIds];
+					this.lastSeenIds = new Set(ids.slice(-100));
 				}
 
 				const latest = signals.at(-1)?.timestamp;
@@ -137,6 +155,7 @@ export class WatchManager {
 		}
 		this.subscription = null;
 		this.watchLines = [];
+		this.lastSeenIds = new Set();
 		this.ctx = null;
 		if (ctx.hasUI) {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
@@ -157,6 +176,7 @@ export class WatchManager {
 		}
 		this.subscription = null;
 		this.watchLines = [];
+		this.lastSeenIds = new Set();
 		if (this.ctx?.hasUI) {
 			this.ctx.ui.setWidget(WIDGET_ID, undefined);
 		}

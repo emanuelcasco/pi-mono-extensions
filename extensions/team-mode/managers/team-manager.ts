@@ -184,11 +184,12 @@ export class TeamManager {
 	 * `team.json`, `tasks.json`, `signals.ndjson`, and `approvals.json`.
 	 */
 	async getTeamSummary(teamId: string): Promise<TeamSummary> {
-		const [team, tasks, approvals, teammateProcesses] = await Promise.all([
+		const [team, tasks, approvals, teammateProcesses, allSignals] = await Promise.all([
 			this.store.loadTeam(teamId),
 			this.store.loadTasks(teamId),
 			this.store.loadApprovals(teamId),
 			this.store.loadAllTeammateProcesses(teamId),
+			this.store.loadSignals(teamId),
 		]);
 
 		if (!team) throw new Error(`Team not found: ${teamId}`);
@@ -232,6 +233,27 @@ export class TeamManager {
 				(t) => t.owner === role && t.status !== "cancelled",
 			);
 
+			// Compute last progress age from signal log for running teammates.
+			let lastProgressAge: string | undefined;
+			if (process?.state === "running") {
+				const progressSignals = allSignals.filter(
+					(s) =>
+						s.source === role &&
+						(s.type === "progress_update" || s.type === "task_started"),
+				);
+				const lastSig = progressSignals.at(-1);
+				if (lastSig) {
+					const ageMs = Date.now() - Date.parse(lastSig.timestamp);
+					if (ageMs < 60_000) {
+						lastProgressAge = `${Math.round(ageMs / 1000)}s ago`;
+					} else if (ageMs < 3_600_000) {
+						lastProgressAge = `${Math.round(ageMs / 60_000)}m ago`;
+					} else {
+						lastProgressAge = `${Math.round(ageMs / 3_600_000)}h ago`;
+					}
+				}
+			}
+
 			return {
 				name: role,
 				status: process?.state === "running" ? "in_progress" : activeTask?.status ?? (anyTask ? "idle" : "not_started"),
@@ -243,6 +265,7 @@ export class TeamManager {
 					: anyTask
 						? `Last: ${anyTask.title}`
 						: "No tasks yet",
+				lastProgressAge,
 			};
 		});
 
@@ -485,6 +508,28 @@ export class TeamManager {
 			(process?.state === "running" ? "in_progress" : currentTask?.status) ??
 			(roleTasks.length > 0 ? "idle" : "not_started");
 
+		// Compute last progress age from signal log.
+		let lastProgressAge: string | undefined;
+		if (process?.state === "running") {
+			const allSignals = await this.store.loadSignals(teamId);
+			const progressSignals = allSignals.filter(
+				(s) =>
+					s.source === role &&
+					(s.type === "progress_update" || s.type === "task_started"),
+			);
+			const lastSig = progressSignals.at(-1);
+			if (lastSig) {
+				const ageMs = Date.now() - Date.parse(lastSig.timestamp);
+				if (ageMs < 60_000) {
+					lastProgressAge = `${Math.round(ageMs / 1000)}s ago`;
+				} else if (ageMs < 3_600_000) {
+					lastProgressAge = `${Math.round(ageMs / 60_000)}m ago`;
+				} else {
+					lastProgressAge = `${Math.round(ageMs / 3_600_000)}h ago`;
+				}
+			}
+		}
+
 		return {
 			teamId,
 			name: role,
@@ -496,6 +541,7 @@ export class TeamManager {
 			artifacts,
 			signalsSinceLastCheck: roleSignalCount,
 			updatedAt: new Date().toISOString(),
+			lastProgressAge,
 		};
 	}
 }

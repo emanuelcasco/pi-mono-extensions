@@ -1226,6 +1226,13 @@ export default function (pi: ExtensionAPI): void {
 			managers.watchManager.cleanup();
 		}
 		initManagers(ctx.cwd);
+		// Wire up the status-change callback so the widget refreshes when a
+		// team completes, fails, or stops in the background (outside an agent turn).
+		if (managers) {
+			managers.leaderRuntime.onStatusChange = () => {
+				void refreshWidget(ctx);
+			};
+		}
 		// Fix #1: teammate subprocesses must never spawn their own leader instances.
 		// They set PI_TEAM_SUBPROCESS=1 in their env (see spawnPiJsonMode).
 		if (!process.env.PI_TEAM_SUBPROCESS && managers) {
@@ -1248,6 +1255,12 @@ export default function (pi: ExtensionAPI): void {
 			managers.watchManager.cleanup();
 		}
 		initManagers(ctx.cwd);
+		// Wire up the status-change callback for the new session context.
+		if (managers) {
+			managers.leaderRuntime.onStatusChange = () => {
+				void refreshWidget(ctx);
+			};
+		}
 		await refreshWidget(ctx);
 	});
 

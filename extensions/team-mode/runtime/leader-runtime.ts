@@ -90,6 +90,10 @@ type ActiveLeader = {
 type ActiveTeammate = {
   proc: ChildProcess;
   abortController: AbortController;
+  /** Timer that emits a heartbeat signal when the teammate has been quiet too long. */
+  heartbeatInterval?: ReturnType<typeof setInterval>;
+  /** Timestamp of the last progress/heartbeat signal emitted for this teammate. */
+  lastProgressAt: number;
 };
 
 type ParsedHandoff = {
@@ -126,12 +130,32 @@ async function writePromptToTempFile(
 
 type PiProcessResult = { output: string; exitCode: number | null };
 
+/** Callback fired when the subprocess reports intermediate progress. */
+type ProgressCallback = (event: PiProgressEvent) => void;
+
+/** Structured progress extracted from pi JSON mode events. */
+type PiProgressEvent = {
+  type: "tool_start" | "tool_end" | "turn_end";
+  toolName?: string;
+  toolArgs?: unknown;
+  /** For tool_end: was this an error result? */
+  isError?: boolean;
+  /** For tool_end: truncated result preview. */
+  resultPreview?: string;
+};
+
 /**
  * Collect the final assistant text from a pi subprocess running in JSON mode.
  * Handles buffered line splitting and pi JSON event parsing.
- * Resolves when the process closes with the output text and exit code.
+ *
+ * When `onProgress` is provided, intermediate tool execution events and turn
+ * boundaries are forwarded so the caller can emit heartbeat / progress signals
+ * back to the team signal log.
  */
-function collectPiOutput(proc: ChildProcess): Promise<PiProcessResult> {
+function collectPiOutput(
+  proc: ChildProcess,
+  onProgress?: ProgressCallback,
+): Promise<PiProcessResult> {
   let buffer = "";
   let output = "";
 
@@ -140,11 +164,18 @@ function collectPiOutput(proc: ChildProcess): Promise<PiProcessResult> {
     try {
       const event = JSON.parse(line) as {
         type?: string;
+        toolCallId?: string;
+        toolName?: string;
+        args?: unknown;
+        result?: unknown;
+        isError?: boolean;
         message?: {
           role?: string;
           content?: Array<{ type?: string; text?: string }>;
         };
       };
+
+      // Capture final assistant output (existing behavior).
       if (event.type === "message_end" && event.message?.role === "assistant") {
         const text = (event.message.content ?? [])
           .filter((part) => part?.type === "text" && typeof part.text === "string")
@@ -152,6 +183,27 @@ function collectPiOutput(proc: ChildProcess): Promise<PiProcessResult> {
           .join("\n")
           .trim();
         if (text) output = text;
+      }
+
+      // Forward intermediate events as progress updates.
+      if (onProgress) {
+        if (event.type === "tool_execution_start" && event.toolName) {
+          onProgress({ type: "tool_start", toolName: event.toolName, toolArgs: event.args });
+        } else if (event.type === "tool_execution_end" && event.toolName) {
+          const preview = typeof event.result === "string"
+            ? event.result.slice(0, 200)
+            : event.result != null
+              ? JSON.stringify(event.result).slice(0, 200)
+              : undefined;
+          onProgress({
+            type: "tool_end",
+            toolName: event.toolName,
+            isError: event.isError,
+            resultPreview: preview,
+          });
+        } else if (event.type === "turn_end") {
+          onProgress({ type: "turn_end" });
+        }
       }
     } catch { /* ignore malformed lines */ }
   };
@@ -308,6 +360,19 @@ function parseExplicitHandoffs(
 const MAX_TASK_RETRIES = 3;
 
 /**
+ * Minimum interval (ms) between progress signals for the same teammate.
+ * Prevents flooding the signal log when a subprocess rapidly invokes tools.
+ */
+const PROGRESS_THROTTLE_MS = 15_000;
+
+/**
+ * If no progress event is received from a running subprocess for this long,
+ * a heartbeat signal is emitted so the signal log shows the teammate is still
+ * alive. Must be > PROGRESS_THROTTLE_MS.
+ */
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
  * Minimum time (ms) a task must have been `in_progress` before it can be
  * declared stalled. Prevents false positives on the same leader-cycle that
  * spawned the teammate subprocess.
@@ -332,6 +397,14 @@ export class LeaderRuntime {
    *  cycles and prevent overlapping read-modify-write from the poll interval
    *  and from teammate-completion handlers firing concurrently. */
   private readonly cycleRunning = new Set<string>();
+
+  /**
+   * Optional callback invoked whenever a team's status changes in the
+   * background (e.g. completion, failure). The extension wires this up to
+   * `refreshWidget` so the TUI widget stays in sync even when no agent turn
+   * is running.
+   */
+  onStatusChange?: (teamId: string) => void;
 
   constructor(
     private store: TeamStore,
@@ -479,7 +552,42 @@ export class LeaderRuntime {
     let stderr = "";
     proc.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
 
-    const resultPromise = collectPiOutput(proc);
+    // Track last progress emission to throttle signals.
+    const activeTeammate: ActiveTeammate = {
+      proc,
+      abortController: controller,
+      lastProgressAt: Date.now(),
+    };
+
+    // Progress callback: emit throttled progress_update signals from
+    // intermediate pi subprocess events (tool calls, turn boundaries).
+    const onProgress: ProgressCallback = (event) => {
+      const now = Date.now();
+      if (now - activeTeammate.lastProgressAt < PROGRESS_THROTTLE_MS) return;
+      activeTeammate.lastProgressAt = now;
+
+      let message: string;
+      if (event.type === "tool_start") {
+        message = `${roleDisplay(role)} running ${event.toolName ?? "tool"}`;
+      } else if (event.type === "tool_end") {
+        const status = event.isError ? "failed" : "completed";
+        message = `${roleDisplay(role)} ${status} ${event.toolName ?? "tool"}`;
+      } else {
+        message = `${roleDisplay(role)} completed a turn`;
+      }
+
+      // Fire-and-forget — progress signals are best-effort.
+      void this.signalManager.emit(teamId, {
+        source: role,
+        type: "progress_update",
+        severity: "info",
+        taskId,
+        message,
+        links: [],
+      });
+    };
+
+    const resultPromise = collectPiOutput(proc, onProgress);
     const startedAt = new Date().toISOString();
 
     const processState: TeammateProcess = {
@@ -506,7 +614,24 @@ export class LeaderRuntime {
       links: [],
     });
 
-    this.activeTeammates.set(key, { proc, abortController: controller });
+    // Heartbeat timer: if no progress event fires for HEARTBEAT_INTERVAL_MS,
+    // emit a heartbeat signal so the signal log shows the teammate is alive.
+    activeTeammate.heartbeatInterval = setInterval(() => {
+      const silenceMs = Date.now() - activeTeammate.lastProgressAt;
+      if (silenceMs >= HEARTBEAT_INTERVAL_MS) {
+        activeTeammate.lastProgressAt = Date.now();
+        void this.signalManager.emit(teamId, {
+          source: role,
+          type: "progress_update",
+          severity: "info",
+          taskId,
+          message: `${roleDisplay(role)} still working (heartbeat)`,
+          links: [],
+        });
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+
+    this.activeTeammates.set(key, activeTeammate);
 
     controller.signal.addEventListener(
       "abort",
@@ -516,6 +641,10 @@ export class LeaderRuntime {
 
     // Fire-and-forget: handle completion when the subprocess exits
     void resultPromise.then(async ({ output, exitCode: code }) => {
+      // Clear heartbeat timer before removing the teammate entry.
+      if (activeTeammate.heartbeatInterval) {
+        clearInterval(activeTeammate.heartbeatInterval);
+      }
       this.activeTeammates.delete(key);
       try { await rm(tempPrompt.dir, { recursive: true, force: true }); } catch { /* ignore */ }
       // Clean up git worktree if one was allocated for this teammate.
@@ -607,12 +736,16 @@ export class LeaderRuntime {
         completedAt: new Date().toISOString(),
       });
     }
+
+    // Notify the extension to refresh the widget.
+    try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
   }
 
   async stopTeammate(teamId: string, role: string): Promise<void> {
     const key = `${teamId}:${role}`;
     const active = this.activeTeammates.get(key);
     if (active) {
+      if (active.heartbeatInterval) clearInterval(active.heartbeatInterval);
       active.abortController.abort();
       this.activeTeammates.delete(key);
     }
@@ -653,6 +786,7 @@ export class LeaderRuntime {
       await this.stopTeam(teamId);
     }
     for (const [key, active] of this.activeTeammates) {
+      if (active.heartbeatInterval) clearInterval(active.heartbeatInterval);
       active.abortController.abort();
       this.activeTeammates.delete(key);
     }
@@ -926,6 +1060,20 @@ export class LeaderRuntime {
         (task) => task.status === "done" || task.status === "cancelled",
       )
     ) {
+      // Guard: re-read team status to avoid emitting duplicate completion
+      // signals when multiple leader cycles race (e.g. teammate completions
+      // triggering back-to-back cycles via resultPromise.then).
+      const freshTeam = await this.store.loadTeam(teamId);
+      if (freshTeam?.status === "completed") {
+        // Already completed by another cycle — just clean up the interval.
+        const active = this.activeLeaders.get(teamId);
+        if (active) {
+          clearInterval(active.interval);
+          this.activeLeaders.delete(teamId);
+        }
+        return;
+      }
+
       await this.teamManager.updateTeam(teamId, {
         status: "completed",
         currentPhase: "verification",
@@ -952,6 +1100,9 @@ export class LeaderRuntime {
         clearInterval(active.interval);
         this.activeLeaders.delete(teamId);
       }
+
+      // Notify the extension to refresh the widget now that status changed.
+      try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
       return;
     }
 

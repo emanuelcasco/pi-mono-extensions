@@ -268,6 +268,8 @@ export interface TeamSummary {
 		status: string;
 		currentTask?: string;
 		summary?: string;
+		/** Human-readable age since last progress/heartbeat signal. */
+		lastProgressAge?: string;
 	}>;
 	/** Unresolved task blockers. */
 	blockers: Array<{ taskId: string; owner: string; reason: string }>;
@@ -317,6 +319,12 @@ export interface TeammateSummary {
 	artifacts: string[];
 	signalsSinceLastCheck: number;
 	updatedAt: string;
+	/**
+	 * Human-readable age since the last progress_update or task_started signal
+	 * from this teammate. `undefined` if no progress signal has been emitted yet
+	 * or the teammate is not currently running.
+	 */
+	lastProgressAge?: string;
 }
 
 /** Cross-team overview shown when multiple teams are active. */

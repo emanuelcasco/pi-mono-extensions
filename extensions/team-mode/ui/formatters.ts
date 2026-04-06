@@ -170,7 +170,8 @@ export function formatTeamSummary(summary: TeamSummary): string {
 		lines.push("Active");
 		for (const t of activeTeammates) {
 			const desc = t.summary ?? t.currentTask ?? t.status;
-			lines.push(`⚙ ${t.name}: ${desc}`);
+			const progressHint = t.lastProgressAge ? ` (last update: ${t.lastProgressAge})` : "";
+			lines.push(`⚙ ${t.name}: ${desc}${progressHint}`);
 		}
 	}
 
@@ -331,6 +332,10 @@ export function formatTeammateSummary(summary: TeammateSummary): string {
 		if (t.blocker) {
 			lines.push(`Blocker: ${t.blocker}`);
 		}
+	}
+
+	if (summary.lastProgressAge) {
+		lines.push(`Last progress: ${summary.lastProgressAge}`);
 	}
 
 	if (summary.lastOutput) {

@@ -1,5 +1,11 @@
 # pi-mono-ask-user-question
 
+## 1.4.0
+
+### Minor Changes
+
+- Add teammate progress heartbeats and widget refresh improvements to team mode.
+
 ## 1.3.0
 
 ## 1.2.0
