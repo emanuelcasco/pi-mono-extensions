@@ -19,11 +19,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/emanuelcasco/pi-extensions.git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
     "directory": "extensions/ask-user-question"
   },
   "bugs": {
-    "url": "https://github.com/emanuelcasco/pi-extensions/issues"
+    "url": "https://github.com/emanuelcasco/pi-mono-extensions/issues"
   },
-  "homepage": "https://github.com/emanuelcasco/pi-extensions#readme"
+  "homepage": "https://github.com/emanuelcasco/pi-mono-extensions#readme"
 }

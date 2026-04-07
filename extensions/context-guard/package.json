@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/emanuelcasco/pi-extensions.git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
     "directory": "extensions/context-guard"
   }
 }
