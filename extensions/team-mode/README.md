@@ -328,9 +328,14 @@ Notable characteristics:
 - The **leader runtime is in-process orchestration logic** plus teammate subprocess spawning.
 - Teammates run as real isolated pi subprocesses.
 - Watch mode is **polling-based**, not push-stream based.
-- Approval state exists and can be user-controlled, but approval-plan generation is still simple.
+- Approval state exists and can be user-controlled, but the runtime does not yet drive a full approval-request workflow automatically.
 - Worktree isolation is not yet fully automated for every teammate role.
 - The leader bootstraps tasks from the team roster using generic task patterns.
+- Mailbox messages can store attachment paths, but attachment references are not yet injected into downstream teammate prompt context.
+- Multi-repo execution is still biased toward `repoRoots[0]` in several runtime paths.
+- Stop/resume semantics are not fully aligned yet: `TeamStatus` includes `paused`, but `stopTeam()` currently marks teams as `cancelled`.
+
+For a full implementation-vs-vision review, see [TEAM_MODE_VISION_REVIEW.md](./TEAM_MODE_VISION_REVIEW.md).
 
 ## File Layout
 

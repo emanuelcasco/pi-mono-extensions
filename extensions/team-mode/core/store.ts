@@ -35,21 +35,44 @@ import type {
 /** Per-prefix monotonic counters, reset each process lifetime. */
 const idCounters = new Map<string, number>();
 
+function toIdSlug(value: string): string {
+	const slug = value
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 48);
+
+	return slug || "team";
+}
+
+function formatTimestamp(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	const hours = String(date.getHours()).padStart(2, "0");
+	const minutes = String(date.getMinutes()).padStart(2, "0");
+	const seconds = String(date.getSeconds()).padStart(2, "0");
+
+	return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
 /**
- * Generate a short, human-readable ID like `team-20260403-001` or `sig-042`.
+ * Generate a short, human-readable ID like `billing-fix-20260403-142530` or `sig-042`.
  *
  * @param prefix  Short category label (e.g. `"team"`, `"task"`, `"sig"`, `"msg"`)
+ * @param seed    Optional descriptive value used for team IDs
  * @returns       Unique string ID
  */
-export function generateId(prefix: string): string {
+export function generateId(prefix: string, seed?: string): string {
 	const count = (idCounters.get(prefix) ?? 0) + 1;
 	idCounters.set(prefix, count);
 	const seq = String(count).padStart(3, "0");
 
-	// For teams, include a date component to make IDs meaningful at a glance.
+	// For teams, use a descriptive slug plus a timestamp to avoid collisions
+	// with finished runs that reuse the same name.
 	if (prefix === "team") {
-		const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-		return `${prefix}-${date}-${seq}`;
+		return `${toIdSlug(seed ?? prefix)}-${formatTimestamp(new Date())}`;
 	}
 
 	return `${prefix}-${seq}`;
