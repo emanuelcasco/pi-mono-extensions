@@ -2,7 +2,9 @@
 
 A pi extension that replaces the built-in `edit` tool with a more powerful version that supports **batch edits** across multiple files and **Codex-style patch payloads** — all validated against a virtual filesystem before any real changes are written.
 
-**Source:** [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff)
+## Origins
+
+Initially derived from [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff)'s `pi-extensions/multi-edit.ts`. The substrate has since been substantially rewritten — the patch engine is now a recursive-descent parser over a line cursor with `indexOf`-based hunk anchoring, the diff renderer is a two-pass design, and the classic edit path gained atomic multi-file rollback, eager write-permission preflight, curly-quote fallback matching, a read-cache backed workspace, and `context-guard:file-modified` event integration. Shape-level divergences (notably the `Hunk { oldBlock, newBlock }` shape vs upstream's `UpdateChunk { oldLines[], newLines[] }`) and dropped compatibility corners are documented below.
 
 ## Overview
 
@@ -82,26 +84,44 @@ Pass a `patch` string delimited by `*** Begin Patch` / `*** End Patch`. This for
 
 > **Note:** `*** Move to:` (rename) operations are not supported and will throw an error.
 
+#### Codex apply_patch compatibility
+
+The patch engine implements a pragmatic subset of the Codex `apply_patch` format. The following edge cases are intentionally **not** supported and raise a parse error instead of degrading silently:
+
+| Feature                           | Status    | Workaround                                                        |
+| --------------------------------- | --------- | ----------------------------------------------------------------- |
+| `@@` hunk header                  | Required  | Every hunk inside an `*** Update File:` block must start with `@@` |
+| Whitespace-tolerant hunk matching | Dropped   | Hunks are matched via exact `indexOf` — emit clean context lines   |
+| Unicode-normalized hunk matching  | Dropped   | Normalize curly quotes / dashes in the patch before sending       |
+| `*** End of File` sentinel hunks  | Dropped   | Use a normal hunk anchored on the last real line                  |
+| `*** Move to:` rename             | Rejected  | Emit an Add + Delete pair instead                                 |
+
+These restrictions make the parser simpler and more predictable at the cost of tolerance for malformed or loosely-formatted patches. The classic `multi` mode remains fuzzier (see "Quote-Normalized Matching") and is the recommended path when you want forgiveness.
+
 ## Key Features
 
 ### Preflight Validation
 
-Before writing a single byte to disk, every edit is applied to a virtual (in-memory) snapshot of the affected files. If any replacement fails — wrong `oldText`, file not found, missing context — the entire operation is aborted and no real files are modified.
+Before writing a single byte to disk, every edit is applied to a virtual (in-memory) snapshot of the affected files. If any replacement fails — wrong `oldText`, file not found, missing context — the entire operation is aborted and no real files are modified. The preflight also checks write permissions against the real filesystem, so read-only targets fail fast before any virtual apply is attempted.
+
+### Atomic Multi-File Rollback
+
+When a classic batch spans multiple files, the applier snapshots each file's pre-edit content before writing it. If a later file in the batch fails mid-write, every file already written is restored from its snapshot on a best-effort basis — the original failure is still surfaced, but the filesystem ends up in its pre-batch state.
 
 ### Positional Ordering for Same-File Edits
 
 When multiple edits target the same file, they are automatically sorted by their position in the **original** file content (top-to-bottom). This ensures the forward-search cursor works correctly regardless of the order the model listed the edits.
 
-### Fuzzy Matching for Patch Hunks
+### Quote-Normalized Matching for Classic Edits
 
-Patch `@@` hunks are matched against file content using a four-pass escalating strategy:
+Classic `oldText` lookups escalate through an ordered list of normalizer passes. The first pass that locates the transformed text wins:
 
 1. **Exact** — character-for-character match
-2. **Trimmed trailing whitespace** — `trimEnd()` on both sides
-3. **Fully trimmed** — `trim()` on both sides
-4. **Normalized Unicode** — smart quotes, en/em dashes, non-breaking spaces, etc. are canonicalized before comparison
+2. **Curly → straight quotes** — `'` / `'` / `"` / `"` in the model's `oldText` are rewritten to ASCII before the second search
 
-This makes patches resilient to minor formatting differences introduced by editors or copy-paste.
+This catches the most frequent class of preflight failures, where a model was trained on prose that carries curly quotes but the target file contains plain ASCII. Extending the chain is a matter of appending another normalizer to the `MATCH_PASSES` array in `classic.ts`.
+
+Patch `@@` hunks do **not** fall back through this chain — they require exact matches (see "Codex apply_patch compatibility" below).
 
 ### Redundant Edit Detection
 
@@ -154,7 +174,3 @@ In `multi` mode, items that omit `path` automatically inherit the top-level `pat
 | `patch` context line not found                                       | Preflight throws; no files are modified                |
 | File does not exist or is not writable                               | Throws before any mutations                            |
 | Patch `*** Move to:` operation                                       | Throws — not supported                                 |
-
-## Source
-
-This extension was authored by [@mitsuhiko](https://github.com/mitsuhiko) and is part of the [agent-stuff](https://github.com/mitsuhiko/agent-stuff) collection of pi extensions.
