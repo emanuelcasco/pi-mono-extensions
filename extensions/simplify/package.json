@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-simplify",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Pi extension that reviews changed code for reuse, quality, and efficiency, then fixes any issues found",
   "keywords": [
     "pi-package",

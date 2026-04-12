@@ -1,5 +1,15 @@
 # pi-mono-loop
 
+## 2.0.0
+
+### Major Changes
+
+- ### Shared skills, theme, and grep removal
+
+  - Add the shared `pair`, `recap`, and `ship` skills to the monorepo bundle.
+  - Add the `catppuccin-mocha` theme.
+  - Remove the deprecated `pi-mono-grep` extension in favor of Pi's built-in `grep` tool.
+
 ## 1.5.0
 
 ### Minor Changes

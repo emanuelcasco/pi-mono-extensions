@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-review",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Pi extension for reviewing GitHub PRs and GitLab MRs",
   "keywords": [
     "pi-package",
