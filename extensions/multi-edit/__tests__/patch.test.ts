@@ -238,3 +238,50 @@ describe("applyPatchOperations — multi-op", () => {
 		});
 	});
 });
+
+describe("applyPatchOperations — trimEnd hunk matching", () => {
+	test("matches hunk when file has trailing spaces on context/old lines", async () => {
+		await withTmp(async (dir) => {
+			const file = join(dir, "ws.ts");
+			// File has trailing spaces on some lines.
+			await writeFile(file, "keep  \nold  \ntail\n");
+
+			// Patch references the lines without trailing spaces (model generated clean).
+			const patch = [
+				"*** Begin Patch",
+				"*** Update File: ws.ts",
+				"@@",
+				" keep",
+				"-old",
+				"+new",
+				"*** End Patch",
+			].join("\n");
+			const ops = parsePatch(patch);
+			await applyPatchOperations(ops, createRealWorkspace(stubPi), dir);
+			// The matched block (including context line "keep  ") is replaced by
+			// newBlock ("keep\nnew") — trailing spaces on the context line are
+			// cleaned as a side effect of the replacement.
+			assert.equal(await readFile(file, "utf-8"), "keep\nnew\ntail\n");
+		});
+	});
+
+	test("matches context prefix with trailing whitespace difference", async () => {
+		await withTmp(async (dir) => {
+			const file = join(dir, "ctx.ts");
+			await writeFile(file, "function foo() {  \n  return 1;\n}\n");
+
+			// Context line doesn't have the trailing spaces the file has.
+			const patch = [
+				"*** Begin Patch",
+				"*** Update File: ctx.ts",
+				"@@ function foo() {",
+				"-  return 1;",
+				"+  return 2;",
+				"*** End Patch",
+			].join("\n");
+			const ops = parsePatch(patch);
+			await applyPatchOperations(ops, createRealWorkspace(stubPi), dir);
+			assert.equal(await readFile(file, "utf-8"), "function foo() {  \n  return 2;\n}\n");
+		});
+	});
+});

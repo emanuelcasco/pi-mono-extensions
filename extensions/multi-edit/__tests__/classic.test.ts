@@ -208,3 +208,70 @@ describe("applyClassicEdits — read-only file", () => {
 		});
 	});
 });
+
+describe("applyClassicEdits — trailing whitespace tolerance", () => {
+	test("matches oldText with trailing spaces when file has none", async () => {
+		await withTmp(async (dir) => {
+			const file = join(dir, "ws.ts");
+			await writeFile(file, "const x = 1;\nconst y = 2;\n");
+
+			const edits: EditItem[] = [
+				{ path: "ws.ts", oldText: "const x = 1;  \nconst y = 2;  \n", newText: "const x = 10;\nconst y = 20;\n" },
+			];
+			const results = await applyClassicEdits(edits, makeWorkspace(), dir);
+			assert.equal(results[0].success, true);
+			assert.equal(await readFile(file, "utf-8"), "const x = 10;\nconst y = 20;\n");
+		});
+	});
+
+	test("findActualString falls back to trimEnd when exact and quote passes miss", () => {
+		const content = "line one\nline two\n";
+		const match = findActualString(content, "line one  \nline two  \n", 0);
+		assert.ok(match, "should find a match via trimEnd normalization");
+		assert.equal(match!.pos, 0);
+	});
+});
+
+describe("applyClassicEdits — continueOnError (partial success)", () => {
+	test("applies successful edits and records failures without aborting", async () => {
+		await withTmp(async (dir) => {
+			const file = join(dir, "partial.ts");
+			await writeFile(file, "aaa\nbbb\nccc\n");
+
+			const edits: EditItem[] = [
+				{ path: "partial.ts", oldText: "aaa", newText: "AAA" },
+				{ path: "partial.ts", oldText: "DOES_NOT_EXIST", newText: "X" },
+				{ path: "partial.ts", oldText: "ccc", newText: "CCC" },
+			];
+			const results = await applyClassicEdits(edits, makeWorkspace(), dir, undefined, {
+				continueOnError: true,
+			});
+
+			assert.equal(results[0].success, true, "first edit should succeed");
+			assert.equal(results[1].success, false, "second edit should fail");
+			assert.equal(results[2].success, true, "third edit should still succeed");
+			assert.equal(await readFile(file, "utf-8"), "AAA\nbbb\nCCC\n");
+		});
+	});
+
+	test("all-or-nothing when continueOnError is false", async () => {
+		await withTmp(async (dir) => {
+			const file = join(dir, "strict.ts");
+			await writeFile(file, "aaa\nbbb\nccc\n");
+
+			const edits: EditItem[] = [
+				{ path: "strict.ts", oldText: "aaa", newText: "AAA" },
+				{ path: "strict.ts", oldText: "DOES_NOT_EXIST", newText: "X" },
+				{ path: "strict.ts", oldText: "ccc", newText: "CCC" },
+			];
+			await assert.rejects(() =>
+				applyClassicEdits(edits, makeWorkspace(), dir, undefined, {
+					continueOnError: false,
+					rollbackOnError: true,
+				}),
+			);
+			// File should be untouched due to rollback.
+			assert.equal(await readFile(file, "utf-8"), "aaa\nbbb\nccc\n");
+		});
+	});
+});

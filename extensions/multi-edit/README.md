@@ -88,15 +88,15 @@ Pass a `patch` string delimited by `*** Begin Patch` / `*** End Patch`. This for
 
 The patch engine implements a pragmatic subset of the Codex `apply_patch` format. The following edge cases are intentionally **not** supported and raise a parse error instead of degrading silently:
 
-| Feature                           | Status    | Workaround                                                        |
-| --------------------------------- | --------- | ----------------------------------------------------------------- |
-| `@@` hunk header                  | Required  | Every hunk inside an `*** Update File:` block must start with `@@` |
-| Whitespace-tolerant hunk matching | Dropped   | Hunks are matched via exact `indexOf` — emit clean context lines   |
-| Unicode-normalized hunk matching  | Dropped   | Normalize curly quotes / dashes in the patch before sending       |
-| `*** End of File` sentinel hunks  | Dropped   | Use a normal hunk anchored on the last real line                  |
-| `*** Move to:` rename             | Rejected  | Emit an Add + Delete pair instead                                 |
+| Feature                           | Status    | Notes                                                                                     |
+| --------------------------------- | --------- | ----------------------------------------------------------------------------------------- |
+| `@@` hunk header                  | Required  | Every hunk inside an `*** Update File:` block must start with `@@`                        |
+| Trailing-whitespace tolerance     | Supported | Hunks fall back to per-line `trimEnd` matching when exact `indexOf` misses                |
+| Full trim / unicode-normalized    | Dropped   | Only `trimEnd` is supported — normalize curly quotes or dashes in the patch before sending |
+| `*** End of File` sentinel hunks  | Dropped   | Use a normal hunk anchored on the last real line                                          |
+| `*** Move to:` rename             | Rejected  | Emit an Add + Delete pair instead                                                         |
 
-These restrictions make the parser simpler and more predictable at the cost of tolerance for malformed or loosely-formatted patches. The classic `multi` mode remains fuzzier (see "Quote-Normalized Matching") and is the recommended path when you want forgiveness.
+These restrictions keep the parser simpler and more predictable than a full 4-pass fuzzy matcher while still catching the most common class of whitespace mismatch.
 
 ## Key Features
 
@@ -114,14 +114,15 @@ When multiple edits target the same file, they are automatically sorted by their
 
 ### Quote-Normalized Matching for Classic Edits
 
-Classic `oldText` lookups escalate through an ordered list of normalizer passes. The first pass that locates the transformed text wins:
+Classic `oldText` lookups escalate through an ordered list of normalizer passes applied to both `oldText` and file content. The first pass that locates the transformed string wins:
 
 1. **Exact** — character-for-character match
 2. **Curly → straight quotes** — `'` / `'` / `"` / `"` in the model's `oldText` are rewritten to ASCII before the second search
+3. **Trailing whitespace tolerance** — per-line `trimEnd` on both sides catches the most frequent class of mismatch (model generates trailing spaces the file doesn't have, or vice versa)
 
-This catches the most frequent class of preflight failures, where a model was trained on prose that carries curly quotes but the target file contains plain ASCII. Extending the chain is a matter of appending another normalizer to the `MATCH_PASSES` array in `classic.ts`.
+Extending the chain is a matter of appending another normalizer to the `MATCH_PASSES` array in `classic.ts`.
 
-Patch `@@` hunks do **not** fall back through this chain — they require exact matches (see "Codex apply_patch compatibility" below).
+Patch `@@` hunks also support a `trimEnd` fallback — when the exact `indexOf` misses, the applier retries with per-line trailing-whitespace stripping on both the hunk and the file content.
 
 ### Redundant Edit Detection
 
@@ -174,3 +175,70 @@ In `multi` mode, items that omit `path` automatically inherit the top-level `pat
 | `patch` context line not found                                       | Preflight throws; no files are modified                |
 | File does not exist or is not writable                               | Throws before any mutations                            |
 | Patch `*** Move to:` operation                                       | Throws — not supported                                 |
+
+## Performance vs Base Edit
+
+Measured across 38 real pi sessions (81 JSONL files) using `npm run bench -- --from-session --all`. Sessions are auto-classified: **base** = only single `path/oldText/newText` calls; **multi-edit** = uses `multi` or `patch` at least once.
+
+### Headline Numbers
+
+| Metric              |  Base | Multi-Edit |       Delta |
+| ------------------- | ----: | ---------: | ----------: |
+| Sessions            |    22 |         16 |             |
+| Tool calls          |    92 |        137 |             |
+| Logical edits       |    92 |        247 |             |
+| Edits / tool call   |  1.00 |       1.80 |       +0.80 |
+| Failure rate        |  6.5% |       6.6% |     +0.0 pp |
+| P50 duration        |  7 ms |      11 ms |             |
+| P95 duration        | 31 ms |      25 ms |             |
+| Cost / logical edit | $0.29 |      $0.17 |      -41.8% |
+| Calls saved vs base |     — |        110 | 44.5% fewer |
+
+### What the data says
+
+**Wins:**
+
+- **Cost per edit drops 42%**. Batching N edits into one tool call avoids N-1 round-trips of assistant→tool→assistant, each of which carries the full conversation context as input tokens. At $0.17 vs $0.29 per logical edit, multi-edit pays for itself on any batch ≥ 2.
+- **44.5% fewer tool calls**. 110 hypothetical round-trips eliminated. This is time the model spends re-reading its own context, waiting for tool dispatch, and generating boilerplate tool-call framing — all wasted.
+- **P95 latency is lower** (25 ms vs 31 ms). The preflight + read cache avoids wasted disk I/O on doomed edits, and the cache deduplicates reads when multiple edits touch the same file.
+
+**Neutral / watch items:**
+
+- **P50 latency is slightly higher** (11 ms vs 7 ms). Expected: multi-edit does a full preflight pass before the real write. The delta is negligible per-edit (~2 ms extra for the safety guarantee).
+
+### Mode Breakdown (pre-v1.5.1)
+
+| Mode   | Calls |   % | Failure rate |
+| ------ | ----: | --: | -----------: |
+| single |    61 | 45% |         1.6% |
+| patch  |    41 | 30% |         9.8% |
+| multi  |    35 | 25% |        11.4% |
+
+Root-cause analysis of the 8 multi/patch failures showed: 5 were trailing-whitespace mismatches in `oldText`, 2 were batch-poisoned (1 bad edit killed 5 good siblings), and 1 was a legitimate ENOENT. Three fixes shipped in v1.5.1 to address this:
+
+1. **`trimEnd` matching for classic edits** — `findActualString` now tries a per-line `trimEnd` normalization pass on both `oldText` and file content when exact and curly-quote passes miss. Catches the dominant failure class (model generates trailing spaces the file doesn't have, or vice versa).
+2. **Partial success for multi batches** — when one edit in a batch can't be found, the remaining edits are still applied. Failures are reported individually instead of aborting the entire batch. A 6-edit call with 1 bad edit now produces 5 successes + 1 failure instead of 0 + 6.
+3. **`trimEnd` fallback for patch hunks** — the patch applier now falls back to per-line `trimEnd` matching when exact `indexOf` misses, using the same strategy for both `oldBlock` and `contextPrefix` anchors.
+
+**Projected impact:** multi mode failure rate ~11.4% → ~3%, patch mode ~9.8% → ~2.5%. The batch-poisoning fix alone eliminates the inflated failure count — previously a single bad edit in a 6-edit batch counted as 1 failed tool call; now it counts as 1 failed edit + 5 successes.
+
+Multi-edit sessions still use `single` mode 45% of the time — room to push batch adoption via prompt guidelines.
+
+### Running the Benchmark & Analysis
+
+The `benchmark-edits` tool provides two modes: a **synthetic benchmark** that measures engine latency on controlled scenarios, and a **session analysis** mode that parses historical pi session JSONL logs to compute cost, token, failure, and throughput metrics.
+
+```bash
+# Synthetic benchmark — built-in scenarios
+npm run bench
+
+# Custom scenario file (JSON array — see header comment in benchmark-edits.ts)
+npm run bench -- scenarios.json
+
+# Session analysis — all pi sessions
+npm run bench -- --from-session --all
+
+# Specific session files or directories
+npm run bench -- --from-session ~/.pi/agent/sessions/<project-dir>/
+npm run bench -- --from-session session1.jsonl session2.jsonl
+```

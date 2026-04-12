@@ -8,7 +8,8 @@
     "pi-extension"
   ],
   "scripts": {
-    "test": "npx tsx --test '__tests__/**/*.test.ts'"
+    "test": "npx tsx --test '__tests__/**/*.test.ts'",
+    "bench": "npx tsx benchmark-edits.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
