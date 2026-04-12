@@ -85,6 +85,7 @@ export function generateId(prefix: string, seed?: string): string {
 const FILE_TEAM = "team.json";
 const FILE_TASKS = "tasks.json";
 const FILE_SIGNALS = "signals.ndjson";
+const FILE_SIGNALS_COMPACTED = "signals-compacted.ndjson";
 const FILE_MAILBOX = "mailbox.ndjson";
 const FILE_APPROVALS = "approvals.json";
 const FILE_SUMMARY = "summary.md";
@@ -314,6 +315,42 @@ export class TeamStore {
 	 */
 	async loadSignals(teamId: string): Promise<Signal[]> {
 		return readNdjson<Signal>(join(this.getTeamDir(teamId), FILE_SIGNALS));
+	}
+
+	/**
+	 * Persist a compacted signal view to `signals-compacted.ndjson`.
+	 * This preserves the raw append-only log while giving readers a smaller,
+	 * summarised view for context building and status aggregation.
+	 */
+	async saveCompactedSignals(teamId: string, signals: Signal[]): Promise<void> {
+		const dir = this.getTeamDir(teamId);
+		await mkdir(dir, { recursive: true });
+		const filePath = join(dir, FILE_SIGNALS_COMPACTED);
+		const content = signals.map((signal) => JSON.stringify(signal)).join("\n");
+		await writeFile(filePath, content.length > 0 ? `${content}\n` : "", "utf8");
+	}
+
+	/**
+	 * Load the compacted signal view for a team.
+	 * Returns `null` when no compacted file exists yet.
+	 */
+	async loadCompactedSignals(teamId: string): Promise<Signal[] | null> {
+		const raw = await readText(join(this.getTeamDir(teamId), FILE_SIGNALS_COMPACTED));
+		if (raw === null) return null;
+		return raw
+			.split("\n")
+			.filter((line) => line.trim().length > 0)
+			.map((line) => JSON.parse(line) as Signal);
+	}
+
+	/**
+	 * Load the preferred signal view for context consumers.
+	 * Uses the compacted log when available, otherwise falls back to the raw log.
+	 */
+	async loadContextSignals(teamId: string): Promise<Signal[]> {
+		const compacted = await this.loadCompactedSignals(teamId);
+		if (compacted) return compacted;
+		return this.loadSignals(teamId);
 	}
 
 	/**

@@ -22,6 +22,10 @@ import { SignalManager } from "./managers/signal-manager.js";
 import { MailboxManager } from "./managers/mailbox-manager.js";
 import { ApprovalManager } from "./managers/approval-manager.js";
 import {
+	formatCompactSignals,
+	formatCompactTaskBoard,
+	formatCompactTeamSummary,
+	formatCompactTeammateSummary,
 	formatDashboard,
 	formatSignals,
 	formatTaskBoard,
@@ -37,7 +41,7 @@ import { WatchManager } from "./runtime/watch-mode.js";
 // ---------------------------------------------------------------------------
 
 const TEAM_SUBCOMMANDS = [
-	{ value: "create", label: "create", description: "Create a new team", needsTeamId: false },
+	{ value: "list", label: "list", description: "Show team dashboard", needsTeamId: false },
 	{ value: "status", label: "status", description: "Show team summary", needsTeamId: true },
 	{ value: "tasks", label: "tasks", description: "Show task board", needsTeamId: true },
 	{ value: "signals", label: "signals", description: "Show recent signals", needsTeamId: true },
@@ -122,6 +126,238 @@ async function refreshWidget(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
+type TeamQueryParams = {
+	action: "status" | "tasks" | "signals" | "teammate" | "ask";
+	teamId: string;
+	taskStatus?: import("./core/types.js").TaskStatus;
+	sinceLastCheck?: boolean;
+	signalType?: string;
+	name?: string;
+	target?: string;
+	question?: string;
+	verbose?: boolean;
+};
+
+function buildCompactAskResponse(
+	target: string,
+	content: string[],
+	forwarded = true,
+): string {
+	const lines = [
+		`${target}: ${content[0] ?? "No current signal."}`,
+		...(content[1] ? [content[1]] : []),
+	];
+	if (forwarded) {
+		lines.push(`Forwarded to ${target}'s mailbox.`);
+	}
+	return lines.join("\n");
+}
+
+async function answerTeamQuestion(params: TeamQueryParams): Promise<string> {
+	const { teamManager, mailboxManager } = getManagers();
+	const team = await teamManager.getTeam(params.teamId);
+	if (!team) {
+		throw new Error(`Team not found: ${params.teamId}`);
+	}
+
+	const target = params.target;
+	const question = params.question;
+	if (!target || !question) {
+		throw new Error("team_query action=ask requires target and question");
+	}
+
+	if (target === "leader") {
+		const summary = await teamManager.getTeamSummary(params.teamId);
+		const compact = [
+			`${summary.progress.done}/${summary.progress.total} done in ${summary.currentPhase ?? "unknown"} phase`,
+			summary.blockers.length > 0
+				? `Blockers: ${summary.blockers.map((blocker) => blocker.reason).join("; ")}`
+				: `Next: ${summary.nextMilestone ?? "continue execution"}`,
+		];
+
+		try {
+			await mailboxManager.send(params.teamId, {
+				from: "user",
+				to: target,
+				type: "question",
+				message: question,
+				attachments: [],
+			});
+		} catch {
+			// best effort only
+		}
+
+		if (!params.verbose) {
+			return buildCompactAskResponse(target, compact);
+		}
+
+		const lines = [
+			`Question for leader in team ${team.name} (${params.teamId}):`,
+			`"${question}"`,
+			"",
+			"**Answer from current team state:**",
+			`Phase: ${summary.currentPhase ?? "unknown"}`,
+			`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`,
+		];
+		if (summary.blockers.length > 0) {
+			lines.push("Blockers:");
+			for (const blocker of summary.blockers) {
+				lines.push(`  - ${blocker.taskId} (${blocker.owner}): ${blocker.reason}`);
+			}
+		} else {
+			lines.push("Blockers: none");
+		}
+		if (summary.approvalsPending.length > 0) {
+			lines.push("Approvals pending:");
+			for (const approval of summary.approvalsPending) {
+				lines.push(`  - ${approval.taskId} (${approval.owner}): ${approval.artifact}`);
+			}
+		}
+		const activeTeammates = summary.teammates.filter((teammate) => teammate.status === "in_progress");
+		if (activeTeammates.length > 0) {
+			lines.push("Active teammates:");
+			for (const teammate of activeTeammates) {
+				lines.push(`  - ${teammate.name}: ${teammate.summary ?? teammate.currentTask ?? "running"}`);
+			}
+		}
+		if (summary.nextMilestone) {
+			lines.push(`Next milestone: ${summary.nextMilestone}`);
+		}
+		lines.push("", `Note: question forwarded to ${target}'s mailbox for explicit follow-up.`);
+		return lines.join("\n");
+	}
+
+	const teammate = await teamManager.getTeammateSummary(params.teamId, target);
+	if (!teammate) {
+		throw new Error(
+			`Teammate "${target}" not found in team "${params.teamId}". Available roles: ${team.teammates.join(", ")}`,
+		);
+	}
+
+	try {
+		await mailboxManager.send(params.teamId, {
+			from: "user",
+			to: target,
+			type: "question",
+			message: question,
+			attachments: [],
+		});
+	} catch {
+		// best effort only
+	}
+
+	const compact = [
+		teammate.currentTask
+			? `${teammate.status} on ${teammate.currentTask.id} — ${teammate.currentTask.title}`
+			: `${teammate.status} with no active task`,
+		teammate.currentTask?.blocker
+			? `Blocker: ${teammate.currentTask.blocker}`
+			: teammate.lastOutput
+				? `Last output: ${teammate.lastOutput.trim().slice(0, 120)}`
+				: "No fresh output yet.",
+	];
+
+	if (!params.verbose) {
+		return buildCompactAskResponse(target, compact);
+	}
+
+	const lines = [
+		`Question for ${target} in team ${team.name} (${params.teamId}):`,
+		`"${question}"`,
+		"",
+		`**Answer from ${target}'s current state:**`,
+		`Status: ${teammate.status}`,
+	];
+	if (teammate.currentTask) {
+		lines.push(`Current task: ${teammate.currentTask.id} — ${teammate.currentTask.title} (${teammate.currentTask.status})`);
+		if (teammate.currentTask.blocker) {
+			lines.push(`Blocker: ${teammate.currentTask.blocker}`);
+		}
+	} else {
+		lines.push("Current task: none assigned");
+	}
+	if (teammate.worktree) {
+		lines.push(`Worktree: ${teammate.worktree}`);
+	}
+	if (teammate.artifacts.length > 0) {
+		lines.push(`Artifacts: ${teammate.artifacts.join(", ")}`);
+	}
+	if (teammate.lastOutput) {
+		const preview = teammate.lastOutput.trim().slice(0, 300);
+		lines.push("Last output preview:");
+		lines.push(preview.replace(/^/gm, "  "));
+		if (teammate.lastOutput.length > 300) lines.push("  ...");
+	}
+	lines.push("", `Note: question forwarded to ${target}'s mailbox for explicit follow-up.`);
+	return lines.join("\n");
+}
+
+async function executeTeamQuery(params: TeamQueryParams, ctx?: ExtensionContext): Promise<{ text: string; details: unknown }> {
+	const { teamManager, taskManager, signalManager } = getManagers();
+
+	switch (params.action) {
+		case "status": {
+			const summary = await teamManager.getTeamSummary(params.teamId);
+			await teamManager.markChecked(params.teamId);
+			if (ctx) await refreshWidget(ctx);
+			return {
+				text: params.verbose ? formatTeamSummary(summary) : formatCompactTeamSummary(summary),
+				details: summary,
+			};
+		}
+
+		case "tasks": {
+			const board = await taskManager.getTaskBoard(params.teamId);
+			const filtered = params.taskStatus
+				? { ...board, tasks: board.tasks.filter((task) => task.status === params.taskStatus) }
+				: board;
+			return {
+				text: params.verbose ? formatTaskBoard(filtered) : formatCompactTaskBoard(filtered),
+				details: filtered,
+			};
+		}
+
+		case "signals": {
+			const useSinceLastCheck = params.sinceLastCheck !== false;
+			let signals = useSinceLastCheck
+				? await signalManager.getSignalsSinceLastCheck(params.teamId)
+				: await signalManager.getSignals(params.teamId);
+			if (params.signalType) {
+				signals = signals.filter((signal) => signal.type === params.signalType);
+			}
+			const renderedSignals = params.verbose ? signals : signals.slice(-10);
+			return {
+				text: params.verbose ? formatSignals(renderedSignals) : formatCompactSignals(renderedSignals),
+				details: { signals, count: signals.length },
+			};
+		}
+
+		case "teammate": {
+			if (!params.name) {
+				throw new Error("team_query action=teammate requires name");
+			}
+			const summary = await teamManager.getTeammateSummary(params.teamId, params.name);
+			if (!summary) {
+				throw new Error(
+					`Teammate "${params.name}" not found in team "${params.teamId}". Check that the role name and team ID are correct.`,
+				);
+			}
+			return {
+				text: params.verbose ? formatTeammateSummary(summary) : formatCompactTeammateSummary(summary),
+				details: summary,
+			};
+		}
+
+		case "ask": {
+			const text = await answerTeamQuestion(params);
+			return {
+				text,
+				details: { teamId: params.teamId, target: params.target, question: params.question },
+			};
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Extension default export
 // ---------------------------------------------------------------------------
@@ -148,6 +384,7 @@ export default function (pi: ExtensionAPI): void {
 		promptSnippet: "Create and launch a new background team for multi-agent work",
 		promptGuidelines: [
 			"Use team_create when the user wants to start a background team for complex multi-step work",
+			"Prefer providing only the objective unless the user explicitly asked for a custom name, template, or teammate roster",
 		],
 		parameters: Type.Object({
 			objective: Type.String({ description: "What the team should accomplish" }),
@@ -215,39 +452,6 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
-	// Tool: team_status
-	// -------------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "team_status",
-		label: "Team Status",
-		description:
-			"Get a concise status summary of a running team, including progress, blockers, pending approvals, and per-teammate snapshots.",
-		promptSnippet: "Get a concise status summary of a running team",
-		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID to query" }),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { teamManager } = getManagers();
-
-			try {
-				const summary = await teamManager.getTeamSummary(params.teamId);
-				await teamManager.markChecked(params.teamId);
-				await refreshWidget(ctx);
-
-				return {
-					content: [{ type: "text", text: formatTeamSummary(summary) }],
-					details: summary,
-				};
-			} catch (err) {
-				throw new Error(
-					`Failed to get team status: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		},
-	});
-
-	// -------------------------------------------------------------------------
 	// Tool: team_list
 	// -------------------------------------------------------------------------
 
@@ -304,16 +508,25 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
-	// Tool: team_tasks
+	// Tool: team_query
 	// -------------------------------------------------------------------------
 
 	pi.registerTool({
-		name: "team_tasks",
-		label: "Team Tasks",
-		description: "Get the task board for a team, optionally filtered by status.",
+		name: "team_query",
+		label: "Query Team",
+		description:
+			"Query team state through a single compact read tool. Supports status, tasks, signals, teammate snapshots, and targeted questions.",
+		promptSnippet: "Query team status, tasks, signals, teammate snapshots, or ask a focused question",
+		promptGuidelines: [
+			"Prefer team_query over multiple separate read calls when inspecting a team",
+			"Default responses are compact; set verbose=true only when the user explicitly wants a full formatted view",
+		],
 		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID to query" }),
-			status: Type.Optional(
+			action: StringEnum(["status", "tasks", "signals", "teammate", "ask"] as const, {
+				description: "Which read operation to perform",
+			}),
+			teamId: Type.String({ description: "The team ID" }),
+			taskStatus: Type.Optional(
 				StringEnum(
 					[
 						"todo",
@@ -326,264 +539,42 @@ export default function (pi: ExtensionAPI): void {
 						"done",
 						"cancelled",
 					] as const,
-					{ description: "Filter tasks to this lifecycle status" },
+					{ description: "Optional task filter when action=tasks" },
 				),
 			),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { taskManager } = getManagers();
-
-			try {
-				const board = await taskManager.getTaskBoard(params.teamId);
-
-				// Apply optional status filter
-				const filtered =
-					params.status !== undefined
-						? {
-								...board,
-								tasks: board.tasks.filter((t) => t.status === params.status),
-							}
-						: board;
-
-				return {
-					content: [{ type: "text", text: formatTaskBoard(filtered) }],
-					details: filtered,
-				};
-			} catch (err) {
-				throw new Error(
-					`Failed to get task board: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		},
-	});
-
-	// -------------------------------------------------------------------------
-	// Tool: team_signals
-	// -------------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "team_signals",
-		label: "Team Signals",
-		description:
-			"Get signals (structured events) emitted by a team. By default returns signals since the last check-in.",
-		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID to query" }),
 			sinceLastCheck: Type.Optional(
 				Type.Boolean({
-					description:
-						"When true (default), return only signals since the last time the team was checked. Set false to return all signals.",
+					description: "When action=signals, default true returns only updates since the last check",
 				}),
 			),
-			type: Type.Optional(
-				Type.String({
-					description: "Filter to a specific signal type (e.g. 'blocked', 'approval_requested')",
-				}),
+			signalType: Type.Optional(
+				Type.String({ description: "Optional signal type filter when action=signals" }),
+			),
+			name: Type.Optional(
+				Type.String({ description: "Teammate role name when action=teammate" }),
+			),
+			target: Type.Optional(
+				Type.String({ description: "Target role or 'leader' when action=ask" }),
+			),
+			question: Type.Optional(
+				Type.String({ description: "Question text when action=ask" }),
+			),
+			verbose: Type.Optional(
+				Type.Boolean({ description: "Return the full formatted view instead of the compact default" }),
 			),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { signalManager } = getManagers();
-
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				// Default sinceLastCheck to true
-				const useSinceLastCheck = params.sinceLastCheck !== false;
-
-				let signals;
-				if (useSinceLastCheck) {
-					signals = await signalManager.getSignalsSinceLastCheck(params.teamId);
-				} else {
-					signals = await signalManager.getSignals(params.teamId);
-				}
-
-				// Apply optional type filter
-				if (params.type) {
-					signals = signals.filter((s) => s.type === params.type);
-				}
-
+				const result = await executeTeamQuery(params, ctx);
 				return {
-					content: [{ type: "text", text: formatSignals(signals) }],
-					details: { signals, count: signals.length },
+					content: [{ type: "text", text: result.text }],
+					details: result.details,
 				};
 			} catch (err) {
 				throw new Error(
-					`Failed to get signals: ${err instanceof Error ? err.message : String(err)}`,
+					`Failed to query team: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
-		},
-	});
-
-	// -------------------------------------------------------------------------
-	// Tool: team_teammate
-	// -------------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "team_teammate",
-		label: "Teammate Status",
-		description: "Get a detailed status snapshot for a specific teammate within a team.",
-		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID" }),
-			name: Type.String({ description: "The teammate role name (e.g. 'backend', 'frontend', 'researcher')" }),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { teamManager } = getManagers();
-
-			try {
-				const summary = await teamManager.getTeammateSummary(params.teamId, params.name);
-				if (!summary) {
-					throw new Error(
-						`Teammate "${params.name}" not found in team "${params.teamId}". Check that the role name and team ID are correct.`,
-					);
-				}
-
-				return {
-					content: [{ type: "text", text: formatTeammateSummary(summary) }],
-					details: summary,
-				};
-			} catch (err) {
-				throw new Error(
-					`Failed to get teammate status: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		},
-	});
-
-	// -------------------------------------------------------------------------
-	// Tool: team_ask
-	// -------------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "team_ask",
-		label: "Ask Team",
-		description:
-			"Ask the team leader or a specific teammate a question. " +
-			"Returns a synthesized answer from current team state (tasks, signals, and last output). " +
-			"The question is also forwarded to the target's mailbox for async follow-up if they are running.",
-		promptSnippet: "Ask leader or teammate a question about their work",
-		promptGuidelines: [
-			"Use team_ask when the user wants a specific answer about what a teammate is doing or why something is blocked",
-			"Prefer team_ask over team_teammate when the user has a concrete question (not just a status check)",
-		],
-		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID" }),
-			target: Type.String({
-				description:
-					"Who to ask: a teammate role name (e.g. 'backend', 'reviewer') or 'leader' for the team orchestrator",
-			}),
-			question: Type.String({ description: "The question to ask" }),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const { teamManager, mailboxManager } = getManagers();
-
-			const team = await teamManager.getTeam(params.teamId);
-			if (!team) {
-				throw new Error(`Team not found: ${params.teamId}`);
-			}
-
-			const lines: string[] = [];
-			lines.push(`Question for ${params.target} in team ${team.name} (${params.teamId}):`);
-			lines.push(`"${params.question}"`);
-			lines.push("");
-
-			if (params.target === "leader") {
-				// Synthesize answer from full team state
-				const summary = await teamManager.getTeamSummary(params.teamId);
-
-				lines.push(`**Answer from current team state:**`);
-				lines.push(`Phase: ${summary.currentPhase ?? "unknown"}`);
-				lines.push(`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`);
-
-				if (summary.blockers.length > 0) {
-					lines.push(`Blockers:`);
-					for (const b of summary.blockers) {
-						lines.push(`  - ${b.taskId} (${b.owner}): ${b.reason}`);
-					}
-				} else {
-					lines.push(`Blockers: none`);
-				}
-
-				if (summary.approvalsPending.length > 0) {
-					lines.push(`Approvals pending:`);
-					for (const a of summary.approvalsPending) {
-						lines.push(`  - ${a.taskId} (${a.owner}): ${a.artifact}`);
-					}
-				}
-
-				const activeTeammates = summary.teammates.filter(
-					(t) => t.status === "in_progress",
-				);
-				if (activeTeammates.length > 0) {
-					lines.push(`Active teammates:`);
-					for (const t of activeTeammates) {
-						lines.push(`  - ${t.name}: ${t.summary ?? t.currentTask ?? "running"}`);
-					}
-				}
-
-				if (summary.nextMilestone) {
-					lines.push(`Next milestone: ${summary.nextMilestone}`);
-				}
-			} else {
-				// Synthesize answer from teammate state
-				const teammate = await teamManager.getTeammateSummary(params.teamId, params.target);
-				if (!teammate) {
-					throw new Error(
-						`Teammate "${params.target}" not found in team "${params.teamId}". ` +
-							`Available roles: ${team.teammates.join(", ")}`,
-					);
-				}
-
-				lines.push(`**Answer from ${params.target}'s current state:**`);
-				lines.push(`Status: ${teammate.status}`);
-
-				if (teammate.currentTask) {
-					lines.push(
-						`Current task: ${teammate.currentTask.id} — ${teammate.currentTask.title} (${teammate.currentTask.status})`,
-					);
-					if (teammate.currentTask.blocker) {
-						lines.push(`Blocker: ${teammate.currentTask.blocker}`);
-					}
-				} else {
-					lines.push(`Current task: none assigned`);
-				}
-
-				if (teammate.worktree) {
-					lines.push(`Worktree: ${teammate.worktree}`);
-				}
-
-				if (teammate.artifacts.length > 0) {
-					lines.push(`Artifacts: ${teammate.artifacts.join(", ")}`);
-				}
-
-				if (teammate.lastOutput) {
-					// Surface the first ~300 chars of the last output as a hint
-					const preview = teammate.lastOutput.trim().slice(0, 300);
-					lines.push(`Last output preview:`);
-					lines.push(preview.replace(/^/gm, "  "));
-					if (teammate.lastOutput.length > 300) lines.push("  ...");
-				}
-			}
-
-			lines.push("");
-			lines.push(
-				`Note: question forwarded to ${params.target}'s mailbox for explicit follow-up.`,
-			);
-
-			// Forward the question via mailbox so the target sees it in their next cycle
-			try {
-				await mailboxManager.send(params.teamId, {
-					from: "user",
-					to: params.target,
-					type: "question",
-					message: params.question,
-					attachments: [],
-				});
-			} catch {
-				// Mailbox send is best-effort — don't fail the whole call
-			}
-
-			const text = lines.join("\n");
-			return {
-				content: [{ type: "text", text }],
-				details: { teamId: params.teamId, target: params.target, question: params.question },
-			};
 		},
 	});
 
@@ -629,17 +620,21 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
-	// Tool: team_approve
+	// Tool: team_review
 	// -------------------------------------------------------------------------
 
 	pi.registerTool({
-		name: "team_approve",
-		label: "Approve Plan",
+		name: "team_review",
+		label: "Review Plan",
 		description:
-			"Approve a plan submitted by a teammate for a task that requires sign-off before execution.",
+			"Approve or reject a submitted plan for a task that requires sign-off before execution.",
 		parameters: Type.Object({
 			teamId: Type.String({ description: "The team ID" }),
-			taskId: Type.String({ description: "The task ID whose plan should be approved" }),
+			taskId: Type.String({ description: "The task ID whose plan should be reviewed" }),
+			action: StringEnum(["approve", "reject"] as const, {
+				description: "Whether to approve or reject the submitted plan",
+			}),
+			feedback: Type.Optional(Type.String({ description: "Required when rejecting the plan" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { approvalManager, taskManager } = getManagers();
@@ -652,54 +647,21 @@ export default function (pi: ExtensionAPI): void {
 					);
 				}
 
-				const updated = await approvalManager.approve(params.teamId, pending.id, "user");
-				await taskManager.updateTask(params.teamId, params.taskId, {
-					status: "ready",
-					blockers: [],
-				});
-				await refreshWidget(ctx);
+				if (params.action === "approve") {
+					const updated = await approvalManager.approve(params.teamId, pending.id, "user");
+					await taskManager.updateTask(params.teamId, params.taskId, {
+						status: "ready",
+						blockers: [],
+					});
+					await refreshWidget(ctx);
+					return {
+						content: [{ type: "text", text: `Plan approved for task ${params.taskId} in team ${params.teamId}.` }],
+						details: updated,
+					};
+				}
 
-				const text = [
-					`Plan approved for task ${params.taskId} in team ${params.teamId}.`,
-					`Approval ID: ${updated.id}`,
-					`Status: ${updated.status}`,
-				].join("\n");
-
-				return {
-					content: [{ type: "text", text }],
-					details: updated,
-				};
-			} catch (err) {
-				throw new Error(
-					`Failed to approve plan: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		},
-	});
-
-	// -------------------------------------------------------------------------
-	// Tool: team_reject
-	// -------------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "team_reject",
-		label: "Reject Plan",
-		description:
-			"Reject a submitted plan with actionable feedback so the teammate can revise and resubmit.",
-		parameters: Type.Object({
-			teamId: Type.String({ description: "The team ID" }),
-			taskId: Type.String({ description: "The task ID whose plan should be rejected" }),
-			feedback: Type.String({ description: "Specific feedback explaining what needs to change" }),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { approvalManager, taskManager } = getManagers();
-
-			try {
-				const pending = await approvalManager.getApprovalForTask(params.teamId, params.taskId);
-				if (!pending) {
-					throw new Error(
-						`No approval request found for task "${params.taskId}" in team "${params.teamId}".`,
-					);
+				if (!params.feedback?.trim()) {
+					throw new Error("feedback is required when action=reject");
 				}
 
 				const updated = await approvalManager.reject(
@@ -714,19 +676,13 @@ export default function (pi: ExtensionAPI): void {
 				});
 				await refreshWidget(ctx);
 
-				const text = [
-					`Plan rejected for task ${params.taskId} in team ${params.teamId}.`,
-					`Approval ID: ${updated.id}`,
-					`Feedback: ${params.feedback}`,
-				].join("\n");
-
 				return {
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: `Plan rejected for task ${params.taskId} in team ${params.teamId}.` }],
 					details: updated,
 				};
 			} catch (err) {
 				throw new Error(
-					`Failed to reject plan: ${err instanceof Error ? err.message : String(err)}`,
+					`Failed to review plan: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
 		},
@@ -919,8 +875,8 @@ export default function (pi: ExtensionAPI): void {
 	// -------------------------------------------------------------------------
 
 	/**
-	 * /team                      — show dashboard
-	 * /team create <objective>   — create a new team
+	 * /team <objective>          — create a new team (default action)
+	 * /team list                 — show dashboard
 	 * /team status <id>          — show team summary
 	 * /team tasks <id>           — show task board
 	 * /team signals <id>         — show recent signals
@@ -928,7 +884,7 @@ export default function (pi: ExtensionAPI): void {
 	 * /team resume <id>          — resume a team
 	 */
 	pi.registerCommand("team", {
-		description: "Manage background teams. Use /team <subcommand> — or /team for a dashboard.",
+		description: "Create a team: /team <objective>. Or manage: /team list|status|tasks|signals|stop|resume <id>",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.trimStart().split(/\s+/);
 
@@ -968,30 +924,22 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.notify("Team managers not initialized", "error");
 				return;
 			}
-			const { teamManager, taskManager, signalManager, leaderRuntime, watchManager } = managers;
+			const { teamManager, leaderRuntime, watchManager } = managers;
 
 			const parts = (args?.trim() ?? "").split(/\s+/).filter(Boolean);
 			const subcommand = parts[0]?.toLowerCase() ?? "";
 
 			switch (subcommand) {
-				case "create": {
-					const objective = parts.slice(1).join(" ").trim();
-					if (!objective) {
-						ctx.ui.notify("Usage: /team create <objective>", "warning");
-						return;
-					}
+				case "list": {
 					try {
-						const team = await teamManager.createTeam(objective);
-						try {
-							await leaderRuntime.launchLeader(team.id);
-						} catch {
-							// non-fatal
-						}
-						await refreshWidget(ctx);
-						ctx.ui.notify(`Team "${team.name}" created (${team.id})`, "info");
+						const dashboard = await teamManager.getDashboard();
+						pi.sendMessage(
+							{ customType: "team-output", content: formatDashboard(dashboard), display: true },
+							{ triggerTurn: false },
+						);
 					} catch (err) {
 						ctx.ui.notify(
-							`Failed to create team: ${err instanceof Error ? err.message : String(err)}`,
+							`Failed to get dashboard: ${err instanceof Error ? err.message : String(err)}`,
 							"error",
 						);
 					}
@@ -1005,11 +953,9 @@ export default function (pi: ExtensionAPI): void {
 						return;
 					}
 					try {
-						const summary = await teamManager.getTeamSummary(teamId);
-						await teamManager.markChecked(teamId);
-						await refreshWidget(ctx);
+						const result = await executeTeamQuery({ action: "status", teamId, verbose: true }, ctx);
 						pi.sendMessage(
-							{ customType: "team-output", content: formatTeamSummary(summary), display: true },
+							{ customType: "team-output", content: result.text, display: true },
 							{ triggerTurn: false },
 						);
 					} catch (err) {
@@ -1028,9 +974,9 @@ export default function (pi: ExtensionAPI): void {
 						return;
 					}
 					try {
-						const board = await taskManager.getTaskBoard(teamId);
+						const result = await executeTeamQuery({ action: "tasks", teamId, verbose: true }, ctx);
 						pi.sendMessage(
-							{ customType: "team-output", content: formatTaskBoard(board), display: true },
+							{ customType: "team-output", content: result.text, display: true },
 							{ triggerTurn: false },
 						);
 					} catch (err) {
@@ -1049,9 +995,9 @@ export default function (pi: ExtensionAPI): void {
 						return;
 					}
 					try {
-						const signals = await signalManager.getSignalsSinceLastCheck(teamId);
+						const result = await executeTeamQuery({ action: "signals", teamId, verbose: true }, ctx);
 						pi.sendMessage(
-							{ customType: "team-output", content: formatSignals(signals), display: true },
+							{ customType: "team-output", content: result.text, display: true },
 							{ triggerTurn: false },
 						);
 					} catch (err) {
@@ -1073,49 +1019,9 @@ export default function (pi: ExtensionAPI): void {
 						return;
 					}
 					try {
-						const { teamManager: tm, mailboxManager: mb } = managers;
-						const team = await tm.getTeam(teamId);
-						if (!team) {
-							ctx.ui.notify(`Team not found: ${teamId}`, "error");
-							return;
-						}
-						const lines: string[] = [`Q: "${question}" → ${target}`, ""];
-						if (target === "leader") {
-							const summary = await tm.getTeamSummary(teamId);
-							lines.push(`Phase: ${summary.currentPhase ?? "unknown"}`);
-							lines.push(`Progress: ${summary.progress.done}/${summary.progress.total}`);
-							if (summary.blockers.length > 0) {
-								lines.push(`Blockers: ${summary.blockers.map((b) => b.reason).join("; ")}`);
-							}
-							if (summary.nextMilestone) lines.push(`Next: ${summary.nextMilestone}`);
-						} else {
-							const teammate = await tm.getTeammateSummary(teamId, target);
-							if (!teammate) {
-								ctx.ui.notify(`Teammate "${target}" not found`, "error");
-								return;
-							}
-							lines.push(`Status: ${teammate.status}`);
-							if (teammate.currentTask) {
-								lines.push(`Task: ${teammate.currentTask.id} — ${teammate.currentTask.title}`);
-								if (teammate.currentTask.blocker) lines.push(`Blocker: ${teammate.currentTask.blocker}`);
-							}
-							if (teammate.lastOutput) {
-								lines.push(`Last output: ${teammate.lastOutput.trim().slice(0, 200)}`);
-							}
-						}
-						lines.push("");
-						lines.push(`Question forwarded to ${target}'s mailbox.`);
-						try {
-							await mb.send(teamId, {
-								from: "user",
-								to: target,
-								type: "question",
-								message: question,
-								attachments: [],
-							});
-						} catch { /* best effort */ }
+						const result = await executeTeamQuery({ action: "ask", teamId, target, question, verbose: true }, ctx);
 						pi.sendMessage(
-							{ customType: "team-output", content: lines.join("\n"), display: true },
+							{ customType: "team-output", content: result.text, display: true },
 							{ triggerTurn: false },
 						);
 					} catch (err) {
@@ -1196,16 +1102,24 @@ export default function (pi: ExtensionAPI): void {
 				}
 
 				default: {
-					// No subcommand or unrecognized — show the dashboard
+					// Default action: treat entire args as an objective and create a team.
+					const objective = (args?.trim() ?? "");
+					if (!objective) {
+						ctx.ui.notify("Usage: /team <objective> — creates a new team", "warning");
+						return;
+					}
 					try {
-						const dashboard = await teamManager.getDashboard();
-						pi.sendMessage(
-							{ customType: "team-output", content: formatDashboard(dashboard), display: true },
-							{ triggerTurn: false },
-						);
+						const team = await teamManager.createTeam(objective);
+						try {
+							await leaderRuntime.launchLeader(team.id);
+						} catch {
+							// non-fatal
+						}
+						await refreshWidget(ctx);
+						ctx.ui.notify(`Team "${team.name}" created (${team.id})`, "info");
 					} catch (err) {
 						ctx.ui.notify(
-							`Failed to get dashboard: ${err instanceof Error ? err.message : String(err)}`,
+							`Failed to create team: ${err instanceof Error ? err.message : String(err)}`,
 							"error",
 						);
 					}

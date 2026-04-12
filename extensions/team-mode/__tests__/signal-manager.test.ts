@@ -402,3 +402,40 @@ describe("SignalManager.getSignalsForSource", () => {
 		await rm(dir, { recursive: true, force: true });
 	});
 });
+
+// ---------------------------------------------------------------------------
+// compacted signal view
+// ---------------------------------------------------------------------------
+
+describe("SignalManager compacted signal view", () => {
+	test("rebuildCompactedSignals collapses progress chatter into summary signals", async () => {
+		const { signalManager, teamId, dir } = await setup();
+		await signalManager.emit(teamId, baseSignal({ source: "backend", type: "progress_update", message: "tool 1" }));
+		await signalManager.emit(teamId, baseSignal({ source: "backend", type: "progress_update", message: "tool 2" }));
+		await signalManager.emit(teamId, baseSignal({ source: "leader", type: "team_summary", message: "Phase transition: research → synthesis" }));
+
+		const compacted = await signalManager.rebuildCompactedSignals(teamId);
+		assert.equal(compacted.some((signal) => signal.message.includes("Compacted activity")), true);
+		assert.equal(compacted.some((signal) => signal.message === "tool 1"), false);
+		assert.equal(compacted.some((signal) => signal.message === "tool 2"), false);
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("completed compaction drops task assignment/start noise from context view", async () => {
+		const { signalManager, store, teamId, dir } = await setup();
+		await signalManager.emit(teamId, baseSignal({ source: "leader", type: "task_assigned", message: "Assigned task-001" }));
+		await signalManager.emit(teamId, baseSignal({ source: "backend", type: "task_started", message: "Started task-001" }));
+		await signalManager.emit(teamId, baseSignal({ source: "backend", type: "progress_update", message: "working" }));
+		await signalManager.emit(teamId, baseSignal({ source: "backend", type: "task_completed", message: "Finished task-001" }));
+		await signalManager.emit(teamId, baseSignal({ source: "leader", type: "team_completed", message: "Team completed" }));
+
+		await signalManager.rebuildCompactedSignals(teamId, { completed: true });
+		const contextSignals = await signalManager.getContextSignals(teamId);
+		assert.equal(contextSignals.some((signal) => signal.type === "task_assigned"), false);
+		assert.equal(contextSignals.some((signal) => signal.type === "task_started"), false);
+		assert.equal(contextSignals.some((signal) => signal.type === "progress_update"), false);
+		assert.equal(contextSignals.some((signal) => signal.type === "task_completed"), true);
+		assert.equal((await store.loadCompactedSignals(teamId))?.length ? true : false, true);
+		await rm(dir, { recursive: true, force: true });
+	});
+});

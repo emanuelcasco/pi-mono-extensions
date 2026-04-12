@@ -11,6 +11,94 @@
 import { BUBBLE_SIGNAL_TYPES, type Signal, type SignalFilter } from "../core/types.js";
 import type { TeamStore } from "../core/store.js";
 
+const COMPLETION_KEEP_TYPES = new Set([
+	"team_started",
+	"task_created",
+	"blocked",
+	"plan_submitted",
+	"approval_requested",
+	"approval_granted",
+	"approval_rejected",
+	"task_completed",
+	"team_summary",
+	"team_completed",
+	"handoff",
+	"error",
+]);
+
+function buildCompactionSummary(signals: Signal[], summaryIndex: number): Signal | null {
+	if (signals.length === 0) return null;
+
+	const activityBySource = new Map<string, { progress: number; assigned: number; started: number }>();
+	for (const signal of signals) {
+		const bucket = activityBySource.get(signal.source) ?? { progress: 0, assigned: 0, started: 0 };
+		if (signal.type === "progress_update") bucket.progress += 1;
+		if (signal.type === "task_assigned") bucket.assigned += 1;
+		if (signal.type === "task_started") bucket.started += 1;
+		activityBySource.set(signal.source, bucket);
+	}
+
+	const summaryParts = [...activityBySource.entries()].map(([source, stats]) => {
+		const parts: string[] = [];
+		if (stats.progress > 0) parts.push(`${stats.progress} progress update(s)`);
+		if (stats.assigned > 0) parts.push(`${stats.assigned} assignment(s)`);
+		if (stats.started > 0) parts.push(`${stats.started} start(s)`);
+		return `${source}: ${parts.join(", ")}`;
+	});
+
+	const last = signals.at(-1)!;
+	const relatedTaskIds = [...new Set(signals.map((signal) => signal.taskId).filter(Boolean))];
+	const links = [...new Set(signals.flatMap((signal) => signal.links))];
+
+	return {
+		id: `compact-${summaryIndex.toString().padStart(3, "0")}`,
+		teamId: last.teamId,
+		source: "leader",
+		type: "team_summary",
+		severity: "info",
+		timestamp: last.timestamp,
+		taskId: relatedTaskIds.length === 1 ? relatedTaskIds[0] : undefined,
+		message: `Compacted activity — ${summaryParts.join(" | ")}`,
+		links,
+		isSidechain: false,
+	};
+}
+
+function compactSignals(signals: Signal[], completed = false): Signal[] {
+	const compacted: Signal[] = [];
+	let buffered: Signal[] = [];
+	let summaryIndex = 1;
+
+	const shouldBuffer = (signal: Signal): boolean => {
+		if (completed) {
+			return signal.type === "progress_update" || signal.type === "task_assigned" || signal.type === "task_started";
+		}
+		return signal.type === "progress_update";
+	};
+
+	const flush = () => {
+		const summary = buildCompactionSummary(buffered, summaryIndex++);
+		if (summary) compacted.push(summary);
+		buffered = [];
+	};
+
+	for (const signal of signals) {
+		if (shouldBuffer(signal)) {
+			buffered.push(signal);
+			continue;
+		}
+
+		flush();
+
+		if (!completed || COMPLETION_KEEP_TYPES.has(signal.type)) {
+			compacted.push(signal);
+		}
+	}
+
+	flush();
+	return compacted;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -103,6 +191,15 @@ export class SignalManager {
 	 */
 	async getSignals(teamId: string, filter?: SignalFilter): Promise<Signal[]> {
 		const signals = await this.store.loadSignals(teamId);
+		return applyFilter(signals, filter);
+	}
+
+	/**
+	 * Return the preferred signal view for context-heavy consumers.
+	 * Uses the compacted log when present and falls back to the raw signal log.
+	 */
+	async getContextSignals(teamId: string, filter?: SignalFilter): Promise<Signal[]> {
+		const signals = await this.store.loadContextSignals(teamId);
 		return applyFilter(signals, filter);
 	}
 
@@ -208,5 +305,19 @@ export class SignalManager {
 		}
 
 		return filtered;
+	}
+
+	/**
+	 * Rebuild the compacted signal view from the raw append-only log.
+	 * When `completed` is true, task assignment/start chatter is also pruned.
+	 */
+	async rebuildCompactedSignals(
+		teamId: string,
+		options?: { completed?: boolean },
+	): Promise<Signal[]> {
+		const rawSignals = await this.store.loadSignals(teamId);
+		const compacted = compactSignals(rawSignals, options?.completed === true);
+		await this.store.saveCompactedSignals(teamId, compacted);
+		return compacted;
 	}
 }

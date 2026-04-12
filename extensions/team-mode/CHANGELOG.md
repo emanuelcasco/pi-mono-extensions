@@ -1,5 +1,43 @@
 # pi-mono-team-mode
 
+## 1.6.0
+
+### Minor Changes
+
+### New Extension: sentinel
+
+Replaced the `grep` extension with a new security-focused `sentinel` extension for monitoring and guarding sensitive operations.
+
+### Enhanced: team-mode
+
+- Added comprehensive test suite with integration tests
+- New mock helpers for subprocess testing
+- Improved signal manager with better error handling
+- Leader runtime refactoring for stability
+- Team query tool with dedicated tests
+
+### Enhanced: status-line
+
+- Added basic and expert mode displays
+- Improved index.ts with better state management
+
+### Enhanced: clear
+
+- Updated keyboard shortcut to `Ctrl+Shift+L`
+- Better busy-state handling for shortcuts
+- Added warning/cancel handling and error notifications
+
+### Enhanced: context-guard
+
+- Improved read deduplication across sessions
+- Added `context-guard:file-modified` event for cache eviction
+
+### Documentation
+
+- Added dedicated README for `clear` extension
+- Added dedicated README for `context-guard` extension
+- Updated main README with improved extension descriptions
+
 ## 1.5.0
 
 ### Minor Changes

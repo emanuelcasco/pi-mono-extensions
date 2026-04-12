@@ -106,6 +106,12 @@ function formatTaskLine(task: TaskRecord): string {
 	return `${icon} ${task.id}: ${task.title}${ownerPart}${priorityPart}${extra}`;
 }
 
+function truncate(value: string, max: number): string {
+	if (value.length <= max) return value;
+	if (max <= 3) return value.slice(0, max);
+	return `${value.slice(0, max - 3)}...`;
+}
+
 /** Group tasks by broad status category. */
 function groupTasks(tasks: TaskRecord[]): {
 	done: TaskRecord[];
@@ -200,6 +206,26 @@ export function formatTeamSummary(summary: TeamSummary): string {
 	}
 
 	return lines.join("\n");
+}
+
+/** Format a team summary as a single compact line for tool responses. */
+export function formatCompactTeamSummary(summary: TeamSummary): string {
+	const phase = summary.currentPhase ?? "unknown";
+	const blockerSummary =
+		summary.blockers.length > 0
+			? `${summary.blockers.length} (${truncate(`${summary.blockers[0].taskId}: ${summary.blockers[0].reason}`, 50)})`
+			: "0";
+	const active = summary.teammates
+		.filter((teammate) => teammate.status === "in_progress")
+		.map((teammate) => teammate.name)
+		.slice(0, 3);
+
+	return [
+		`${summary.name}: ${summary.progress.done}/${summary.progress.total} done`,
+		`phase: ${phase}`,
+		`blockers: ${blockerSummary}`,
+		`active: ${active.length > 0 ? active.join(", ") : "none"}`,
+	].join(" | ");
 }
 
 /**
@@ -307,6 +333,25 @@ export function formatTaskBoard(board: TaskBoard): string {
 	return lines.join("\n");
 }
 
+/** Format the task board into a short digest suitable for compact tool responses. */
+export function formatCompactTaskBoard(board: TaskBoard): string {
+	const active = board.tasks.filter((task) => ["in_progress", "planning", "in_review"].includes(task.status)).length;
+	const blocked = board.tasks.filter((task) => task.status === "blocked").length;
+	const awaitingApproval = board.tasks.filter((task) => task.status === "awaiting_approval").length;
+	const nextTasks = board.tasks
+		.filter((task) => ["in_progress", "ready", "blocked", "awaiting_approval"].includes(task.status))
+		.slice(0, 3)
+		.map((task) => `${taskIcon(task.status)} ${task.id} (${task.owner ?? "unassigned"})`);
+
+	return [
+		`${board.teamId}: ${board.summary.done}/${board.summary.total} done`,
+		`active: ${active}`,
+		`blocked: ${blocked}`,
+		`pending approval: ${awaitingApproval}`,
+		nextTasks.length > 0 ? `focus: ${nextTasks.join(", ")}` : "focus: none",
+	].join(" | ");
+}
+
 /**
  * Format a `TeammateSummary` into a brief teammate status card.
  *
@@ -355,6 +400,16 @@ export function formatTeammateSummary(summary: TeammateSummary): string {
 	}
 
 	return lines.join("\n");
+}
+
+/** Format a teammate summary as a short 1–2 line response. */
+export function formatCompactTeammateSummary(summary: TeammateSummary): string {
+	const task = summary.currentTask
+		? `${summary.currentTask.id} — ${truncate(summary.currentTask.title, 40)} (${summary.currentTask.status})`
+		: "none";
+	const artifacts = summary.artifacts.length > 0 ? ` | artifacts: ${summary.artifacts.length}` : "";
+	const progress = summary.lastProgressAge ? ` | last progress: ${summary.lastProgressAge}` : "";
+	return `${summary.name}: ${summary.status} | task: ${task}${artifacts}${progress}`;
 }
 
 /**
@@ -430,6 +485,23 @@ export function formatSignals(signals: Signal[]): string {
 	}
 
 	return lines.join("\n");
+}
+
+/** Format recent signals as compact one-liners, capped by the caller. */
+export function formatCompactSignals(signals: Signal[]): string {
+	if (signals.length === 0) {
+		return "(no signals)";
+	}
+
+	return signals.map((signal) => {
+		const icon = signalIcon(signal.type, signal.severity);
+		const time = new Date(signal.timestamp).toLocaleTimeString("en-US", {
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: false,
+		});
+		return `${icon} [${time}] ${signal.source}: ${truncate(signal.message, 120)}`;
+	}).join("\n");
 }
 
 /**

@@ -26,6 +26,8 @@ const execFile = promisify(execFileCb);
 import type {
   LeaderPhase,
   LeaderProcess,
+  MailboxMessage,
+  Signal,
   TaskRecord,
   TeamRecord,
   TeammateProcess,
@@ -96,7 +98,7 @@ type ActiveTeammate = {
   lastProgressAt: number;
 };
 
-type ParsedHandoff = {
+export type ParsedHandoff = {
   to: string;
   message: string;
 };
@@ -251,7 +253,7 @@ function safeKebab(input: string): string {
     .slice(0, 60);
 }
 
-function buildTaskPrompt(task: TaskRecord): string {
+export function buildTaskPrompt(task: TaskRecord): string {
   const lines = [task.title];
   if (task.description) lines.push(task.description);
   if (task.artifacts.length > 0)
@@ -265,7 +267,7 @@ function roleDisplay(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-function summarizeCompletionOutput(output: string, fallback: string): string {
+export function summarizeCompletionOutput(output: string, fallback: string): string {
   const lines = output
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -282,7 +284,7 @@ function summarizeCompletionOutput(output: string, fallback: string): string {
   return lines.slice(0, 2).join(" ").slice(0, 500);
 }
 
-function parseExplicitHandoffs(
+export function parseExplicitHandoffs(
   output: string,
   teammates: string[],
   sender: string,
@@ -387,6 +389,41 @@ const STALL_GRACE_MS = LEADER_POLL_MS * 2;
  */
 const STALL_BLOCKER_MARKER = "teammate process lost";
 const STALL_BLOCKER_MESSAGE = `${STALL_BLOCKER_MARKER} — process exited without completing task`;
+const TASK_CONTEXT_CHAR_BUDGET = 6_000;
+const TASK_CONTEXT_RELEVANT_BUDGET = Math.floor(TASK_CONTEXT_CHAR_BUDGET * 0.6);
+
+function signalMatchesTaskContext(
+  signal: Signal,
+  relevantTaskIds: Set<string>,
+  owner?: string,
+): boolean {
+  if (signal.taskId && relevantTaskIds.has(signal.taskId)) return true;
+  if (owner && signal.source === owner) return true;
+  for (const taskId of relevantTaskIds) {
+    if (signal.message.includes(taskId)) return true;
+  }
+  return false;
+}
+
+function mailboxMatchesTaskContext(
+  message: MailboxMessage,
+  relevantTaskIds: Set<string>,
+  owner?: string,
+): boolean {
+  if (message.taskId && relevantTaskIds.has(message.taskId)) return true;
+  if (owner && (message.to === owner || message.from === owner)) return true;
+  for (const taskId of relevantTaskIds) {
+    if (message.message.includes(taskId)) return true;
+  }
+  return false;
+}
+
+function truncateToBudget(value: string, budget: number): string {
+  if (budget <= 0) return "";
+  if (value.length <= budget) return value;
+  if (budget <= 3) return value.slice(0, budget);
+  return `${value.slice(0, budget - 3)}...`;
+}
 
 export class LeaderRuntime {
   private activeLeaders = new Map<string, ActiveLeader>();
@@ -405,6 +442,14 @@ export class LeaderRuntime {
    * is running.
    */
   onStatusChange?: (teamId: string) => void;
+
+  /**
+   * Optional subprocess factory — inject a custom spawn function for testing.
+   * When set, `spawnTeammate` and `planTeamComposition` use this instead of
+   * the real `spawnPiJsonMode`.
+   * @internal Exposed for testing only.
+   */
+  _spawnFn?: (promptFilePath: string, userMessage: string, cwd: string) => ChildProcess;
 
   constructor(
     private store: TeamStore,
@@ -547,7 +592,8 @@ export class LeaderRuntime {
     );
 
     const controller = new AbortController();
-    const proc = spawnPiJsonMode(tempPrompt.filePath, `Task: ${taskDescription}`, effectiveCwd);
+    const spawnFn = this._spawnFn ?? spawnPiJsonMode;
+    const proc = spawnFn(tempPrompt.filePath, `Task: ${taskDescription}`, effectiveCwd);
 
     let stderr = "";
     proc.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
@@ -831,7 +877,8 @@ export class LeaderRuntime {
 
     try {
       const cwd = team.repoRoots[0] ?? process.cwd();
-      const proc = spawnPiJsonMode(tempPrompt.filePath, `Select the right team roles for this objective: ${team.objective}`, cwd);
+      const spawnFn = this._spawnFn ?? spawnPiJsonMode;
+      const proc = spawnFn(tempPrompt.filePath, `Select the right team roles for this objective: ${team.objective}`, cwd);
 
       const timeoutFallback = new Promise<PiProcessResult>((resolve) => {
         setTimeout(() => {
@@ -1051,6 +1098,7 @@ export class LeaderRuntime {
         message: `Phase transition: ${phase} → ${nextPhase}`,
         links: [],
       });
+      await this.signalManager.rebuildCompactedSignals(teamId);
     }
 
     const refreshedTasks = await this.taskManager.getTasks(teamId);
@@ -1094,6 +1142,7 @@ export class LeaderRuntime {
         message: `Team completed — ${team.objective}`,
         links: [],
       });
+      await this.signalManager.rebuildCompactedSignals(teamId, { completed: true });
 
       const active = this.activeLeaders.get(teamId);
       if (active) {
@@ -1228,10 +1277,11 @@ export class LeaderRuntime {
     teamId: string,
     task: TaskRecord,
   ): Promise<string> {
-    const [summary, signals, taskMailbox, directMailbox, team, discoveries, contracts, decisions] =
+    const [summary, signals, allTasks, taskMailbox, directMailbox, team, discoveries, contracts, decisions] =
       await Promise.all([
         this.teamManager.getTeamSummary(teamId),
-        this.signalManager.getSignals(teamId),
+        this.signalManager.getContextSignals(teamId),
+        this.taskManager.getTasks(teamId),
         this.mailboxManager.getMessages(teamId, { taskId: task.id }),
         task.owner
           ? this.mailboxManager.getMessagesFor(teamId, task.owner)
@@ -1242,54 +1292,87 @@ export class LeaderRuntime {
         this.store.loadMemory(teamId, "decisions"),
       ]);
 
-    const recentSignals = signals
-      .slice(-8)
-      .map(
-        (signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`,
-      );
+    const relevantTaskIds = new Set([task.id, ...task.dependsOn]);
+    const dependencyTasks = allTasks.filter((candidate) => task.dependsOn.includes(candidate.id));
+    const relevantSignals = signals
+      .filter((signal) => signalMatchesTaskContext(signal, relevantTaskIds, task.owner))
+      .slice(-10)
+      .map((signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`);
+    const generalSignals = signals
+      .filter((signal) => !signalMatchesTaskContext(signal, relevantTaskIds, task.owner) && !signal.isSidechain)
+      .slice(-3)
+      .map((signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`);
+
     const mailbox = [
       ...new Map(
-        [...directMailbox, ...taskMailbox].map((message) => [
-          message.id,
-          message,
-        ]),
+        [...directMailbox, ...taskMailbox]
+          .filter((message) => mailboxMatchesTaskContext(message, relevantTaskIds, task.owner))
+          .map((message) => [message.id, message]),
       ).values(),
-    ]
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .slice(-10);
-    const messages = mailbox.map((message) => {
+    ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    const mailboxLines = mailbox.map((message) => {
       const taskScope = message.taskId ? ` [${message.taskId}]` : "";
       return `- ${message.from} → ${message.to}${taskScope}: ${message.message}`;
     });
 
-    const contextParts: string[] = [
+    const dependencyLines = dependencyTasks.length > 0
+      ? dependencyTasks.map((dependency) => `- ${dependency.id}: ${dependency.title} (${dependency.status})`)
+      : ["- none"];
+    const blockerLines = task.blockers.length > 0 ? task.blockers.map((blocker) => `- ${blocker}`) : ["- none"];
+
+    const baseParts: string[] = [
       `Team: ${team?.name ?? teamId}`,
       `Objective: ${team?.objective ?? ""}`,
       `Phase: ${summary.currentPhase ?? "unknown"}`,
       `Progress: ${summary.progress.done}/${summary.progress.total}`,
-      task.dependsOn.length > 0
-        ? `Dependencies: ${task.dependsOn.join(", ")}`
-        : "Dependencies: none",
-      recentSignals.length > 0
-        ? `Recent signals:\n${recentSignals.join("\n")}`
-        : "Recent signals: none",
-      messages.length > 0
-        ? `Mailbox:\n${messages.join("\n")}`
-        : "Mailbox: none",
+      `Task: ${task.id} — ${task.title}`,
+      task.owner ? `Owner: ${task.owner}` : "Owner: unassigned",
+      `Dependencies:\n${dependencyLines.join("\n")}`,
+      `Blockers:\n${blockerLines.join("\n")}`,
     ];
 
-    // Inject durable team memory so teammates build on prior knowledge.
-    if (contracts) {
-      contextParts.push(`Team Contracts (agreed interfaces):\n${contracts.slice(0, 2000)}`);
-    }
-    if (discoveries) {
-      contextParts.push(`Team Discoveries:\n${discoveries.slice(0, 1500)}`);
-    }
-    if (decisions) {
-      contextParts.push(`Team Decisions:\n${decisions.slice(0, 800)}`);
-    }
+    const sections: string[] = [baseParts.join("\n")];
+    let usedBudget = sections.join("\n\n").length;
 
-    return contextParts.join("\n\n");
+    const pushSection = (title: string, body: string, budgetLimit = TASK_CONTEXT_CHAR_BUDGET): void => {
+      if (!body.trim()) return;
+      const remaining = Math.min(budgetLimit, TASK_CONTEXT_CHAR_BUDGET) - usedBudget;
+      if (remaining <= 0) return;
+      const sectionText = `${title}:\n${truncateToBudget(body, remaining - title.length - 2)}`;
+      if (!sectionText.trim()) return;
+      sections.push(sectionText);
+      usedBudget = sections.join("\n\n").length;
+    };
+
+    pushSection(
+      "Relevant signals",
+      relevantSignals.length > 0 ? relevantSignals.join("\n") : "- none",
+      TASK_CONTEXT_RELEVANT_BUDGET,
+    );
+    pushSection(
+      "Mailbox",
+      mailboxLines.length > 0 ? mailboxLines.join("\n") : "- none",
+      TASK_CONTEXT_RELEVANT_BUDGET,
+    );
+    pushSection(
+      "Team Contracts (highest priority)",
+      contracts ?? "",
+    );
+    pushSection(
+      "General awareness",
+      generalSignals.length > 0 ? generalSignals.join("\n") : "- none",
+    );
+    pushSection(
+      "Team Discoveries",
+      discoveries ?? "",
+    );
+    pushSection(
+      "Team Decisions",
+      decisions ?? "",
+    );
+
+    return truncateToBudget(sections.join("\n\n"), TASK_CONTEXT_CHAR_BUDGET);
   }
 
   private buildLeaderPrompt(team: TeamRecord): string {

@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-clear",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Pi extension that starts a fresh session with /clear",
   "keywords": [
     "pi-package",

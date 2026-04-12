@@ -10,6 +10,10 @@ import assert from "node:assert/strict";
 
 import {
 	formatApprovals,
+	formatCompactSignals,
+	formatCompactTaskBoard,
+	formatCompactTeamSummary,
+	formatCompactTeammateSummary,
 	formatDashboard,
 	formatDelta,
 	formatSignals,
@@ -76,6 +80,28 @@ function makeSummary(overrides: Partial<TeamSummary> = {}): TeamSummary {
 		teammates: [],
 		blockers: [],
 		approvalsPending: [],
+		updatedAt: new Date().toISOString(),
+		...overrides,
+	};
+}
+
+function makeBoard(overrides: Partial<TaskBoard> = {}): TaskBoard {
+	return {
+		teamId: "team-001",
+		tasks: [],
+		summary: { done: 0, inProgress: 0, blocked: 0, awaitingApproval: 0, total: 0 },
+		...overrides,
+	};
+}
+
+function makeTeammateSummary(overrides: Partial<TeammateSummary> = {}): TeammateSummary {
+	return {
+		teamId: "team-001",
+		name: "backend",
+		role: "backend",
+		status: "idle",
+		artifacts: [],
+		signalsSinceLastCheck: 0,
 		updatedAt: new Date().toISOString(),
 		...overrides,
 	};
@@ -151,6 +177,21 @@ describe("formatTeamSummary", () => {
 		const output = formatTeamSummary(summary);
 		assert.ok(!output.includes("Blocked"), "should not have Blocked section");
 		assert.ok(!output.includes("Pending Approval"), "should not have Pending Approval section");
+	});
+});
+
+describe("formatCompactTeamSummary", () => {
+	test("renders a single compact status line", () => {
+		const output = formatCompactTeamSummary(
+			makeSummary({
+				blockers: [{ taskId: "task-009", owner: "backend", reason: "tests failing" }],
+				teammates: [{ name: "backend", status: "in_progress", summary: "Working", currentTask: "Task", lastProgressAge: "10s ago" }],
+			}),
+		);
+
+		assert.match(output, /^alpha: 2\/5 done \| phase: implementation \| blockers: 1/);
+		assert.match(output, /active: backend/);
+		assert.equal(output.includes("\n"), false);
 	});
 });
 
@@ -286,6 +327,25 @@ describe("formatTaskBoard", () => {
 	});
 });
 
+describe("formatCompactTaskBoard", () => {
+	test("summarises progress counts and focus tasks in one line", () => {
+		const board = makeBoard({
+			tasks: [
+				makeTask({ id: "task-001", status: "done", owner: "backend" }),
+				makeTask({ id: "task-002", status: "in_progress", owner: "frontend" }),
+				makeTask({ id: "task-003", status: "blocked", owner: "reviewer" }),
+			],
+			summary: { done: 1, inProgress: 1, blocked: 1, awaitingApproval: 0, total: 3 },
+		});
+
+		const output = formatCompactTaskBoard(board);
+		assert.match(output, /team-001: 1\/3 done/);
+		assert.match(output, /active: 1/);
+		assert.match(output, /blocked: 1/);
+		assert.match(output, /focus:/);
+	});
+});
+
 // ---------------------------------------------------------------------------
 // formatTeammateSummary
 // ---------------------------------------------------------------------------
@@ -366,6 +426,23 @@ describe("formatTeammateSummary", () => {
 		};
 		const output = formatTeammateSummary(summary);
 		assert.ok(output.includes("7"));
+	});
+});
+
+describe("formatCompactTeammateSummary", () => {
+	test("renders a compact teammate line", () => {
+		const output = formatCompactTeammateSummary(
+			makeTeammateSummary({
+				status: "in_progress",
+				currentTask: { id: "task-002", title: "Implement API contract", status: "in_progress" },
+				artifacts: ["spec.md"],
+				lastProgressAge: "15s ago",
+			}),
+		);
+
+		assert.match(output, /^backend: in_progress \| task: task-002/);
+		assert.match(output, /artifacts: 1/);
+		assert.match(output, /last progress: 15s ago/);
 	});
 });
 
@@ -477,6 +554,20 @@ describe("formatSignals", () => {
 			makeSignal({ links: ["docs/api-contract.md"] }),
 		]);
 		assert.ok(output.includes("docs/api-contract.md"), "should include artifact links");
+	});
+});
+
+describe("formatCompactSignals", () => {
+	test("renders each signal as a short one-liner", () => {
+		const output = formatCompactSignals([
+			makeSignal({ type: "task_completed", message: "Completed billing endpoint implementation" }),
+		]);
+
+		assert.match(output, /^✓ \[[0-9]{2}:[0-9]{2}\] backend: Completed billing endpoint implementation$/);
+	});
+
+	test("returns placeholder for empty lists", () => {
+		assert.equal(formatCompactSignals([]), "(no signals)");
 	});
 });
 

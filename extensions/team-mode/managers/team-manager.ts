@@ -217,7 +217,7 @@ export class TeamManager {
         this.store.loadTasks(teamId),
         this.store.loadApprovals(teamId),
         this.store.loadAllTeammateProcesses(teamId),
-        this.store.loadSignals(teamId),
+        this.store.loadContextSignals(teamId),
       ]);
 
     if (!team) throw new Error(`Team not found: ${teamId}`);
@@ -538,7 +538,7 @@ export class TeamManager {
     // Compute last progress age from signal log.
     let lastProgressAge: string | undefined;
     if (process?.state === "running") {
-      const allSignals = await this.store.loadSignals(teamId);
+      const allSignals = await this.store.loadContextSignals(teamId);
       const progressSignals = allSignals.filter(
         (s) =>
           s.source === role &&
