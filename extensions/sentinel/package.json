@@ -1,0 +1,23 @@
+{
+  "name": "pi-mono-sentinel",
+  "version": "1.6.0",
+  "description": "Pi extension that guards against content-based secret leaks and indirect script execution",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
+    "directory": "extensions/sentinel"
+  }
+}
