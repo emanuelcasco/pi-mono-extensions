@@ -21,9 +21,9 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 
 - **ask-user-question** — interactive forms for structured user input (`ask_user_question` tool)
 - **btw** — side-question command (`/btw`)
-- **clear** — fresh session command (`/clear`, `Ctrl+L`)
-- **context-guard** — keeps context window lean by auto-limiting `read` calls and bounding `rg` output (`/context-guard`)
-- **grep** — ripgrep wrapper with head_limit, output_mode, and pagination (replaces raw rg in bash)
+- **clear** — fresh session command (`/clear`, `Ctrl+Shift+L`)
+- **context-guard** — keeps context window lean by auto-limiting `read`, deduplicating unchanged reads, and bounding raw `rg` output
+
 - **loop** — run a prompt or slash command on a recurring interval (`/loop [interval] <prompt>`)
 - **multi-edit** — enhanced `edit` tool with batch edits and patch support
 - **review** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
@@ -135,6 +135,28 @@ The `review` extension adds both `/review` and `/review-tui`.
 - lets you approve, dismiss, or edit each comment
 - submits approved comments directly to GitHub or GitLab based on the saved review URL
 
+## context-guard
+
+The `context-guard` extension keeps pi sessions lean by intercepting tool calls before they execute.
+
+### What it does
+
+It applies three safeguards:
+
+- auto-injects a default `limit` of `120` on `read` calls that do not specify one
+- blocks duplicate `read` calls for unchanged files when the same path, `offset`, and `limit` are requested again
+- appends `| head -60` to unbounded `rg` usage inside `bash` commands
+
+### Why it helps
+
+These guards reduce unnecessary token usage and make it less likely that long sessions waste context on repeated or unbounded output.
+
+### Notes
+
+- the read dedup cache is session-scoped
+- dedup entries are invalidated when a file's mtime changes
+- the extension also listens for `context-guard:file-modified` so companion extensions can evict stale cache entries immediately after writes
+
 ## simplify
 
 The `simplify` extension adds a `/simplify` command that reviews all git-changed files for code reuse, quality, and efficiency — then fixes any issues found.
@@ -174,10 +196,12 @@ The `clear` extension adds a `/clear` command that starts a fresh session, simil
 /clear
 ```
 
-Or press `Ctrl+L` for the keyboard shortcut.
+Or press `Ctrl+Shift+L` for the keyboard shortcut.
 
 ### Behavior
 
 - If the agent is busy, `/clear` waits for it to finish before switching sessions.
+- The keyboard shortcut sends `/clear` as a follow-up when pi is busy so the current turn can finish first.
 - Creates a brand new session via `ctx.newSession()`, same as `/new`.
-- Can be cancelled by other extensions via the `session_before_switch` event.
+- Shows a warning if the new-session request is cancelled.
+- Shows an error notification if clearing fails.

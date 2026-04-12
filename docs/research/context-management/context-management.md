@@ -102,5 +102,5 @@ Multi-edit writes a file
 | ------------------------------------- | ------- | --------------------------- |
 | context-guard — read limit + rg guard | ✅ Done | `extensions/context-guard/` |
 | context-guard — read deduplication    | ✅ Done | `extensions/context-guard/` |
-| grep tool                             | ✅ Implemented | `extensions/grep/`          |
+| grep tool                             | ❌ Removed     | Use Pi built-in `grep` tool |
 | multi-edit — `file-modified` event    | ✅ Implemented | `extensions/multi-edit/`    |
