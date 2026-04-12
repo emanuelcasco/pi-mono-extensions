@@ -1,90 +1,54 @@
 /**
- * Status Line — adds git branch next to the cwd in pi's footer.
+ * Status Line — configurable footer extension for pi.
  *
- * Keeps the same two-line layout as the default footer:
- *   Line 1: cwd (branch)
- *   Line 2: ↑input ↓output Rcache Wcache $cost (sub?) ctx%/limit   model • thinking
+ * Modes:
+ *   - "basic"  — cwd + branch, token stats, model info (original two-line layout)
+ *   - "expert" — visual context gauge, git dirty/ahead/behind, subscription usage indicators
+ *
+ * Resolution order (first hit wins):
+ *   1. PI_STATUS_LINE_MODE environment variable
+ *   2. ~/.pi/agent/status-line.json → { "mode": "basic" | "expert" }
+ *   3. default → "basic"
  */
 
-import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import basicStatusLine from "./basic";
+import expertStatusLine from "./expert";
 
-function fmt(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-	return `${n}`;
+type Mode = "basic" | "expert";
+
+const CONFIG_PATH = join(homedir(), ".pi", "agent", "status-line.json");
+const DEFAULT_MODE: Mode = "basic";
+
+function readConfigMode(): Mode | undefined {
+	try {
+		if (!existsSync(CONFIG_PATH)) return undefined;
+		const raw = readFileSync(CONFIG_PATH, "utf-8");
+		const parsed = JSON.parse(raw) as { mode?: string };
+		if (parsed.mode === "basic" || parsed.mode === "expert") return parsed.mode;
+	} catch {}
+	return undefined;
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("session_start", (_event, ctx) => {
-		if (!ctx.hasUI) return;
+function resolveMode(): Mode {
+	const envMode = process.env.PI_STATUS_LINE_MODE;
+	if (envMode === "basic" || envMode === "expert") return envMode;
 
-		ctx.ui.setFooter((tui, theme, footerData) => {
-			const unsub = footerData.onBranchChange(() => tui.requestRender());
+	const configMode = readConfigMode();
+	if (configMode) return configMode;
 
-			return {
-				dispose: unsub,
-				invalidate() {},
-				render(width: number): string[] {
-					// --- Line 1: cwd + branch ---
-					const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
-					const branch = footerData.getGitBranch();
-					const branchStr = branch ? " " + theme.fg("accent", `(${branch})`) : "";
-					const line1 = truncateToWidth(theme.fg("dim", cwd) + branchStr, width);
+	return DEFAULT_MODE;
+}
 
-					// --- Line 2: stats + model ---
-					let input = 0;
-					let output = 0;
-					let cacheRead = 0;
-					let cacheWrite = 0;
-					let cost = 0;
+export default function (pi: ExtensionAPI): void {
+	const mode = resolveMode();
 
-					for (const e of ctx.sessionManager.getBranch()) {
-						if (e.type === "message" && e.message.role === "assistant") {
-							const m = e.message as AssistantMessage;
-							input += m.usage.input;
-							output += m.usage.output;
-							cacheRead += m.usage.cacheRead;
-							cacheWrite += m.usage.cacheWrite;
-							cost += m.usage.cost.total;
-						}
-					}
-
-					const usage = ctx.getContextUsage();
-					let contextStr: string;
-					if (usage && usage.limit > 0) {
-						const pct = ((usage.tokens / usage.limit) * 100).toFixed(1);
-						contextStr = `${pct}%/${fmt(usage.limit)}`;
-					} else {
-						contextStr = "—";
-					}
-
-					const modelId = ctx.model?.id ?? "no-model";
-					const thinkingLevel = pi.getThinkingLevel();
-					const thinkingStr = thinkingLevel !== "off" ? ` • ${thinkingLevel}` : "";
-
-					// Extension statuses
-					const statuses = footerData.getExtensionStatuses();
-					const statusParts: string[] = [];
-					for (const [, text] of statuses) {
-						if (text) statusParts.push(text);
-					}
-					const statusStr = statusParts.length > 0 ? " " + statusParts.join(" ") : "";
-
-					const left = theme.fg(
-						"dim",
-						`↑${fmt(input)} ↓${fmt(output)} R${fmt(cacheRead)} W${fmt(cacheWrite)} $${cost.toFixed(3)} ${contextStr}`,
-					);
-
-					const right = theme.fg("text", modelId) + theme.fg("dim", thinkingStr) + statusStr;
-
-					const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-					const line2 = truncateToWidth(left + " ".repeat(gap) + right, width);
-
-					return [line1, line2];
-				},
-			};
-		});
-	});
+	if (mode === "expert") {
+		expertStatusLine(pi);
+	} else {
+		basicStatusLine(pi);
+	}
 }
