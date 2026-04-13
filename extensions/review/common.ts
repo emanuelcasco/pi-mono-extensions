@@ -33,7 +33,8 @@ Rules:
 - Ignore purely stylistic nits unless they hide a real problem.
 - Every comment must be specific and actionable.
 - The line number must refer to the NEW/RIGHT side of the diff.
-- If a comment spans multiple adjacent added/changed lines, include endLine.
+- Each added ('+') and context (' ') line in the diff is prefixed with its NEW-file line number in the form 'L<number>: '. You MUST copy that exact number into the "line" field. Removed ('-') lines have no L prefix and cannot be commented on.
+- If a comment spans multiple adjacent added/changed lines, set "line" to the L<number> of the first line and "endLine" to the L<number> of the last line.
 - If there are no worthwhile review comments, return an empty comments array.
 - Never exceed 25 comments.`;
 
@@ -334,6 +335,41 @@ export function extractPatchContext(patch: string | undefined, targetLine: numbe
 	return undefined;
 }
 
+export function annotateDiffWithLineNumbers(diff: string): string {
+	const lines = diff.split("\n");
+	const out: string[] = [];
+	let newLine: number | null = null;
+	for (const line of lines) {
+		if (line.startsWith("diff --git ")) {
+			newLine = null;
+			out.push(line);
+			continue;
+		}
+		const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+		if (hunkMatch) {
+			newLine = Number(hunkMatch[1]);
+			out.push(line);
+			continue;
+		}
+		if (newLine == null) {
+			out.push(line);
+			continue;
+		}
+		if (line.startsWith("+") && !line.startsWith("+++")) {
+			out.push(`L${newLine}: ${line}`);
+			newLine++;
+		} else if (line.startsWith(" ")) {
+			out.push(`L${newLine}: ${line}`);
+			newLine++;
+		} else if (line.startsWith("-") && !line.startsWith("---")) {
+			out.push(`     ${line}`);
+		} else {
+			out.push(line);
+		}
+	}
+	return out.join("\n");
+}
+
 export function safeJsonParse(text: string): { summary?: string; comments?: Array<Record<string, unknown>> } {
 	try {
 		return JSON.parse(text) as { summary?: string; comments?: Array<Record<string, unknown>> };
@@ -365,9 +401,10 @@ export async function buildReviewSession(
 		maxBytes: MAX_DIFF_BYTES,
 		maxLines: MAX_DIFF_LINES,
 	});
-	const diff = truncation.truncated
+	const rawDiff = truncation.truncated
 		? `${truncation.content}\n\n[Diff truncated: showing ${truncation.outputLines}/${truncation.totalLines} lines, ${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}]`
 		: truncation.content;
+	const diff = annotateDiffWithLineNumbers(rawDiff);
 
 	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok || !auth.apiKey) {
