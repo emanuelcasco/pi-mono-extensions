@@ -59,6 +59,66 @@ function statusColor(status: CommentStatus): "success" | "error" | "accent" | "w
 	}
 }
 
+interface HunkWindow {
+	header: string | null;
+	lines: string[];
+	hiddenBefore: number;
+	hiddenAfter: number;
+}
+
+function sliceHunkAroundLines(hunk: string, targetStart: number, targetEnd: number, maxLines: number): HunkWindow {
+	const all = hunk.split("\n");
+	const headerMatch = all[0]?.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+	if (!headerMatch) {
+		return { header: null, lines: all.slice(0, maxLines), hiddenBefore: 0, hiddenAfter: Math.max(0, all.length - maxLines) };
+	}
+
+	const header = all[0]!;
+	const body = all.slice(1);
+	let newLine = Number(headerMatch[1]);
+	const lineNumbers: (number | null)[] = body.map((line) => {
+		if (line.startsWith("+") || line.startsWith(" ")) return newLine++;
+		return null;
+	});
+
+	let firstHit = -1;
+	let lastHit = -1;
+	for (let i = 0; i < body.length; i++) {
+		const n = lineNumbers[i];
+		if (n != null && n >= targetStart && n <= targetEnd) {
+			if (firstHit === -1) firstHit = i;
+			lastHit = i;
+		}
+	}
+
+	const budget = Math.max(1, maxLines - 1);
+	if (firstHit === -1) {
+		const slice = body.slice(0, budget);
+		return { header, lines: slice, hiddenBefore: 0, hiddenAfter: Math.max(0, body.length - slice.length) };
+	}
+
+	const span = lastHit - firstHit + 1;
+	let start: number;
+	let end: number;
+	if (span >= budget) {
+		start = firstHit;
+		end = firstHit + budget;
+	} else {
+		const padding = budget - span;
+		const before = Math.floor(padding / 2);
+		start = Math.max(0, firstHit - before);
+		end = Math.min(body.length, start + budget);
+		start = Math.max(0, end - budget);
+	}
+
+	return {
+		header,
+		lines: body.slice(start, end),
+		hiddenBefore: start,
+		hiddenAfter: Math.max(0, body.length - end),
+	};
+}
+
 export class ReviewerComponent {
 	private comments: ReviewComment[];
 	private currentIndex: number;
@@ -202,16 +262,25 @@ export class ReviewerComponent {
 		row("");
 
 		if (comment.codeContext) {
-			const ctxLines = comment.codeContext.split("\n");
-			for (const cl of ctxLines.slice(0, 12)) {
+			const targetStart = Math.min(comment.line, comment.endLine ?? comment.line);
+			const targetEnd = Math.max(comment.line, comment.endLine ?? comment.line);
+			const window = sliceHunkAroundLines(comment.codeContext, targetStart, targetEnd, 12);
+			const linePrefix = `  ${th.fg("dim", "┃")} `;
+			if (window.header) addWrapped(th.fg("dim", window.header), linePrefix);
+			if (window.hiddenBefore > 0) {
+				addWrapped(th.fg("dim", `... ${window.hiddenBefore} earlier line${window.hiddenBefore !== 1 ? "s" : ""}`), linePrefix);
+			}
+			for (const cl of window.lines) {
 				const styled = cl.startsWith("+")
 					? th.fg("toolDiffAdded", cl)
 					: cl.startsWith("-")
 						? th.fg("toolDiffRemoved", cl)
 						: th.fg("toolDiffContext", cl);
-				addWrapped(styled, `  ${th.fg("dim", "┃")} `);
+				addWrapped(styled, linePrefix);
 			}
-			if (ctxLines.length > 12) addWrapped(th.fg("dim", `... ${ctxLines.length - 12} more lines`), `  ${th.fg("dim", "┃ ")}`);
+			if (window.hiddenAfter > 0) {
+				addWrapped(th.fg("dim", `... ${window.hiddenAfter} later line${window.hiddenAfter !== 1 ? "s" : ""}`), linePrefix);
+			}
 			row("");
 		}
 
