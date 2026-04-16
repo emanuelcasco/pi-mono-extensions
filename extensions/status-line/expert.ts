@@ -458,17 +458,16 @@ const USAGE_FETCHERS: Record<string, () => Promise<UsageSnapshot>> = {
 // ─── Rendering ───────────────────────────────────────────────────────
 
 function gaugeColor(pct: number): ThemeColor {
-	if (pct >= 90) return "error";
-	if (pct >= 70) return "warning";
-	if (pct >= 50) return "accent";
+	if (pct >= 50) return "error";
+	if (pct >= 35) return "warning";
 	return "success";
 }
 
 function ctxPie(pct: number): string {
-	if (pct >= 90) return CTX_PIES[4];
-	if (pct >= 62.5) return CTX_PIES[3];
-	if (pct >= 37.5) return CTX_PIES[2];
-	if (pct >= 12.5) return CTX_PIES[1];
+	if (pct >= 80) return CTX_PIES[4];
+	if (pct >= 75) return CTX_PIES[3];
+	if (pct >= 50) return CTX_PIES[2];
+	if (pct >= 25) return CTX_PIES[1];
 	return CTX_PIES[0];
 }
 
