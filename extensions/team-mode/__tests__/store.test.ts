@@ -648,3 +648,65 @@ describe("TeamStore — leader process state", () => {
     await rm(dir, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// mtime cache
+// ---------------------------------------------------------------------------
+
+describe("TeamStore — mtime cache", () => {
+  test("save invalidates cached reads — subsequent load reflects mutation", async () => {
+    const { store, dir } = await makeStore();
+    const team = makeTeam();
+    await store.saveTeam(team);
+
+    const first = await store.loadTeam(team.id);
+    assert.equal(first!.objective, "Test objective");
+
+    // Mutate through saveTeam — the cache must be busted so the next read
+    // picks up the new value rather than returning the stale cached entry.
+    await store.saveTeam({ ...team, objective: "Updated objective" });
+    const second = await store.loadTeam(team.id);
+    assert.equal(second!.objective, "Updated objective");
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("cached read returns the same reference when mtime is unchanged", async () => {
+    const { store, dir } = await makeStore();
+    const team = makeTeam();
+    await store.saveTeam(team);
+
+    const a = await store.loadTeam(team.id);
+    const b = await store.loadTeam(team.id);
+    // Identity equality proves the parse step was skipped on the 2nd read.
+    assert.strictEqual(a, b, "cache should short-circuit the second load");
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("appendSignal invalidates the ndjson cache", async () => {
+    const { store, dir } = await makeStore();
+    const team = makeTeam();
+    await store.saveTeam(team);
+
+    const sig: Signal = {
+      id: "sig-001",
+      teamId: team.id,
+      source: "leader",
+      type: "team_summary",
+      severity: "info",
+      timestamp: new Date().toISOString(),
+      message: "first",
+      links: [],
+    };
+    await store.appendSignal(team.id, sig);
+    const firstLoad = await store.loadSignals(team.id);
+    assert.equal(firstLoad.length, 1);
+
+    await store.appendSignal(team.id, { ...sig, id: "sig-002", message: "second" });
+    const secondLoad = await store.loadSignals(team.id);
+    assert.equal(secondLoad.length, 2, "append must bust cache");
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});

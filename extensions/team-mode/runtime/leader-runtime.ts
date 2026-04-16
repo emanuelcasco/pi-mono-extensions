@@ -39,7 +39,7 @@ import type { TaskManager } from "../managers/task-manager.js";
 import type { MailboxManager } from "../managers/mailbox-manager.js";
 import type { TeamManager } from "../managers/team-manager.js";
 
-const LEADER_POLL_MS = 5_000;
+const LEADER_POLL_MS = 20_000;
 
 /**
  * Teammate roles that perform write operations.
@@ -137,9 +137,8 @@ type ProgressCallback = (event: PiProgressEvent) => void;
 
 /** Structured progress extracted from pi JSON mode events. */
 type PiProgressEvent = {
-  type: "tool_start" | "tool_end" | "turn_end";
+  type: "tool_end" | "turn_end";
   toolName?: string;
-  toolArgs?: unknown;
   /** For tool_end: was this an error result? */
   isError?: boolean;
   /** For tool_end: truncated result preview. */
@@ -188,10 +187,10 @@ function collectPiOutput(
       }
 
       // Forward intermediate events as progress updates.
+      // Only tool_end and turn_end are forwarded; tool_start doubles the
+      // signal noise without adding information a reader can act on.
       if (onProgress) {
-        if (event.type === "tool_execution_start" && event.toolName) {
-          onProgress({ type: "tool_start", toolName: event.toolName, toolArgs: event.args });
-        } else if (event.type === "tool_execution_end" && event.toolName) {
+        if (event.type === "tool_execution_end" && event.toolName) {
           const preview = typeof event.result === "string"
             ? event.result.slice(0, 200)
             : event.result != null
@@ -260,6 +259,16 @@ export function buildTaskPrompt(task: TaskRecord): string {
     lines.push(`Artifacts to produce or update: ${task.artifacts.join(", ")}`);
   if (task.blockers.length > 0)
     lines.push(`Known blockers: ${task.blockers.join("; ")}`);
+  if (task.previousAttemptOutput?.trim()) {
+    lines.push(
+      [
+        "## Previous attempt (resume, don't restart)",
+        "An earlier attempt at this task stalled before completing. The partial output below is what the previous attempt produced — continue from where it left off, verify any incomplete steps, and avoid repeating work or commands that already succeeded.",
+        "",
+        task.previousAttemptOutput,
+      ].join("\n"),
+    );
+  }
   return lines.join("\n\n");
 }
 
@@ -377,9 +386,10 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 /**
  * Minimum time (ms) a task must have been `in_progress` before it can be
  * declared stalled. Prevents false positives on the same leader-cycle that
- * spawned the teammate subprocess.
+ * spawned the teammate subprocess. Kept independent of `LEADER_POLL_MS` so
+ * tuning the poll interval does not shift stall-detection sensitivity.
  */
-const STALL_GRACE_MS = LEADER_POLL_MS * 2;
+const STALL_GRACE_MS = 10_000;
 
 /**
  * Marker phrase written into a task's blockers when its teammate process
@@ -439,9 +449,53 @@ export class LeaderRuntime {
    * Optional callback invoked whenever a team's status changes in the
    * background (e.g. completion, failure). The extension wires this up to
    * `refreshWidget` so the TUI widget stays in sync even when no agent turn
-   * is running.
+   * is running. Fires are throttled per team (see `notifyStatusChange`) so
+   * bursty signal activity does not thrash the TUI / parent session.
    */
   onStatusChange?: (teamId: string) => void;
+
+  /**
+   * Minimum interval (ms) between `onStatusChange` fires for the same team.
+   * Bursty signal emission inside a single cycle should not translate into
+   * a storm of widget refreshes — one refresh per window is enough.
+   */
+  private static readonly STATUS_CHANGE_THROTTLE_MS = 2_000;
+  private readonly lastStatusChangeAt = new Map<string, number>();
+  private readonly pendingStatusChange = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
+   * Fire the `onStatusChange` callback at most once per
+   * `STATUS_CHANGE_THROTTLE_MS` window per team. Extra calls inside the
+   * window are coalesced into a single trailing fire so the final state is
+   * always delivered.
+   */
+  private notifyStatusChange(teamId: string): void {
+    const callback = this.onStatusChange;
+    if (!callback) return;
+    const now = Date.now();
+    const last = this.lastStatusChangeAt.get(teamId) ?? 0;
+    const window = LeaderRuntime.STATUS_CHANGE_THROTTLE_MS;
+    const elapsed = now - last;
+
+    if (elapsed >= window) {
+      this.lastStatusChangeAt.set(teamId, now);
+      try { callback(teamId); } catch { /* best-effort */ }
+      return;
+    }
+
+    if (this.pendingStatusChange.has(teamId)) return;
+
+    const timer = setTimeout(() => {
+      this.pendingStatusChange.delete(teamId);
+      this.lastStatusChangeAt.set(teamId, Date.now());
+      try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
+    }, window - elapsed);
+    // Don't keep the Node event loop alive just for a trailing UI refresh.
+    if (typeof timer === "object" && typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+    this.pendingStatusChange.set(teamId, timer);
+  }
 
   /**
    * Optional subprocess factory — inject a custom spawn function for testing.
@@ -613,10 +667,8 @@ export class LeaderRuntime {
       activeTeammate.lastProgressAt = now;
 
       let message: string;
-      if (event.type === "tool_start") {
-        message = `${roleDisplay(role)} running ${event.toolName ?? "tool"}`;
-      } else if (event.type === "tool_end") {
-        const status = event.isError ? "failed" : "completed";
+      if (event.type === "tool_end") {
+        const status = event.isError ? "failed" : "ran";
         message = `${roleDisplay(role)} ${status} ${event.toolName ?? "tool"}`;
       } else {
         message = `${roleDisplay(role)} completed a turn`;
@@ -722,6 +774,8 @@ export class LeaderRuntime {
           artifacts: output.trim()
             ? [...task.artifacts, `teammates/${role}/outputs/${outputFile}`]
             : task.artifacts,
+          // Resume hint is consumed once — drop it so completion summaries stay clean.
+          previousAttemptOutput: undefined,
         });
         await this.signalManager.emit(teamId, {
           source: role,
@@ -784,7 +838,7 @@ export class LeaderRuntime {
     }
 
     // Notify the extension to refresh the widget.
-    try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
+    this.notifyStatusChange(teamId);
   }
 
   async stopTeammate(teamId: string, role: string): Promise<void> {
@@ -836,6 +890,11 @@ export class LeaderRuntime {
       active.abortController.abort();
       this.activeTeammates.delete(key);
     }
+    for (const timer of this.pendingStatusChange.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingStatusChange.clear();
+    this.lastStatusChangeAt.clear();
   }
 
   /**
@@ -944,8 +1003,10 @@ export class LeaderRuntime {
     const researchOwner = team.teammates.find(
       (role) => role === "researcher" || role === "docs",
     );
+    const explicitPlanner = team.teammates.find((role) => role === "planner");
     const plannerOwner =
-      team.teammates.find((role) => role === "planner") ?? team.teammates[0];
+      explicitPlanner ??
+      (researchOwner ? undefined : team.teammates[0]);
     const implementationOwners = team.teammates.filter((role) =>
       ["backend", "frontend", "tester", "docs"].includes(role),
     );
@@ -953,7 +1014,31 @@ export class LeaderRuntime {
 
     const created: TaskRecord[] = [];
 
-    if (researchOwner) {
+    // Research + planning are merged into one task when the same teammate would
+    // own both, avoiding an extra subprocess cold-start on the critical path.
+    if (researchOwner && !explicitPlanner) {
+      const task = await this.taskManager.createTask(teamId, {
+        title: `Research and plan ${team.objective}`,
+        description: `Investigate constraints, existing patterns, and relevant files, then synthesize findings into a concrete implementation plan for: ${team.objective}`,
+        owner: researchOwner,
+        status: "ready",
+        priority: "high",
+        dependsOn: [],
+        riskLevel: "low",
+        approvalRequired: false,
+        artifacts: [],
+        blockers: [],
+      });
+      created.push(task);
+      await this.signalManager.emit(teamId, {
+        source: "leader",
+        type: "task_created",
+        severity: "info",
+        taskId: task.id,
+        message: `Created research+plan task for ${researchOwner}`,
+        links: [],
+      });
+    } else if (researchOwner) {
       const task = await this.taskManager.createTask(teamId, {
         title: `Research requirements for ${team.objective}`,
         description: `Investigate constraints, existing patterns, and relevant files for: ${team.objective}`,
@@ -1003,7 +1088,8 @@ export class LeaderRuntime {
     }
 
     const planTask = created.find((task) =>
-      task.title.startsWith("Create implementation plan"),
+      task.title.startsWith("Create implementation plan") ||
+      task.title.startsWith("Research and plan"),
     );
     const implementationDepends = planTask
       ? [planTask.id]
@@ -1085,8 +1171,15 @@ export class LeaderRuntime {
     // Process any new guidance messages sent to the leader by the user.
     await this.processLeaderMailbox(teamId);
 
-    await this.taskManager.resolveDependencies(teamId);
-    const tasks = await this.taskManager.getTasks(teamId);
+    const promoted = await this.taskManager.resolveDependencies(teamId);
+    // Reuse a single snapshot of tasks for this cycle. `resolveDependencies`
+    // only promotes `todo`/`blocked` to `ready`, so we can patch the snapshot
+    // in place instead of re-reading the file.
+    let tasks = await this.taskManager.getTasks(teamId);
+    if (promoted.length > 0) {
+      const promotedById = new Map(promoted.map((t) => [t.id, t]));
+      tasks = tasks.map((t) => promotedById.get(t.id) ?? t);
+    }
     const phase = team.currentPhase ?? this.initialPhaseFor(team);
     const nextPhase = this.determinePhase(tasks, phase);
     if (nextPhase !== phase) {
@@ -1101,10 +1194,9 @@ export class LeaderRuntime {
       await this.signalManager.rebuildCompactedSignals(teamId);
     }
 
-    const refreshedTasks = await this.taskManager.getTasks(teamId);
     if (
-      refreshedTasks.length > 0 &&
-      refreshedTasks.every(
+      tasks.length > 0 &&
+      tasks.every(
         (task) => task.status === "done" || task.status === "cancelled",
       )
     ) {
@@ -1125,7 +1217,7 @@ export class LeaderRuntime {
       await this.teamManager.updateTeam(teamId, {
         status: "completed",
         currentPhase: "verification",
-        summary: `All ${refreshedTasks.length} tasks completed`,
+        summary: `All ${tasks.length} tasks completed`,
       });
       await this.store.saveLeaderProcess(teamId, {
         teamId,
@@ -1151,11 +1243,11 @@ export class LeaderRuntime {
       }
 
       // Notify the extension to refresh the widget now that status changed.
-      try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
+      this.notifyStatusChange(teamId);
       return;
     }
 
-    const readyTasks = refreshedTasks
+    const readyTasks = tasks
       .filter((task) => task.status === "ready")
       .sort((a, b) =>
         a.priority === b.priority
@@ -1208,7 +1300,11 @@ export class LeaderRuntime {
 
     // Detect tasks that are stuck in in_progress but whose teammate process
     // is no longer running (e.g. after a session restart or unexpected exit).
-    await this.detectStalledTasks(teamId);
+    // Spawn calls above mutate task state; re-read once if any were spawned.
+    const tasksForStallCheck = readyTasks.length > 0
+      ? await this.taskManager.getTasks(teamId)
+      : tasks;
+    await this.detectStalledTasks(teamId, tasksForStallCheck);
 
     const summary = await this.teamManager.getTeamSummary(teamId);
     const summaryText =
@@ -1243,13 +1339,14 @@ export class LeaderRuntime {
     );
     const researchPending = tasks.some(
       (task) =>
-        task.title.startsWith("Research ") &&
+        task.title.startsWith("Research requirements") &&
         task.status !== "done" &&
         task.status !== "cancelled",
     );
     const synthesisPending = tasks.some(
       (task) =>
-        task.title.startsWith("Create implementation plan") &&
+        (task.title.startsWith("Create implementation plan") ||
+          task.title.startsWith("Research and plan")) &&
         task.status !== "done" &&
         task.status !== "cancelled",
     );
@@ -1419,14 +1516,17 @@ export class LeaderRuntime {
     context: string | undefined,
     cwd: string,
   ): string {
-    return [
+    // Roles that rarely need to write to durable team memory get a trimmed
+    // prompt — the `team_memory` block is ~300 tokens of boilerplate that
+    // never gets used by verification / validation roles.
+    const MEMORY_CAPABLE_ROLES = new Set(["researcher", "planner", "backend", "frontend", "docs"]);
+    const includeMemoryBlock = MEMORY_CAPABLE_ROLES.has(role);
+
+    const parts: string[] = [
       `You are a ${role} on team "${teamName}".`,
       "",
       TEAMMATE_ROLE_PROMPTS[role] ??
-        [
-          `You are a ${role} specialist on a team.`,
-          "Complete the assigned task carefully and report results clearly.",
-        ].join("\n"),
+        `You are a ${role} specialist. Complete the assigned task carefully and report results clearly.`,
       "",
       "## Your Task",
       taskDescription,
@@ -1436,29 +1536,24 @@ export class LeaderRuntime {
       "",
       "## Working Directory",
       cwd,
-      "",
-      "## Team Memory",
-      "You can record important knowledge to durable team memory using the `team_memory` tool.",
-      "This knowledge persists after the team completes and is available to future teams.",
-      `Use teamId: "${teamId}" and one of these types:`,
-      '- "discoveries" — what you learned about the codebase (patterns, constraints, gotchas)',
-      '- "decisions" — choices made and why (architectural decisions, tradeoffs)',
-      '- "contracts" — agreed interfaces (API schemas, component props, shared types)',
+    ];
+
+    if (includeMemoryBlock) {
+      parts.push(
+        "",
+        "## Team Memory",
+        `Record durable knowledge via \`team_memory\` (teamId: "${teamId}"). Types: "discoveries" (patterns/gotchas), "decisions" (choices+why), "contracts" (shared interfaces).`,
+      );
+    }
+
+    parts.push(
       "",
       "## Output Format",
-      "When your task is complete, provide a clear summary of:",
-      "1. What was accomplished",
-      "2. Files created or modified (with paths)",
-      "3. Any issues or open questions",
-      "4. Handoff notes for other teammates",
-      "",
-      "If another teammate needs context from your work, include a Handoffs section using this exact pattern:",
-      "Handoffs:",
-      "- to: frontend | message: API is ready at /settings/billing and returns { ... }",
-      "- to: reviewer | message: Please focus on auth checks in billing-settings.ts",
-      "",
-      "These handoffs are automatically delivered to teammates through the team mailbox.",
-    ].join("\n");
+      "End your turn with: (1) what was accomplished, (2) files created/modified with paths, (3) open questions, (4) handoff notes.",
+      "To route messages to teammates, include a `Handoffs:` section with one line per recipient, e.g. `- to: reviewer | message: Focus on auth checks in billing.ts`. These are auto-delivered via the team mailbox.",
+    );
+
+    return parts.join("\n");
   }
 
   /**
@@ -1509,9 +1604,9 @@ export class LeaderRuntime {
    * Stalled tasks are moved to `blocked` with a clear reason, and a `blocked`
    * signal is emitted so the main session can react.
    */
-  private async detectStalledTasks(teamId: string): Promise<void> {
+  private async detectStalledTasks(teamId: string, preloadedTasks?: TaskRecord[]): Promise<void> {
     try {
-      const tasks = await this.taskManager.getTasks(teamId);
+      const tasks = preloadedTasks ?? await this.taskManager.getTasks(teamId);
       const inProgressTasks = tasks.filter(
         (t) => t.status === "in_progress" && t.owner,
       );
@@ -1550,10 +1645,21 @@ export class LeaderRuntime {
           continue;
         }
 
+        // Capture whatever the stalled teammate managed to emit so the retry
+        // can resume instead of restarting from scratch.
+        let partial: string | undefined;
+        try {
+          const prevProcess = await this.store.loadTeammateProcess(teamId, task.owner);
+          if (prevProcess?.output && prevProcess.output.trim()) {
+            partial = prevProcess.output.trim().slice(0, 4000);
+          }
+        } catch { /* best-effort */ }
+
         await this.taskManager.updateTask(teamId, task.id, {
           status: "blocked",
           blockers: [...task.blockers, STALL_BLOCKER_MESSAGE],
           retryCount,
+          previousAttemptOutput: partial ?? task.previousAttemptOutput,
         });
         await this.signalManager.emit(teamId, {
           source: "leader",

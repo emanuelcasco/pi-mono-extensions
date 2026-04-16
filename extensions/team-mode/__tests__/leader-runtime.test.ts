@@ -248,6 +248,16 @@ describe("buildTaskPrompt", () => {
 		const prompt = buildTaskPrompt(task);
 		assert.ok(prompt.includes("Missing API schema"));
 	});
+
+	test("includes previousAttemptOutput as resume hint when present", () => {
+		const task = makeTask("team-1", {
+			title: "Task",
+			previousAttemptOutput: "Ran pnpm install. Started typecheck but process was killed.",
+		});
+		const prompt = buildTaskPrompt(task);
+		assert.ok(prompt.includes("Previous attempt"), "should flag resume section");
+		assert.ok(prompt.includes("pnpm install"), "should embed partial output");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -286,6 +296,38 @@ describe("launchLeader", () => {
 		// Should have emitted team_summary signals
 		const signals = await ctx.signalManager.getSignals(team.id);
 		assert.ok(signals.some(s => s.type === "team_summary"), "Should emit team_summary signal");
+	});
+
+	test("merges research and planning into one researcher task", async () => {
+		ctx = await setup();
+		const team = makeTeam({ teammates: ["researcher", "backend", "reviewer"] });
+		await ctx.store.ensureTeamDirs(team.id, team.teammates);
+		await ctx.store.saveTeam(team);
+
+		ctx.runtime._spawnFn = () => createMockChildProcess() as any;
+		await ctx.runtime.launchLeader(team.id);
+
+		const tasks = await ctx.taskManager.getTasks(team.id);
+		const researcherTasks = tasks.filter(t => t.owner === "researcher");
+		assert.equal(researcherTasks.length, 1, "researcher should own exactly one merged task");
+		assert.ok(
+			researcherTasks[0].title.startsWith("Research and plan"),
+			`expected merged task title, got "${researcherTasks[0].title}"`,
+		);
+	});
+
+	test("keeps research and plan separate when explicit planner is present", async () => {
+		ctx = await setup();
+		const team = makeTeam({ teammates: ["researcher", "planner", "backend", "reviewer"] });
+		await ctx.store.ensureTeamDirs(team.id, team.teammates);
+		await ctx.store.saveTeam(team);
+
+		ctx.runtime._spawnFn = () => createMockChildProcess() as any;
+		await ctx.runtime.launchLeader(team.id);
+
+		const tasks = await ctx.taskManager.getTasks(team.id);
+		assert.ok(tasks.some(t => t.owner === "researcher" && t.title.startsWith("Research requirements")));
+		assert.ok(tasks.some(t => t.owner === "planner" && t.title.startsWith("Create implementation plan")));
 	});
 
 	test("calls planTeamComposition when team has no teammates", async () => {

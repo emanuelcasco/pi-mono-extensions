@@ -175,8 +175,11 @@ export class TaskManager {
 				updatedAt: now,
 			};
 
-			tasks[index] = updated;
-			await this.store.saveTasks(teamId, tasks);
+			// Build a new array — never mutate `tasks` in place, as the store
+			// cache may hand out the same array to concurrent readers.
+			const next = tasks.slice();
+			next[index] = updated;
+			await this.store.saveTasks(teamId, next);
 			return updated;
 		});
 	}

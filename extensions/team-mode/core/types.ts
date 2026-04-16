@@ -143,6 +143,12 @@ export interface TaskRecord {
   updatedAt: string;
   /** Number of times this task has been retried after a stall or failure. */
   retryCount?: number;
+  /**
+   * Partial output captured from the previous attempt when a task stalls.
+   * Injected into the next spawn's context so the retry can resume instead of
+   * restarting from scratch.
+   */
+  previousAttemptOutput?: string;
 }
 
 /** An append-only event in the team signal log. Stored in `signals.ndjson`. */

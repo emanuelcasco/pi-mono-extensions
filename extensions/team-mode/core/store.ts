@@ -14,7 +14,7 @@
  * Dependencies: only `node:fs/promises` and `node:path`.
  */
 
-import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -99,17 +99,70 @@ const MEMORY_FILES = {
 type MemoryType = keyof typeof MEMORY_FILES;
 
 // ---------------------------------------------------------------------------
+// In-memory mtime cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-path cache of parsed file contents keyed by mtime. A leader cycle runs
+ * every ~20s and reads `team.json`, `tasks.json`, and the two NDJSON logs
+ * repeatedly; without caching, each cycle would re-parse ~tens of KB of
+ * JSON. `stat()` is ~10× cheaper than `readFile()+JSON.parse()` for these
+ * files, so we stat-on-read and skip parsing when the mtime is unchanged.
+ *
+ * The cache is correct under our concurrency model because every writer in
+ * this process goes through `TeamStore` — after a local write the cache is
+ * invalidated explicitly. External writers (another process editing the
+ * same directory) are still detected via the mtime check on read.
+ */
+type CacheEntry = { mtimeMs: number; value: unknown };
+const fileCache = new Map<string, CacheEntry>();
+
+function cacheInvalidate(path: string): void {
+	fileCache.delete(path);
+}
+
+/**
+ * Read a file with mtime-keyed caching. Returns `null` if the file does not
+ * exist, matching the semantics of the `readJson` / `readText` helpers.
+ */
+async function cachedRead<T>(
+	path: string,
+	parse: (raw: string) => T,
+): Promise<T | null> {
+	let mtimeMs: number;
+	try {
+		const st = await stat(path);
+		mtimeMs = st.mtimeMs;
+	} catch {
+		cacheInvalidate(path);
+		return null;
+	}
+
+	const cached = fileCache.get(path);
+	if (cached && cached.mtimeMs === mtimeMs) {
+		return cached.value as T;
+	}
+
+	let raw: string;
+	try {
+		raw = await readFile(path, "utf8");
+	} catch {
+		cacheInvalidate(path);
+		return null;
+	}
+
+	const value = parse(raw);
+	fileCache.set(path, { mtimeMs, value });
+	return value;
+}
+
+// ---------------------------------------------------------------------------
 // Low-level helpers
 // ---------------------------------------------------------------------------
 
 /** Read and parse a JSON file; returns `null` if the file does not exist. */
 async function readJson<T>(path: string): Promise<T | null> {
-	try {
-		const raw = await readFile(path, "utf8");
-		return JSON.parse(raw) as T;
-	} catch {
-		return null;
-	}
+	return cachedRead<T>(path, (raw) => JSON.parse(raw) as T);
 }
 
 /**
@@ -125,6 +178,7 @@ async function writeJson<T>(filePath: string, data: T): Promise<void> {
 	try {
 		await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
 		await rename(tmp, filePath);
+		cacheInvalidate(filePath);
 	} catch (err) {
 		try { await unlink(tmp); } catch { /* ignore stale .tmp */ }
 		throw err;
@@ -133,30 +187,25 @@ async function writeJson<T>(filePath: string, data: T): Promise<void> {
 
 /** Read all lines from an NDJSON file; skips blank lines. */
 async function readNdjson<T>(path: string): Promise<T[]> {
-	try {
-		const raw = await readFile(path, "utf8");
-		return raw
+	const parsed = await cachedRead<T[]>(path, (raw) =>
+		raw
 			.split("\n")
 			.filter((line) => line.trim().length > 0)
-			.map((line) => JSON.parse(line) as T);
-	} catch {
-		return [];
-	}
+			.map((line) => JSON.parse(line) as T),
+	);
+	return parsed ?? [];
 }
 
 /** Append a single JSON record as a new line to an NDJSON file. */
 async function appendNdjson<T>(path: string, record: T): Promise<void> {
 	const line = `${JSON.stringify(record)}\n`;
 	await writeFile(path, line, { flag: "a", encoding: "utf8" });
+	cacheInvalidate(path);
 }
 
 /** Read a text file; returns `null` if it does not exist. */
 async function readText(path: string): Promise<string | null> {
-	try {
-		return await readFile(path, "utf8");
-	} catch {
-		return null;
-	}
+	return cachedRead<string>(path, (raw) => raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -271,10 +320,15 @@ export class TeamStore {
 	 * No-op if the directory does not exist.
 	 */
 	async deleteTeam(teamId: string): Promise<void> {
+		const teamDir = this.getTeamDir(teamId);
 		try {
-			await rm(this.getTeamDir(teamId), { recursive: true, force: true });
+			await rm(teamDir, { recursive: true, force: true });
 		} catch {
 			// Ignore — directory may already be absent
+		}
+		// Drop any cached entries for files under this team dir.
+		for (const key of [...fileCache.keys()]) {
+			if (key === teamDir || key.startsWith(`${teamDir}/`)) fileCache.delete(key);
 		}
 	}
 
@@ -328,6 +382,7 @@ export class TeamStore {
 		const filePath = join(dir, FILE_SIGNALS_COMPACTED);
 		const content = signals.map((signal) => JSON.stringify(signal)).join("\n");
 		await writeFile(filePath, content.length > 0 ? `${content}\n` : "", "utf8");
+		cacheInvalidate(filePath);
 	}
 
 	/**
@@ -427,7 +482,9 @@ export class TeamStore {
 	async saveSummary(teamId: string, summary: string): Promise<void> {
 		const dir = this.getTeamDir(teamId);
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, FILE_SUMMARY), summary, "utf8");
+		const filePath = join(dir, FILE_SUMMARY);
+		await writeFile(filePath, summary, "utf8");
+		cacheInvalidate(filePath);
 	}
 
 	/**
@@ -450,7 +507,9 @@ export class TeamStore {
 	async saveMemory(teamId: string, type: MemoryType, content: string): Promise<void> {
 		const dir = join(this.getTeamDir(teamId), "memory");
 		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, MEMORY_FILES[type]), content, "utf8");
+		const filePath = join(dir, MEMORY_FILES[type]);
+		await writeFile(filePath, content, "utf8");
+		cacheInvalidate(filePath);
 	}
 
 	/**
