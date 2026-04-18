@@ -108,6 +108,31 @@ describe("team-mode integration", () => {
 		if (ctx) await teardown(ctx);
 	});
 
+	/**
+	 * The integration tests below simulate the LLM leader's decisions by calling
+	 * `runtime.spawnTeammate(...)` directly — exactly what the `team_spawn_teammate`
+	 * tool does at runtime. This lets us exercise the runtime's plumbing
+	 * (dependency resolution, completion detection, handoffs, approval gates)
+	 * without needing a real pi leader subprocess to make tool calls.
+	 *
+	 * Any leader-turn spawn (userMessage starts with "## Current state") that the
+	 * runtime initiates during launchLeader/runLeaderCycle auto-completes to a
+	 * no-op so we don't hang waiting for it.
+	 */
+	function autoCompleteLeaderSpawns(ctx: IntegrationContext): void {
+		const previous = ctx.runtime._spawnFn;
+		ctx.runtime._spawnFn = (promptFile, userMessage, cwd, model) => {
+			if (!userMessage.startsWith("Task:")) {
+				const proc = createMockChildProcess();
+				setTimeout(() => proc.complete("leader turn done"), 5);
+				return proc as any;
+			}
+			// Delegate teammate spawns to the test-specific handler.
+			if (!previous) throw new Error("No teammate spawn handler installed");
+			return previous(promptFile, userMessage, cwd, model);
+		};
+	}
+
 	test("happy path lifecycle completes end-to-end", async () => {
 		ctx = await setup();
 		const team = makeTeam();
@@ -130,20 +155,37 @@ describe("team-mode integration", () => {
 		await ctx.store.saveTasks(team.id, [backendTask, reviewerTask]);
 
 		const processes: Partial<Record<string, MockChildProcess>> = {};
-		let spawnOrder = 0;
+		let nextTeammate: "backend" | "reviewer" = "backend";
 		ctx.runtime._spawnFn = () => {
-			spawnOrder += 1;
-			const role = spawnOrder === 1 ? "backend" : "reviewer";
 			const proc = createMockChildProcess();
-			processes[role] = proc;
+			processes[nextTeammate] = proc;
 			return proc as any;
 		};
+		autoCompleteLeaderSpawns(ctx);
 
 		await ctx.runtime.launchLeader(team.id);
+
+		// Simulate the LLM leader's decision: spawn backend for task-001.
+		nextTeammate = "backend";
+		await ctx.runtime.spawnTeammate(
+			team.id,
+			"backend",
+			backendTask.id,
+			"Implement backend endpoint",
+		);
 		await waitFor(() => Boolean(processes.backend));
-		processes.backend!.complete("Implemented endpoint successfully.\nHandoffs:\n- to: reviewer | message: Please verify the /health endpoint behavior.");
+		processes.backend!.complete("Implemented endpoint successfully.");
 
 		await waitFor(async () => (await ctx.taskManager.getTask(team.id, "task-001"))?.status === "done");
+
+		// Simulate the LLM leader's decision: spawn reviewer for task-002 (now ready).
+		nextTeammate = "reviewer";
+		await ctx.runtime.spawnTeammate(
+			team.id,
+			"reviewer",
+			reviewerTask.id,
+			"Review backend endpoint",
+		);
 		await waitFor(() => Boolean(processes.reviewer));
 		processes.reviewer!.complete("Reviewed endpoint successfully.");
 
@@ -169,30 +211,46 @@ describe("team-mode integration", () => {
 		});
 		await ctx.store.saveTasks(team.id, [stalledTask]);
 
+		// Install leader-turn auto-completion + a placeholder teammate spawn handler.
+		ctx.runtime._spawnFn = () => createMockChildProcess() as any;
+		autoCompleteLeaderSpawns(ctx);
+
 		await ctx.runtime.launchLeader(team.id);
 		await waitFor(async () => (await ctx.taskManager.getTask(team.id, stalledTask.id))?.status === "blocked");
 		const blockedSignals = await ctx.signalManager.getSignals(team.id, { type: "blocked" });
 		assert.equal(blockedSignals.length > 0, true);
 
+		// User / leader unblocks the task.
 		await ctx.taskManager.updateTask(team.id, stalledTask.id, {
 			status: "ready",
 			blockers: [],
 		});
 
+		// Simulate the LLM leader re-spawning the teammate after recovery.
 		let recoveredProcess: MockChildProcess | undefined;
-		ctx.runtime._spawnFn = () => {
+		ctx.runtime._spawnFn = (_p, userMessage) => {
+			if (!userMessage.startsWith("Task:")) {
+				const leader = createMockChildProcess();
+				setTimeout(() => leader.complete("leader done"), 5);
+				return leader as any;
+			}
 			recoveredProcess = createMockChildProcess();
 			return recoveredProcess as any;
 		};
-		await (ctx.runtime as any).runLeaderCycleInner(team.id);
+		await ctx.runtime.spawnTeammate(
+			team.id,
+			"backend",
+			stalledTask.id,
+			"Retry backend task",
+		);
 		await waitFor(() => Boolean(recoveredProcess));
 		recoveredProcess!.complete("Recovered successfully.");
 		await waitFor(async () => (await ctx.taskManager.getTask(team.id, stalledTask.id))?.status === "done");
 	});
 
-	test("explicit handoffs are delivered through the mailbox", async () => {
+	test("dependency handoff is delivered when a task completes", async () => {
 		ctx = await setup();
-		const team = makeTeam({ teammates: ["backend", "frontend", "reviewer"] });
+		const team = makeTeam({ teammates: ["backend", "frontend"] });
 		await ctx.store.ensureTeamDirs(team.id, team.teammates);
 		await ctx.store.saveTeam(team);
 		const backendTask = makeTask(team.id, {
@@ -215,20 +273,25 @@ describe("team-mode integration", () => {
 			backendProcess = createMockChildProcess();
 			return backendProcess as any;
 		};
+		autoCompleteLeaderSpawns(ctx);
+
 		await ctx.runtime.launchLeader(team.id);
+		// LLM leader would have called team_spawn_teammate — simulate that.
+		await ctx.runtime.spawnTeammate(
+			team.id,
+			"backend",
+			backendTask.id,
+			"Implement API contract",
+		);
 		await waitFor(() => Boolean(backendProcess));
-		backendProcess!.complete([
-			"Backend API finished.",
-			"Handoffs:",
-			"- to: frontend | message: API is ready at /health and returns { status: 'ok' }",
-			"- to: reviewer | message: Focus review on the response schema.",
-		].join("\n"));
+		backendProcess!.complete("Backend API finished. Response shape: { status: 'ok' }.");
 
 		await waitFor(async () => (await ctx.mailboxManager.getMessagesFor(team.id, "frontend")).length > 0);
 		const frontendMessages = await ctx.mailboxManager.getMessagesFor(team.id, "frontend");
-		assert.equal(frontendMessages.some((message) => message.message.includes("API is ready at /health")), true);
+		assert.equal(frontendMessages[0].type, "dependency_handoff");
+		assert.equal(frontendMessages[0].from, "backend");
 		const handoffSignals = await ctx.signalManager.getSignals(team.id, { type: "handoff" });
-		assert.equal(handoffSignals.length >= 2, true);
+		assert.equal(handoffSignals.length >= 1, true);
 	});
 
 	test("approval-gated task waits for approval before spawning", async () => {
@@ -251,22 +314,38 @@ describe("team-mode integration", () => {
 			artifact: "specs/risky-plan.md",
 		});
 
-		let spawnCount = 0;
-		let process: MockChildProcess | undefined;
-		ctx.runtime._spawnFn = () => {
-			spawnCount += 1;
-			process = createMockChildProcess();
-			return process as any;
+		// Count teammate spawns only — leader turns auto-complete.
+		let teammateSpawns = 0;
+		let teammateProc: MockChildProcess | undefined;
+		ctx.runtime._spawnFn = (_p, userMessage) => {
+			if (!userMessage.startsWith("Task:")) {
+				const leader = createMockChildProcess();
+				setTimeout(() => leader.complete("leader turn done"), 5);
+				return leader as any;
+			}
+			teammateSpawns += 1;
+			teammateProc = createMockChildProcess();
+			return teammateProc as any;
 		};
 		await ctx.runtime.launchLeader(team.id);
 		await new Promise((resolve) => setTimeout(resolve, 150));
-		assert.equal(spawnCount, 0, "approval-gated task should not spawn before approval");
+		assert.equal(
+			teammateSpawns,
+			0,
+			"approval-gated task should not spawn a teammate before approval",
+		);
 
 		await ctx.approvalManager.approve(team.id, approval.id, "user");
 		await ctx.taskManager.updateTask(team.id, gatedTask.id, { status: "ready", blockers: [] });
-		await (ctx.runtime as any).runLeaderCycleInner(team.id);
-		await waitFor(() => Boolean(process));
-		process!.complete("Approved work completed.");
+		// Simulate LLM leader reacting to approval + spawning teammate.
+		await ctx.runtime.spawnTeammate(
+			team.id,
+			"backend",
+			gatedTask.id,
+			"Execute approved risky refactor",
+		);
+		await waitFor(() => Boolean(teammateProc));
+		teammateProc!.complete("Approved work completed.");
 		await waitFor(async () => (await ctx.taskManager.getTask(team.id, gatedTask.id))?.status === "done");
 		const approvalSignals = await ctx.signalManager.getSignals(team.id, { type: "approval_granted" });
 		assert.equal(approvalSignals.length, 1);

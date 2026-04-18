@@ -140,7 +140,7 @@ function groupTasks(tasks: TaskRecord[]): {
  *
  * Example output:
  * ```
- * Team Alpha — running (implementation phase)
+ * Team Alpha — running
  * Progress: 4/7 tasks done
  *
  * Active
@@ -160,8 +160,7 @@ export function formatTeamSummary(summary: TeamSummary): string {
 	const lines: string[] = [];
 
 	// Header
-	const phase = summary.currentPhase ? ` (${summary.currentPhase} phase)` : "";
-	lines.push(`Team ${summary.name} [${summary.teamId}] — ${summary.status}${phase}`);
+	lines.push(`Team ${summary.name} [${summary.teamId}] — ${summary.status}`);
 	lines.push(`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`);
 
 	// Determine which teammates are blocked
@@ -210,7 +209,6 @@ export function formatTeamSummary(summary: TeamSummary): string {
 
 /** Format a team summary as a single compact line for tool responses. */
 export function formatCompactTeamSummary(summary: TeamSummary): string {
-	const phase = summary.currentPhase ?? "unknown";
 	const blockerSummary =
 		summary.blockers.length > 0
 			? `${summary.blockers.length} (${truncate(`${summary.blockers[0].taskId}: ${summary.blockers[0].reason}`, 50)})`
@@ -222,7 +220,6 @@ export function formatCompactTeamSummary(summary: TeamSummary): string {
 
 	return [
 		`${summary.name}: ${summary.progress.done}/${summary.progress.total} done`,
-		`phase: ${phase}`,
 		`blockers: ${blockerSummary}`,
 		`active: ${active.length > 0 ? active.join(", ") : "none"}`,
 	].join(" | ");

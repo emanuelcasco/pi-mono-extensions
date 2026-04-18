@@ -34,7 +34,7 @@ function needsAttention(team: TeamRecord, summary?: TeamSummary): boolean {
 		return summary.blockers.length > 0 || summary.approvalsPending.length > 0;
 	}
 	// Without a summary, fall back to the team record status
-	return team.status === "failed" || team.status === "paused";
+	return team.status === "paused";
 }
 
 /**
@@ -54,11 +54,10 @@ function buildSingleTeamLine(
 	const name = theme.fg("accent", team.name);
 	const id = theme.fg("dim", `(${team.id})`);
 
-	// Status + phase
-	const phase = summary?.currentPhase ? ` (${summary.currentPhase})` : "";
+	// Status
 	const attention = needsAttention(team, summary);
 	const statusColor = attention ? "warning" : "muted";
-	const status = theme.fg(statusColor, `${team.status}${phase}`);
+	const status = theme.fg(statusColor, team.status);
 
 	// Progress
 	let progressPart = "";

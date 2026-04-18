@@ -42,12 +42,33 @@ function applyFilter(messages: MailboxMessage[], filter?: MailboxFilter): Mailbo
 	});
 }
 
+/** Listener fired after a message is successfully appended. */
+export type MailboxListener = (teamId: string, message: MailboxMessage) => void;
+
 // ---------------------------------------------------------------------------
 // MailboxManager
 // ---------------------------------------------------------------------------
 
 export class MailboxManager {
 	constructor(private store: TeamStore) {}
+
+	/**
+	 * Subscribers notified after each successful `send`. Used by the leader
+	 * runtime to wake the coordinator on `to: "leader"` / `"all"` traffic
+	 * without waiting for the next polling tick.
+	 */
+	private readonly listeners = new Set<MailboxListener>();
+
+	/**
+	 * Register a listener for message-send events.
+	 * Returns an unsubscribe function the caller must invoke on cleanup.
+	 */
+	onMessageSent(listener: MailboxListener): () => void {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
 
 	// -------------------------------------------------------------------------
 	// Write
@@ -57,7 +78,8 @@ export class MailboxManager {
 	 * Send a message to the team mailbox.
 	 *
 	 * Assigns a sequential ID (`msg-NNN`) and an ISO 8601 `createdAt` timestamp,
-	 * then appends the message to the team's `mailbox.ndjson` file.
+	 * then appends the message to the team's `mailbox.ndjson` file and notifies
+	 * any registered listeners.
 	 */
 	async send(
 		teamId: string,
@@ -71,6 +93,15 @@ export class MailboxManager {
 			createdAt: new Date().toISOString(),
 		};
 		await this.store.appendMessage(teamId, full);
+
+		for (const listener of this.listeners) {
+			try {
+				listener(teamId, full);
+			} catch {
+				// Listeners are best-effort; never let a buggy subscriber break send.
+			}
+		}
+
 		return full;
 	}
 

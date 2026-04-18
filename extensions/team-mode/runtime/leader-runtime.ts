@@ -5,7 +5,7 @@
  *
  * The leader runtime is intentionally orchestration-only:
  * - it creates and assigns tasks
- * - it tracks phases and dependencies
+ * - it tracks dependencies and task readiness
  * - it spawns isolated teammate pi subprocesses for execution
  * - it emits summary / milestone / error signals
  *
@@ -28,7 +28,6 @@ import { promisify } from "node:util";
 const execFile = promisify(execFileCb);
 
 import type {
-  LeaderPhase,
   LeaderProcess,
   MailboxMessage,
   Signal,
@@ -36,7 +35,13 @@ import type {
   TeamRecord,
   TeammateProcess,
 } from "../core/types.js";
-import { TEAMMATE_ROLE_PROMPTS, TEAM_TEMPLATES } from "../core/types.js";
+import { TEAM_TEMPLATES } from "../core/types.js";
+import {
+  BUILT_IN_TEAMMATE_SPECS,
+  loadTeammateSpecs,
+  resolveTeammateSpec,
+  type TeammateSpec,
+} from "../core/teammate-specs.js";
 import type { ModelConfig } from "../core/model-config.js";
 import {
   DEFAULT_MODEL_CONFIG,
@@ -50,13 +55,6 @@ import type { MailboxManager } from "../managers/mailbox-manager.js";
 import type { TeamManager } from "../managers/team-manager.js";
 
 const LEADER_POLL_MS = 20_000;
-
-/**
- * Teammate roles that perform write operations.
- * These roles get dedicated git worktrees for filesystem isolation
- * when parallel execution on the same repo is needed.
- */
-const WRITE_CAPABLE_ROLES = new Set(["backend", "frontend", "tester", "docs"]);
 
 /**
  * Allocate a dedicated git worktree for a teammate at `worktreePath`.
@@ -116,11 +114,6 @@ type ActiveTeammate = {
   heartbeatInterval?: ReturnType<typeof setInterval>;
   /** Timestamp of the last progress/heartbeat signal emitted for this teammate. */
   lastProgressAt: number;
-};
-
-export type ParsedHandoff = {
-  to: string;
-  message: string;
 };
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -331,80 +324,6 @@ export function summarizeCompletionOutput(
   return lines.slice(0, 2).join(" ").slice(0, 500);
 }
 
-export function parseExplicitHandoffs(
-  output: string,
-  teammates: string[],
-  sender: string,
-): ParsedHandoff[] {
-  const validRecipients = new Set(teammates.filter((role) => role !== sender));
-  const lines = output.split(/\r?\n/);
-  const handoffs: ParsedHandoff[] = [];
-  let inHandoffSection = false;
-
-  const maybeAdd = (recipient: string, message: string) => {
-    const to = recipient.trim();
-    const text = message.trim();
-    if (!to || !text || !validRecipients.has(to)) return;
-    handoffs.push({ to, message: text });
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      if (inHandoffSection) continue;
-      continue;
-    }
-
-    if (
-      /^(?:#{1,6}\s*)?handoff notes(?: for other teammates)?\s*:?$/i.test(
-        line,
-      ) ||
-      /^(?:#{1,6}\s*)?handoffs\s*:?$/i.test(line) ||
-      /^4\.\s*handoff notes(?: for other teammates)?\s*:?$/i.test(line)
-    ) {
-      inHandoffSection = true;
-      continue;
-    }
-
-    if (inHandoffSection && /^(?:#{1,6}\s*|##\s*|###\s*)/.test(line)) {
-      break;
-    }
-
-    const normalized = line.replace(/^[-*]\s*/, "");
-
-    let match = normalized.match(
-      /^to\s*:\s*([a-z0-9_-]+)\s*\|\s*message\s*:\s*(.+)$/i,
-    );
-    if (match) {
-      maybeAdd(match[1], match[2]);
-      continue;
-    }
-
-    match = normalized.match(/^([a-z0-9_-]+)\s*:\s*(.+)$/i);
-    if (inHandoffSection && match) {
-      maybeAdd(match[1], match[2]);
-      continue;
-    }
-
-    match = normalized.match(/^handoff to\s+([a-z0-9_-]+)\s*:\s*(.+)$/i);
-    if (match) {
-      maybeAdd(match[1], match[2]);
-    }
-  }
-
-  const merged = new Map<string, string[]>();
-  for (const handoff of handoffs) {
-    const existing = merged.get(handoff.to) ?? [];
-    existing.push(handoff.message);
-    merged.set(handoff.to, existing);
-  }
-
-  return [...merged.entries()].map(([to, messages]) => ({
-    to,
-    message: messages.join(" "),
-  }));
-}
-
 /** Maximum number of times a stalled task is retried before being permanently cancelled. */
 const MAX_TASK_RETRIES = 3;
 
@@ -482,6 +401,21 @@ export class LeaderRuntime {
    *  cycles and prevent overlapping read-modify-write from the poll interval
    *  and from teammate-completion handlers firing concurrently. */
   private readonly cycleRunning = new Set<string>();
+
+  /**
+   * Debounce window for event-driven wake-ups. Multiple messages arriving in
+   * a tight burst (e.g. a user sending three messages in a row, or a teammate
+   * emitting several peer handoffs back-to-back) collapse into a single cycle
+   * so we don't spawn an LLM turn per message.
+   */
+  private static readonly WAKE_DEBOUNCE_MS = 200;
+  private readonly pendingWakes = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
+  /** Unsubscribe handle for the mailbox listener, set in the constructor. */
+  private readonly mailboxUnsubscribe: () => void;
 
   /**
    * Optional callback invoked whenever a team's status changes in the
@@ -582,13 +516,73 @@ export class LeaderRuntime {
     this.modelConfigLoaded = false;
   }
 
+  /**
+   * Per-team cache of discovered `.claude/teammates/*.md` specs.
+   * Lookup: resolveTeammateSpec(role, cache.get(teamId)).
+   */
+  private teammateSpecCache = new Map<string, Record<string, TeammateSpec>>();
+
+  private async ensureTeammateSpecs(
+    teamId: string,
+    cwd: string,
+  ): Promise<Record<string, TeammateSpec>> {
+    const cached = this.teammateSpecCache.get(teamId);
+    if (cached) return cached;
+    const loaded = await loadTeammateSpecs(cwd);
+    this.teammateSpecCache.set(teamId, loaded);
+    return loaded;
+  }
+
+  /** Drop the spec cache so the next spawn re-reads disk. */
+  reloadTeammateSpecs(teamId?: string): void {
+    if (teamId) this.teammateSpecCache.delete(teamId);
+    else this.teammateSpecCache.clear();
+  }
+
   constructor(
     private store: TeamStore,
     private teamManager: TeamManager,
     private taskManager: TaskManager,
     private signalManager: SignalManager,
     private mailboxManager: MailboxManager,
-  ) {}
+  ) {
+    // Subscribe to mailbox sends so the leader wakes immediately on user
+    // guidance or peer messages it needs to route. Teammate subprocess
+    // completions already trigger a cycle from spawnTeammate's result
+    // handler, so we don't need a separate hook for those.
+    this.mailboxUnsubscribe = this.mailboxManager.onMessageSent(
+      (teamId, message) => this.onMailboxMessage(teamId, message),
+    );
+  }
+
+  /** Fired for every mailbox `send`. Wakes the leader on leader-bound traffic. */
+  private onMailboxMessage(teamId: string, message: MailboxMessage): void {
+    if (message.to !== "leader" && message.to !== "all") return;
+    if (!this.activeLeaders.has(teamId)) return;
+    this.scheduleWake(teamId);
+  }
+
+  /**
+   * Debounced wake: coalesce all events inside a single WAKE_DEBOUNCE_MS
+   * window into one `runLeaderCycle` call. If a cycle is already in flight
+   * when the timer fires, `runLeaderCycle` skips and the next trigger will
+   * schedule another wake.
+   */
+  private scheduleWake(teamId: string): void {
+    if (this.pendingWakes.has(teamId)) return;
+    const timer = setTimeout(() => {
+      this.pendingWakes.delete(teamId);
+      if (!this.activeLeaders.has(teamId)) return;
+      void this.runLeaderCycle(teamId);
+    }, LeaderRuntime.WAKE_DEBOUNCE_MS);
+    if (
+      typeof timer === "object" &&
+      typeof (timer as { unref?: () => void }).unref === "function"
+    ) {
+      (timer as { unref: () => void }).unref();
+    }
+    this.pendingWakes.set(teamId, timer);
+  }
 
   async launchLeader(teamId: string): Promise<void> {
     if (this.activeLeaders.has(teamId)) return;
@@ -628,7 +622,6 @@ export class LeaderRuntime {
 
       await this.teamManager.updateTeam(teamId, {
         status: "running",
-        currentPhase: team.currentPhase ?? this.initialPhaseFor(team),
         summary:
           team.summary ?? `Leader started for objective: ${team.objective}`,
       });
@@ -647,7 +640,7 @@ export class LeaderRuntime {
         await fs.promises.mkdir(promptDir, { recursive: true });
         await writeFile(
           path.join(promptDir, "prompt.md"),
-          this.buildLeaderPrompt(team),
+          this.buildLlmLeaderPrompt(team),
           "utf8",
         );
       } catch {
@@ -658,7 +651,17 @@ export class LeaderRuntime {
         void this.runLeaderCycle(teamId);
       }, LEADER_POLL_MS);
 
-      await this.ensureBootstrapTasks(teamId);
+      // The coordinator itself decides the task graph and assigns work.
+      // The runtime still provides dependency promotion, stall detection, and
+      // completion detection via runLeaderCycle — but task authoring happens
+      // exclusively through the LLM leader's tool calls.
+      //
+      // Fire-and-forget: a leader turn can take tens of seconds (real LLM) or
+      // hang indefinitely (unit-test mocks that never close). We don't want
+      // callers of `launchLeader` (the extension start-up path, the
+      // `/team resume` command, etc.) to wait on it. The `llmTurnInFlight`
+      // guard inside `runLlmLeaderTurn` prevents duplicate concurrent turns.
+      void this.runLlmLeaderTurn(teamId);
       await this.runLeaderCycle(teamId);
     } catch (err) {
       // Release the slot if setup failed so a retry can succeed.
@@ -699,7 +702,11 @@ export class LeaderRuntime {
     const repoRoot = team.repoRoots[0] ?? process.cwd();
     let allocatedWorktree: string | undefined;
 
-    if (WRITE_CAPABLE_ROLES.has(role) && !task.worktree) {
+    // Resolve the teammate spec (file-based first, then built-in, then generic).
+    const discovered = await this.ensureTeammateSpecs(teamId, repoRoot);
+    const spec = resolveTeammateSpec(role, discovered);
+
+    if (spec.needsWorktree && !task.worktree) {
       const worktreePath = path.join(os.tmpdir(), "pi-teams", teamId, role);
       const created = await createWorktree(repoRoot, worktreePath);
       if (created) {
@@ -712,12 +719,23 @@ export class LeaderRuntime {
       }
     }
 
+    // Always build the rich runtime context (recent signals, mailbox,
+    // dependencies, team memory). If the caller also supplied summary
+    // context (e.g. the LLM leader passing a rationale through
+    // `team_spawn_teammate`), prepend it so the teammate sees both the
+    // leader's brief and the mechanical state snapshot.
+    const runtimeContext = await this.buildTaskContext(teamId, task);
+    const leaderBrief = context?.trim();
+    const finalContext = leaderBrief
+      ? `${leaderBrief}\n\n---\n\n${runtimeContext}`
+      : runtimeContext;
+
     const prompt = this.buildTeammatePrompt(
       teamId,
       team.name,
-      role,
+      spec,
       taskDescription,
-      context,
+      finalContext,
       effectiveCwd,
     );
     const tempPrompt = await writePromptToTempFile(
@@ -938,6 +956,14 @@ export class LeaderRuntime {
       this.activeLeaders.delete(teamId);
     }
 
+    // Drop any pending event-driven wake for this team so a late timer can't
+    // resurrect the stopped leader.
+    const pending = this.pendingWakes.get(teamId);
+    if (pending) {
+      clearTimeout(pending);
+      this.pendingWakes.delete(teamId);
+    }
+
     const roles = this.getActiveTeammates(teamId);
     for (const role of roles) {
       await this.stopTeammate(teamId, role);
@@ -1010,6 +1036,11 @@ export class LeaderRuntime {
     }
     this.pendingStatusChange.clear();
     this.lastStatusChangeAt.clear();
+    for (const timer of this.pendingWakes.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingWakes.clear();
+    this.mailboxUnsubscribe();
   }
 
   /**
@@ -1019,7 +1050,7 @@ export class LeaderRuntime {
    */
   private async planTeamComposition(team: TeamRecord): Promise<string[]> {
     const FALLBACK_ROLES = TEAM_TEMPLATES.fullstack.roles as string[];
-    const KNOWN_ROLES = new Set(Object.keys(TEAMMATE_ROLE_PROMPTS));
+    const KNOWN_ROLES = new Set(Object.keys(BUILT_IN_TEAMMATE_SPECS));
     const PLANNING_TIMEOUT_MS = 30_000;
 
     const prompt = [
@@ -1137,165 +1168,6 @@ export class LeaderRuntime {
     return null;
   }
 
-  private initialPhaseFor(team: TeamRecord): LeaderPhase {
-    if (team.teammates.includes("researcher")) return "research";
-    if (team.teammates.includes("planner")) return "synthesis";
-    return "implementation";
-  }
-
-  private async ensureBootstrapTasks(teamId: string): Promise<void> {
-    const team = await this.store.loadTeam(teamId);
-    if (!team) return;
-    const existing = await this.taskManager.getTasks(teamId);
-    if (existing.length > 0) return;
-
-    const researchOwner = team.teammates.find(
-      (role) => role === "researcher" || role === "docs",
-    );
-    const explicitPlanner = team.teammates.find((role) => role === "planner");
-    const plannerOwner =
-      explicitPlanner ?? (researchOwner ? undefined : team.teammates[0]);
-    const implementationOwners = team.teammates.filter((role) =>
-      ["backend", "frontend", "tester", "docs"].includes(role),
-    );
-    const reviewerOwner = team.teammates.find((role) => role === "reviewer");
-
-    const created: TaskRecord[] = [];
-
-    // Research + planning are merged into one task when the same teammate would
-    // own both, avoiding an extra subprocess cold-start on the critical path.
-    if (researchOwner && !explicitPlanner) {
-      const task = await this.taskManager.createTask(teamId, {
-        title: `Research and plan ${team.objective}`,
-        description: `Investigate constraints, existing patterns, and relevant files, then synthesize findings into a concrete implementation plan for: ${team.objective}`,
-        owner: researchOwner,
-        status: "ready",
-        priority: "high",
-        dependsOn: [],
-        riskLevel: "low",
-        approvalRequired: false,
-        artifacts: [],
-        blockers: [],
-      });
-      created.push(task);
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_created",
-        severity: "info",
-        taskId: task.id,
-        message: `Created research+plan task for ${researchOwner}`,
-        links: [],
-      });
-    } else if (researchOwner) {
-      const task = await this.taskManager.createTask(teamId, {
-        title: `Research requirements for ${team.objective}`,
-        description: `Investigate constraints, existing patterns, and relevant files for: ${team.objective}`,
-        owner: researchOwner,
-        status: "ready",
-        priority: "high",
-        dependsOn: [],
-        riskLevel: "low",
-        approvalRequired: false,
-        artifacts: [],
-        blockers: [],
-      });
-      created.push(task);
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_created",
-        severity: "info",
-        taskId: task.id,
-        message: `Created research task for ${researchOwner}`,
-        links: [],
-      });
-    }
-
-    const synthesisDepends = created.map((task) => task.id);
-    if (plannerOwner) {
-      const task = await this.taskManager.createTask(teamId, {
-        title: `Create implementation plan for ${team.objective}`,
-        description: `Synthesize findings into a concrete implementation plan for: ${team.objective}`,
-        owner: plannerOwner,
-        status: synthesisDepends.length > 0 ? "todo" : "ready",
-        priority: "high",
-        dependsOn: synthesisDepends,
-        riskLevel: "low",
-        approvalRequired: false,
-        artifacts: [],
-        blockers: [],
-      });
-      created.push(task);
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_created",
-        severity: "info",
-        taskId: task.id,
-        message: `Created synthesis task for ${plannerOwner}`,
-        links: [],
-      });
-    }
-
-    const planTask = created.find(
-      (task) =>
-        task.title.startsWith("Create implementation plan") ||
-        task.title.startsWith("Research and plan"),
-    );
-    const implementationDepends = planTask
-      ? [planTask.id]
-      : created.map((task) => task.id);
-
-    for (const role of implementationOwners) {
-      const task = await this.taskManager.createTask(teamId, {
-        title: `Implement ${roleDisplay(role)} work for ${team.objective}`,
-        description: `Complete the ${role} slice of work for: ${team.objective}`,
-        owner: role,
-        status: implementationDepends.length > 0 ? "todo" : "ready",
-        priority: "high",
-        dependsOn: implementationDepends,
-        riskLevel: role === "backend" || role === "frontend" ? "medium" : "low",
-        approvalRequired: false,
-        artifacts: [],
-        blockers: [],
-      });
-      created.push(task);
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_created",
-        severity: "info",
-        taskId: task.id,
-        message: `Created implementation task for ${role}`,
-        links: [],
-      });
-    }
-
-    if (reviewerOwner) {
-      const dependsOn = created
-        .filter((task) => task.owner !== reviewerOwner)
-        .filter((task) => task.title.startsWith("Implement "))
-        .map((task) => task.id);
-      const task = await this.taskManager.createTask(teamId, {
-        title: `Review completed work for ${team.objective}`,
-        description: `Review the completed implementation for correctness, quality, and completeness.`,
-        owner: reviewerOwner,
-        status: dependsOn.length > 0 ? "todo" : "ready",
-        priority: "medium",
-        dependsOn,
-        riskLevel: "low",
-        approvalRequired: false,
-        artifacts: [],
-        blockers: [],
-      });
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_created",
-        severity: "info",
-        taskId: task.id,
-        message: `Created verification task for ${reviewerOwner}`,
-        links: [],
-      });
-    }
-  }
-
   private async runLeaderCycle(teamId: string): Promise<void> {
     if (this.cycleRunning.has(teamId)) return;
     this.cycleRunning.add(teamId);
@@ -1318,7 +1190,7 @@ export class LeaderRuntime {
     }
 
     // Process any new guidance messages sent to the leader by the user.
-    await this.processLeaderMailbox(teamId);
+    const newLeaderMail = await this.processLeaderMailbox(teamId);
 
     const promoted = await this.taskManager.resolveDependencies(teamId);
     // Reuse a single snapshot of tasks for this cycle. `resolveDependencies`
@@ -1329,20 +1201,6 @@ export class LeaderRuntime {
       const promotedById = new Map(promoted.map((t) => [t.id, t]));
       tasks = tasks.map((t) => promotedById.get(t.id) ?? t);
     }
-    const phase = team.currentPhase ?? this.initialPhaseFor(team);
-    const nextPhase = this.determinePhase(tasks, phase);
-    if (nextPhase !== phase) {
-      await this.teamManager.updateTeam(teamId, { currentPhase: nextPhase });
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "team_summary",
-        severity: "info",
-        message: `Phase transition: ${phase} → ${nextPhase}`,
-        links: [],
-      });
-      await this.signalManager.rebuildCompactedSignals(teamId);
-    }
-
     if (
       tasks.length > 0 &&
       tasks.every(
@@ -1365,7 +1223,6 @@ export class LeaderRuntime {
 
       await this.teamManager.updateTeam(teamId, {
         status: "completed",
-        currentPhase: "verification",
         summary: `All ${tasks.length} tasks completed`,
       });
       await this.store.saveLeaderProcess(teamId, {
@@ -1410,43 +1267,18 @@ export class LeaderRuntime {
               : 0,
       );
 
-    for (const task of readyTasks) {
-      if (!task.owner) continue;
-      if (this.isTeammateRunning(teamId, task.owner)) continue;
-
-      await this.signalManager.emit(teamId, {
-        source: "leader",
-        type: "task_assigned",
-        severity: "info",
-        taskId: task.id,
-        message: `Assigned ${task.id} to ${task.owner}`,
-        links: [],
-      });
-
-      const context = await this.buildTaskContext(teamId, task);
-      try {
-        await this.spawnTeammate(
-          teamId,
-          task.owner,
-          task.id,
-          buildTaskPrompt(task),
-          context,
-          task.worktree ?? team.repoRoots[0],
-        );
-      } catch (err) {
-        await this.taskManager.updateTask(teamId, task.id, {
-          status: "blocked",
-          blockers: [err instanceof Error ? err.message : String(err)],
-        });
-        await this.signalManager.emit(teamId, {
-          source: "leader",
-          type: "error",
-          severity: "error",
-          taskId: task.id,
-          message: `Failed to spawn ${task.owner}: ${err instanceof Error ? err.message : String(err)}`,
-          links: [],
-        });
-      }
+    // Delegate spawning decisions to the LLM leader. Only fire a turn when
+    // there's something to decide (a ready task whose owner is idle, or an
+    // unattended mailbox message for the leader). Otherwise this interval
+    // just continues to run mechanical dep/stall checks without burning LLM
+    // tokens on a no-op turn. The "empty graph on first launch" case is
+    // already covered by the explicit runLlmLeaderTurn call in launchLeader().
+    const hasWorkToAssign = readyTasks.some(
+      (task) => task.owner && !this.isTeammateRunning(teamId, task.owner),
+    );
+    if (hasWorkToAssign || newLeaderMail) {
+      // Fire-and-forget; see `launchLeader` for rationale.
+      void this.runLlmLeaderTurn(teamId);
     }
 
     // Detect tasks that are stuck in in_progress but whose teammate process
@@ -1478,46 +1310,6 @@ export class LeaderRuntime {
         links: [],
       });
     }
-  }
-
-  private determinePhase(
-    tasks: TaskRecord[],
-    currentPhase: LeaderPhase,
-  ): LeaderPhase {
-    const hasResearch = tasks.some((task) =>
-      task.title.startsWith("Research "),
-    );
-    const researchPending = tasks.some(
-      (task) =>
-        task.title.startsWith("Research requirements") &&
-        task.status !== "done" &&
-        task.status !== "cancelled",
-    );
-    const synthesisPending = tasks.some(
-      (task) =>
-        (task.title.startsWith("Create implementation plan") ||
-          task.title.startsWith("Research and plan")) &&
-        task.status !== "done" &&
-        task.status !== "cancelled",
-    );
-    const implementationPending = tasks.some(
-      (task) =>
-        task.title.startsWith("Implement ") &&
-        task.status !== "done" &&
-        task.status !== "cancelled",
-    );
-    const verificationPending = tasks.some(
-      (task) =>
-        task.title.startsWith("Review completed work") &&
-        task.status !== "done" &&
-        task.status !== "cancelled",
-    );
-
-    if (hasResearch && researchPending) return "research";
-    if (synthesisPending) return "synthesis";
-    if (implementationPending) return "implementation";
-    if (verificationPending) return "verification";
-    return currentPhase;
   }
 
   private async buildTaskContext(
@@ -1601,7 +1393,6 @@ export class LeaderRuntime {
     const baseParts: string[] = [
       `Team: ${team?.name ?? teamId}`,
       `Objective: ${team?.objective ?? ""}`,
-      `Phase: ${summary.currentPhase ?? "unknown"}`,
       `Progress: ${summary.progress.done}/${summary.progress.total}`,
       `Task: ${task.id} — ${task.title}`,
       task.owner ? `Owner: ${task.owner}` : "Owner: unassigned",
@@ -1648,67 +1439,243 @@ export class LeaderRuntime {
     return truncateToBudget(sections.join("\n\n"), TASK_CONTEXT_CHAR_BUDGET);
   }
 
-  private buildLeaderPrompt(team: TeamRecord): string {
+  // -------------------------------------------------------------------------
+  // LLM leader path
+  //
+  // Each "turn" is a one-shot pi subprocess that:
+  //   1. reads the team state snapshot we inject as a user message
+  //   2. decides which tasks to create / which teammates to spawn / which
+  //      messages to route, by calling team_* tools
+  //   3. exits when done (or hits its turn budget)
+  //
+  // Persistence across turns lives in the task list, signal log, mailbox, and
+  // team-memory docs — not in the subprocess itself. So re-reading state each
+  // turn is cheap and stateless.
+  // -------------------------------------------------------------------------
+
+  private buildLlmLeaderPrompt(team: TeamRecord): string {
+    const teammateLines =
+      team.teammates.length > 0
+        ? team.teammates.map((role) => {
+            const spec = resolveTeammateSpec(role);
+            return `- ${role}${spec.description ? ` — ${spec.description}` : ""}`;
+          })
+        : ["- none (you must decide who to add)"];
+
     return [
-      `You are the LEADER of team \"${team.name}\".`,
+      `You are the LEADER of team "${team.name}" (id: ${team.id}).`,
       "",
       "## Your Role",
-      "You orchestrate a team of specialists to accomplish an objective.",
-      "You MUST delegate all implementation work to teammates.",
-      "You MUST NOT execute code, edit files, or run commands directly.",
-      "You can only read files for review and use orchestration data.",
+      "You orchestrate a team of specialists to accomplish the objective below.",
+      "You MUST delegate all implementation work to teammates. NEVER edit files, run commands, or write code yourself.",
       "",
       "## Objective",
       team.objective,
       "",
       "## Your Teammates",
-      team.teammates.length > 0
-        ? team.teammates.map((role) => `- ${role}`).join("\n")
-        : "- none",
+      teammateLines.join("\n"),
       "",
-      "## Phases",
-      "1. Research — understand objective, dependencies, and constraints.",
-      "2. Synthesis — convert findings into tasks with dependencies.",
-      "3. Implementation — assign ready work and monitor execution.",
-      "4. Verification — review outputs, request revisions, finalize result.",
+      "## Your Tools",
+      '- `team_query` (teamId): read tasks, signals, mailbox, teammate status. Always call with `action: "tasks"` early to see the current task board.',
+      "- `team_task_create`: author a new task with an owner, priority, and optional dependencies. Tasks with `dependsOn` start as `todo` and auto-promote to `ready` when dependencies complete.",
+      "- `team_spawn_teammate`: launch a teammate subprocess to execute a ready task. Only spawn when the task is `ready` and the teammate is not already running.",
+      "- `team_message`: forward guidance or instructions to a specific teammate or to `leader` (the user has their own queue).",
+      "- `team_handoff`: when you detect a peer-to-peer handoff need (e.g. backend produced an API contract the frontend needs), send the context through this tool.",
+      "- `team_memory`: record durable team knowledge (discoveries, decisions, contracts) so later teammates have context.",
+      "- `team_review`: approve or reject plan submissions for approval-gated tasks.",
       "",
-      "## Operating Loop",
-      "1. Determine current phase",
-      "2. Read tasks, signals, and mailbox",
-      "3. Identify ready and blocked tasks",
-      "4. Assign work or request revisions",
-      "5. Review plan submissions and approvals",
-      "6. Emit summary updates",
-      "7. Evaluate phase transitions",
-      "8. Continue until all tasks are done",
+      "## Workflow",
+      "Most work breaks down into research → synthesis → implementation → verification, but skip any phase that doesn't fit. A pure research job needs no implementation; a small patch may not need a separate research pass.",
+      "",
+      "On each turn:",
+      "  1. Call `team_query` to inspect current state.",
+      "  2. If the task graph is empty, author it now: one `team_task_create` call per work item, with explicit `dependsOn` to declare the dependency DAG.",
+      "  3. For every `ready` task whose owner is idle, call `team_spawn_teammate` to launch work in parallel. Do not serialise independent tasks.",
+      "  4. Drain the mailbox with `team_query` (action: signals or ask) — if a teammate reports a blocker, relay it or adjust the task graph.",
+      "  5. Stop calling tools once everything is either `done` or awaiting a teammate you already spawned.",
+      "",
+      "## Constraints",
+      "- Assign each task to exactly one teammate role from the roster above.",
+      "- Prefer fewer, larger tasks over many tiny ones — each task spawns a subprocess.",
+      "- If you need a role that isn't on the roster, say so in your final summary instead of inventing one.",
+      "- You are NOT the user. Do not ask the user questions in your final message unless genuinely blocked.",
     ].join("\n");
+  }
+
+  /**
+   * Build a compact snapshot of current team state for injection into the
+   * LLM leader's user message. Kept short so the leader does not spend its
+   * budget re-reading what we could have given it directly.
+   */
+  private async buildLeaderSnapshot(teamId: string): Promise<string> {
+    const [summary, board, signals, mailboxForLeader, contracts] =
+      await Promise.all([
+        this.teamManager.getTeamSummary(teamId),
+        this.taskManager.getTaskBoard(teamId),
+        this.signalManager.getContextSignals(teamId),
+        this.mailboxManager.getMessagesFor(teamId, "leader"),
+        this.store.loadMemory(teamId, "contracts"),
+      ]);
+
+    const taskLines =
+      board.tasks.length > 0
+        ? board.tasks.map((task) => {
+            const deps =
+              task.dependsOn.length > 0
+                ? ` depends_on=[${task.dependsOn.join(", ")}]`
+                : "";
+            const owner = task.owner ?? "unassigned";
+            return `- ${task.id} [${task.status}] owner=${owner}${deps}: ${task.title}`;
+          })
+        : ["(no tasks yet — the graph is empty)"];
+
+    const recentSignalLines = signals
+      .slice(-15)
+      .map((s) => `- [${s.type}] ${s.source}: ${s.message}`);
+
+    const mailboxLines = mailboxForLeader
+      .slice(-10)
+      .map((m) => `- ${m.from} → leader: ${m.message}`);
+
+    const parts = [
+      `Team: ${summary.name} (${teamId})`,
+      `Status: ${summary.status}`,
+      `Progress: ${summary.progress.done}/${summary.progress.total} done`,
+      "",
+      "Tasks:",
+      ...taskLines,
+    ];
+    if (summary.blockers.length > 0) {
+      parts.push("", "Blockers:");
+      for (const b of summary.blockers)
+        parts.push(`- ${b.taskId} (${b.owner}): ${b.reason}`);
+    }
+    if (summary.approvalsPending.length > 0) {
+      parts.push("", "Approvals pending:");
+      for (const a of summary.approvalsPending) {
+        parts.push(`- ${a.taskId} submitted by ${a.owner} (${a.artifact})`);
+      }
+    }
+    if (mailboxLines.length > 0) {
+      parts.push("", "Recent messages addressed to leader:", ...mailboxLines);
+    }
+    if (recentSignalLines.length > 0) {
+      parts.push("", "Recent signals:", ...recentSignalLines);
+    }
+    if (contracts?.trim()) {
+      parts.push("", "Team contracts (durable memory):", contracts.trim());
+    }
+
+    return truncateToBudget(parts.join("\n"), TASK_CONTEXT_CHAR_BUDGET);
+  }
+
+  /**
+   * Run one turn of the LLM leader.
+   *
+   * Spawns a pi subprocess with the leader system prompt + a state snapshot,
+   * waits for it to complete its tool calls and exit, then emits a summary
+   * signal capturing the leader's final message. The subprocess's tool calls
+   * mutate team state directly via the existing `team_*` tool implementations.
+   */
+  /**
+   * Per-team guard that prevents overlapping LLM leader turns. Without this,
+   * a poll tick or event-driven wake that fires while a prior turn is still
+   * running would spawn a duplicate pi subprocess and the two coordinators
+   * would race on the task graph. Cleared in the `finally` block of each turn.
+   */
+  private readonly llmTurnInFlight = new Set<string>();
+
+  async runLlmLeaderTurn(teamId: string): Promise<void> {
+    if (this.llmTurnInFlight.has(teamId)) return;
+    this.llmTurnInFlight.add(teamId);
+    try {
+      await this.runLlmLeaderTurnInner(teamId);
+    } finally {
+      this.llmTurnInFlight.delete(teamId);
+    }
+  }
+
+  private async runLlmLeaderTurnInner(teamId: string): Promise<void> {
+    const team = await this.store.loadTeam(teamId);
+    if (!team) return;
+    if (
+      team.status === "cancelled" ||
+      team.status === "completed" ||
+      team.status === "failed"
+    ) {
+      return;
+    }
+
+    const snapshot = await this.buildLeaderSnapshot(teamId);
+    const systemPrompt = this.buildLlmLeaderPrompt(team);
+    const userMessage = [
+      "## Current state",
+      snapshot,
+      "",
+      "Decide the next actions by calling tools. Be parallel where possible — launch multiple spawn/create calls in a single turn.",
+    ].join("\n");
+
+    const tempPrompt = await writePromptToTempFile(
+      `leader-${safeKebab(teamId)}`,
+      systemPrompt,
+    );
+
+    const cwd = team.repoRoots[0] ?? process.cwd();
+    const spawnFn = this._spawnFn ?? spawnPiJsonMode;
+    const modelConfig = await this.ensureModelConfig();
+    // Leaders get the "mid" tier by default — too cheap and they skip steps;
+    // too deep and each turn is slow/expensive. Role key is "leader" so users
+    // can override via `/team models role leader <tier>`.
+    const resolved = resolveModel(modelConfig, "leader", "mid");
+
+    const proc = spawnFn(
+      tempPrompt.filePath,
+      userMessage,
+      cwd,
+      resolved?.model,
+    );
+
+    try {
+      const { output, exitCode } = await collectPiOutput(proc);
+      if (exitCode === 0 && output.trim()) {
+        await this.signalManager.emit(teamId, {
+          source: "leader",
+          type: "team_summary",
+          severity: "info",
+          message: summarizeCompletionOutput(output, "Leader turn completed"),
+          links: [],
+        });
+      } else if (exitCode !== 0) {
+        await this.signalManager.emit(teamId, {
+          source: "leader",
+          type: "error",
+          severity: "warning",
+          message: `LLM leader turn exited with code ${exitCode ?? "null"}`,
+          links: [],
+        });
+      }
+    } finally {
+      try {
+        await rm(tempPrompt.dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   private buildTeammatePrompt(
     teamId: string,
     teamName: string,
-    role: string,
+    spec: TeammateSpec,
     taskDescription: string,
     context: string | undefined,
     cwd: string,
   ): string {
-    // Roles that rarely need to write to durable team memory get a trimmed
-    // prompt — the `team_memory` block is ~300 tokens of boilerplate that
-    // never gets used by verification / validation roles.
-    const MEMORY_CAPABLE_ROLES = new Set([
-      "researcher",
-      "planner",
-      "backend",
-      "frontend",
-      "docs",
-    ]);
-    const includeMemoryBlock = MEMORY_CAPABLE_ROLES.has(role);
-
+    const role = spec.name;
     const parts: string[] = [
       `You are a ${role} on team "${teamName}".`,
       "",
-      TEAMMATE_ROLE_PROMPTS[role] ??
-        `You are a ${role} specialist. Complete the assigned task carefully and report results clearly.`,
+      spec.systemPrompt,
       "",
       "## Your Task",
       taskDescription,
@@ -1720,7 +1687,7 @@ export class LeaderRuntime {
       cwd,
     ];
 
-    if (includeMemoryBlock) {
+    if (spec.hasMemory) {
       parts.push(
         "",
         "## Team Memory",
@@ -1730,9 +1697,12 @@ export class LeaderRuntime {
 
     parts.push(
       "",
+      "## Handoffs",
+      `To pass context to another teammate, call the \`team_handoff\` tool (teamId: "${teamId}", from: "${role}", to: <recipient>, message: <what they need to know>). Do this as soon as you have the information — don't wait until you finish.`,
+      "Examples of when to hand off: you produced an API contract the frontend needs; you finished research the planner should read; you found a security concern the reviewer should flag.",
+      "",
       "## Output Format",
-      "End your turn with: (1) what was accomplished, (2) files created/modified with paths, (3) open questions, (4) handoff notes.",
-      "To route messages to teammates, include a `Handoffs:` section with one line per recipient, e.g. `- to: reviewer | message: Focus on auth checks in billing.ts`. These are auto-delivered via the team mailbox.",
+      "End your turn with a short summary: (1) what was accomplished, (2) files created/modified with paths, (3) open questions. Do NOT include a 'Handoffs:' section — use the `team_handoff` tool instead.",
     );
 
     return parts.join("\n");
@@ -1747,7 +1717,7 @@ export class LeaderRuntime {
    * messages per cycle. The cursor resets on leader restart, which is
    * acceptable — re-processing old guidance is harmless (just a dup signal).
    */
-  private async processLeaderMailbox(teamId: string): Promise<void> {
+  private async processLeaderMailbox(teamId: string): Promise<boolean> {
     try {
       const allMessages = await this.mailboxManager.getMessagesFor(
         teamId,
@@ -1755,13 +1725,15 @@ export class LeaderRuntime {
       );
       const lastCount = this.lastMailboxCount.get(teamId) ?? 0;
 
-      if (allMessages.length <= lastCount) return;
+      if (allMessages.length <= lastCount) return false;
 
       const newMessages = allMessages.slice(lastCount);
       this.lastMailboxCount.set(teamId, allMessages.length);
 
+      let userGuidance = false;
       for (const msg of newMessages) {
         if (msg.from === "user") {
+          userGuidance = true;
           await this.signalManager.emit(teamId, {
             source: "leader",
             type: "team_summary",
@@ -1775,9 +1747,11 @@ export class LeaderRuntime {
           });
         }
       }
+      return userGuidance;
     } catch {
       // Mailbox polling is best-effort — never crash the leader cycle.
     }
+    return false;
   }
 
   /**
@@ -1869,6 +1843,15 @@ export class LeaderRuntime {
     }
   }
 
+  /**
+   * Notify downstream teammates when a dependency completes.
+   *
+   * Sends a short "dependency completed" mailbox message to every role that
+   * owns a task listing `completedTask.id` in its `dependsOn` array. Explicit
+   * peer-to-peer handoffs (contract details, findings, etc.) are now the
+   * teammate's responsibility via the `team_handoff` tool — this method only
+   * handles the automatic dependency-completion notice.
+   */
   private async automateTeammateHandoffs(
     teamId: string,
     fromRole: string,
@@ -1888,50 +1871,33 @@ export class LeaderRuntime {
         task.status !== "cancelled",
     );
 
-    const explicitHandoffs = parseExplicitHandoffs(
-      output,
-      team.teammates,
-      fromRole,
-    );
-    const explicitByRecipient = new Map(
-      explicitHandoffs.map((handoff) => [handoff.to, handoff.message]),
-    );
+    if (downstreamTasks.length === 0) return;
+
     const completionSummary = summarizeCompletionOutput(
       output,
       `Completed ${completedTask.title}.`,
     );
 
-    const recipients = new Set<string>([
-      ...downstreamTasks.map((task) => task.owner!).filter(Boolean),
-      ...explicitHandoffs.map((handoff) => handoff.to),
-    ]);
+    const recipients = new Set<string>(
+      downstreamTasks.map((task) => task.owner!).filter(Boolean),
+    );
 
     for (const recipient of recipients) {
       if (!recipient || recipient === fromRole) continue;
 
-      const recipientTask =
-        downstreamTasks.find((task) => task.owner === recipient) ??
-        allTasks.find(
-          (task) =>
-            task.owner === recipient &&
-            task.status !== "done" &&
-            task.status !== "cancelled",
-        );
+      const recipientTask = downstreamTasks.find(
+        (task) => task.owner === recipient,
+      );
 
-      const autoContext = recipientTask
-        ? `${fromRole} completed dependency ${completedTask.id} (${completedTask.title}) for ${recipientTask.id}.`
-        : `${fromRole} completed ${completedTask.id} (${completedTask.title}).`;
-      const message =
-        explicitByRecipient.get(recipient) ??
-        `${autoContext} ${completionSummary}`;
+      const message = recipientTask
+        ? `${fromRole} completed dependency ${completedTask.id} (${completedTask.title}) for ${recipientTask.id}. ${completionSummary}`
+        : `${fromRole} completed ${completedTask.id} (${completedTask.title}). ${completionSummary}`;
 
       const mailboxMessage = await this.mailboxManager.send(teamId, {
         from: fromRole,
         to: recipient,
         taskId: recipientTask?.id,
-        type: explicitByRecipient.has(recipient)
-          ? "teammate_handoff"
-          : "dependency_handoff",
+        type: "dependency_handoff",
         message,
         attachments: outputArtifact ? [outputArtifact] : [],
       });
@@ -1941,7 +1907,7 @@ export class LeaderRuntime {
         type: "handoff",
         severity: "info",
         taskId: recipientTask?.id ?? completedTask.id,
-        message: `Handoff sent to ${recipient}${recipientTask ? ` for ${recipientTask.id}` : ""}`,
+        message: `Dependency notice sent to ${recipient}${recipientTask ? ` for ${recipientTask.id}` : ""}`,
         links: mailboxMessage.attachments,
       });
     }

@@ -10,6 +10,9 @@
  *  - 4   lifecycle handlers  (session_start, session_switch, agent_end, session_shutdown)
  */
 
+import * as os from "node:os";
+import * as path from "node:path";
+
 import type { ExtensionAPI, ExtensionContext, SessionSwitchEvent } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
@@ -83,9 +86,28 @@ type ManagerBundle = {
 
 let managers: ManagerBundle | undefined;
 
-/** (Re-)create all manager instances for the given project root. */
-function initManagers(cwd: string): void {
-	const store = new TeamStore(cwd);
+/**
+ * Absolute storage root for team-mode state.
+ *
+ * Defaults to `~/.pi/agent/extensions` — a single global location shared across
+ * all projects (the `TeamStore` appends `teams/<team-id>/` under this root, so
+ * team data lands in `~/.pi/agent/extensions/teams/<team-id>/`). This matches
+ * the convention used by other pi extensions that persist under
+ * `~/.pi/agent/extensions/`.
+ *
+ * Set `PI_TEAM_STORAGE_ROOT` to pin a specific directory — primarily useful
+ * for tests that want to work against a temp dir without touching the user's
+ * real `~/.pi/` tree.
+ */
+function getTeamStorageRoot(): string {
+	const override = process.env.PI_TEAM_STORAGE_ROOT;
+	if (override) return override;
+	return path.join(os.homedir(), ".pi", "agent", "extensions");
+}
+
+/** (Re-)create all manager instances. */
+function initManagers(): void {
+	const store = new TeamStore(getTeamStorageRoot());
 	const teamManager = new TeamManager(store);
 	const taskManager = new TaskManager(store);
 	const signalManager = new SignalManager(store);
@@ -178,7 +200,7 @@ async function answerTeamQuestion(params: TeamQueryParams): Promise<string> {
 	if (target === "leader") {
 		const summary = await teamManager.getTeamSummary(params.teamId);
 		const compact = [
-			`${summary.progress.done}/${summary.progress.total} done in ${summary.currentPhase ?? "unknown"} phase`,
+			`${summary.progress.done}/${summary.progress.total} done`,
 			summary.blockers.length > 0
 				? `Blockers: ${summary.blockers.map((blocker) => blocker.reason).join("; ")}`
 				: `Next: ${summary.nextMilestone ?? "continue execution"}`,
@@ -205,7 +227,6 @@ async function answerTeamQuestion(params: TeamQueryParams): Promise<string> {
 			`"${question}"`,
 			"",
 			"**Answer from current team state:**",
-			`Phase: ${summary.currentPhase ?? "unknown"}`,
 			`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`,
 		];
 		if (summary.blockers.length > 0) {
@@ -533,8 +554,9 @@ export default function (pi: ExtensionAPI): void {
 			objective: Type.String({ description: "What the team should accomplish" }),
 			name: Type.Optional(Type.String({ description: "Human-readable team name (generated from objective if omitted)" })),
 			template: Type.Optional(
-				StringEnum(["fullstack", "research", "refactor"] as const, {
-					description: "Named preset that bootstraps the team with a predefined roster",
+				Type.String({
+					description:
+						"Named preset key for bootstrapping a roster. Built-in keys: fullstack, research, refactor. Unknown keys are accepted and treated as no-op (useful for custom per-project templates).",
 				}),
 			),
 			teammates: Type.Optional(
@@ -763,6 +785,77 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// Tool: team_handoff
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_handoff",
+		label: "Handoff to Teammate",
+		description:
+			"Send a structured handoff from one teammate to another via the team mailbox. " +
+			"Call this when you finish a task and another teammate needs context (e.g. backend → frontend API contract, researcher → planner findings). " +
+			"The recipient receives the message in their context on next spawn.",
+		promptSnippet: "Hand off context or findings to another teammate on the same team",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			from: Type.String({
+				description: "Your role (e.g. 'backend', 'researcher'). Must be a teammate role on this team.",
+			}),
+			to: Type.String({
+				description: "Recipient role name. Must be a different teammate on this team.",
+			}),
+			message: Type.String({ description: "Handoff content — what the recipient needs to know" }),
+			taskId: Type.Optional(
+				Type.String({ description: "Optional task ID this handoff relates to" }),
+			),
+			attachments: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "Optional paths to artifacts (e.g. plans, specs) the recipient should read",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { mailboxManager, teamManager, signalManager } = getManagers();
+
+			const team = await teamManager.getTeam(params.teamId);
+			if (!team) throw new Error(`Team not found: ${params.teamId}`);
+
+			if (params.from === params.to) {
+				throw new Error("Cannot hand off to self");
+			}
+			if (!team.teammates.includes(params.to)) {
+				throw new Error(
+					`Recipient "${params.to}" is not a teammate on this team. Available: ${team.teammates.join(", ")}`,
+				);
+			}
+
+			const msg = await mailboxManager.send(params.teamId, {
+				from: params.from,
+				to: params.to,
+				taskId: params.taskId,
+				type: "teammate_handoff",
+				message: params.message,
+				attachments: params.attachments ?? [],
+			});
+
+			await signalManager.emit(params.teamId, {
+				source: params.from,
+				type: "handoff",
+				severity: "info",
+				taskId: params.taskId,
+				message: `Handoff sent to ${params.to}`,
+				links: params.attachments ?? [],
+			});
+
+			const text = `Handoff sent: ${params.from} → ${params.to} (${msg.id}).`;
+			return {
+				content: [{ type: "text", text }],
+				details: msg,
+			};
+		},
+	});
+
+	// -------------------------------------------------------------------------
 	// Tool: team_review
 	// -------------------------------------------------------------------------
 
@@ -874,6 +967,97 @@ export default function (pi: ExtensionAPI): void {
 					`Failed to ${params.action} team: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
+		},
+	});
+
+	// -------------------------------------------------------------------------
+	// Tool: team_task_create
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_task_create",
+		label: "Create Task",
+		description:
+			"Create a task on a team's task board. Use this as the LLM leader to author work items. " +
+			"Declare explicit `dependsOn` IDs so the runtime can promote the task to 'ready' when upstream tasks complete.",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			title: Type.String({ description: "Short title of the task" }),
+			description: Type.Optional(
+				Type.String({ description: "Extended description of what the task covers" }),
+			),
+			owner: Type.String({
+				description: "Teammate role responsible for this task (must be on the team roster)",
+			}),
+			dependsOn: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "IDs of tasks that must complete before this one becomes ready",
+				}),
+			),
+			priority: Type.Optional(
+				StringEnum(["low", "medium", "high"] as const, {
+					description: "Scheduling priority (default: medium)",
+				}),
+			),
+			riskLevel: Type.Optional(
+				StringEnum(["low", "medium", "high"] as const, {
+					description: "Risk level; medium/high may require approval (default: low)",
+				}),
+			),
+			approvalRequired: Type.Optional(
+				Type.Boolean({
+					description: "When true, the task waits for /team review before execution",
+				}),
+			),
+			modelTier: Type.Optional(
+				StringEnum(["cheap", "mid", "deep"] as const, {
+					description: "Override the teammate's model tier for this specific task",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { taskManager, teamManager, signalManager } = getManagers();
+
+			const team = await teamManager.getTeam(params.teamId);
+			if (!team) throw new Error(`Team not found: ${params.teamId}`);
+			if (!team.teammates.includes(params.owner)) {
+				throw new Error(
+					`Owner "${params.owner}" is not on the team. Available: ${team.teammates.join(", ")}`,
+				);
+			}
+
+			const deps = params.dependsOn ?? [];
+			const status = deps.length > 0 ? "todo" : "ready";
+
+			const task = await taskManager.createTask(params.teamId, {
+				title: params.title,
+				description: params.description,
+				owner: params.owner,
+				status,
+				priority: params.priority ?? "medium",
+				dependsOn: deps,
+				riskLevel: params.riskLevel ?? "low",
+				approvalRequired: params.approvalRequired ?? false,
+				artifacts: [],
+				blockers: [],
+				modelTier: params.modelTier,
+			});
+
+			await signalManager.emit(params.teamId, {
+				source: "leader",
+				type: "task_created",
+				severity: "info",
+				taskId: task.id,
+				message: `Created ${task.id} (${task.title}) for ${params.owner}`,
+				links: [],
+			});
+
+			return {
+				content: [
+					{ type: "text", text: `Created task ${task.id} (${task.title}) — owner: ${params.owner}, status: ${status}` },
+				],
+				details: task,
+			};
 		},
 	});
 
@@ -1300,7 +1484,7 @@ export default function (pi: ExtensionAPI): void {
 			await managers.leaderRuntime.cleanup();
 			managers.watchManager.cleanup();
 		}
-		initManagers(ctx.cwd);
+		initManagers();
 		// Wire up the status-change callback so the widget refreshes when a
 		// team completes, fails, or stops in the background (outside an agent turn).
 		if (managers) {
@@ -1323,13 +1507,13 @@ export default function (pi: ExtensionAPI): void {
 		await refreshWidget(ctx);
 	});
 
-	/** Re-initialize managers when switching sessions (cwd may differ). */
+	/** Re-initialize managers when switching sessions. */
 	pi.on("session_switch", async (_event: SessionSwitchEvent, ctx) => {
 		if (managers) {
 			await managers.leaderRuntime.cleanup();
 			managers.watchManager.cleanup();
 		}
-		initManagers(ctx.cwd);
+		initManagers();
 		// Wire up the status-change callback for the new session context.
 		if (managers) {
 			managers.leaderRuntime.onStatusChange = () => {

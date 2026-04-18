@@ -4,7 +4,7 @@ A pi extension that adds **team-based orchestration**: a lightweight control pla
 
 A team has:
 
-- a **Leader** — orchestrates work, tracks phases, assigns tasks
+- a **Leader** — an LLM coordinator (pi subprocess) that authors the task graph and assigns work via tool calls
 - one or more **Teammates** — isolated pi subprocesses that execute specific tasks
 - a **Task board** — durable task state with dependencies
 - a **Signal log** — append-only progress and milestone events
@@ -19,17 +19,15 @@ This extension lets pi manage long-running work as a structured team instead of 
 Current implementation includes:
 
 - **Team creation and lifecycle management**
-- **Leader runtime loop** with four phases:
-  - `research`
-  - `synthesis`
-  - `implementation`
-  - `verification`
+- **LLM leader** — a coordinator pi subprocess that authors the task graph and assigns work via tool calls (`team_task_create`, `team_spawn_teammate`, `team_handoff`, …). The runtime handles mechanical upkeep (dependency promotion, stall detection, completion) but never auto-spawns teammates — those decisions belong to the leader.
+- **Event-driven wakes** — leader turns fire on teammate completion and on leader-bound mailbox traffic (~200ms debounced), not only on the 20s polling tick
+- **File-based teammate specs** — drop `.claude/teammates/<role>.md` files with frontmatter (`description`, `needsWorktree`, `hasMemory`, `modelTier`) to extend or override the seven built-in roles
 - **Teammate spawning** as isolated pi subprocesses with self-contained prompts
-- **Teammate-to-teammate mailbox handoffs** with automatic downstream delivery
+- **Explicit peer handoffs** via the `team_handoff` tool (teammates call it directly; no regex scraping of output)
 - **Task creation, assignment, dependency resolution, and summaries**
 - **Signals, mailbox, and approval tracking**
 - **Watch mode** for live team updates in a widget below the editor
-- **Persistent storage** under `.pi/teams/`
+- **Persistent storage** under `~/.pi/agent/extensions/teams/`
 
 ## Core Concepts
 
@@ -44,10 +42,11 @@ The orchestrator for a team.
 The leader:
 
 - creates and tracks tasks
-- advances phases
 - delegates execution to teammates
 - emits summary signals
 - never does implementation work directly
+
+The leader is a pi subprocess that receives a team-state snapshot and decides what tasks to create and who to assign them to via tool calls (`team_task_create`, `team_spawn_teammate`, `team_handoff`, `team_message`, `team_memory`, `team_review`). It runs one "turn" at launch, then another whenever there's ready work or fresh user guidance — event-driven via mailbox subscriptions with a 20s polling tick as the safety net.
 
 ### Teammate
 
@@ -60,6 +59,8 @@ A specialized worker such as:
 - `reviewer`
 - `tester`
 - `docs`
+
+You can add or override roles by dropping a frontmatter markdown file into `.claude/teammates/<role>.md` in the repo root. Frontmatter fields: `name` (required), `description`, `needsWorktree`, `hasMemory`, `modelTier`. The body becomes the teammate's system prompt.
 
 Each teammate receives a **fully self-contained prompt** and runs in its own isolated pi subprocess.
 
@@ -173,34 +174,37 @@ The extension registers these tools for the model:
 
 The leader runtime is implemented in `runtime/leader-runtime.ts`.
 
-### Phase model
-
-The leader advances through:
-
-1. **Research** — gather findings and constraints
-2. **Synthesis** — convert findings into structured tasks
-3. **Implementation** — assign ready tasks to teammates
-4. **Verification** — review outputs and finalize the team
-
 ### Operating loop
 
-On each cycle the leader:
+On each cycle the runtime:
 
 1. loads team state
-2. resolves dependencies
-3. determines current phase
-4. finds ready tasks
-5. spawns teammates for assignable work
-6. updates team summary
-7. emits summary signals
-8. marks the team complete when all tasks are done
+2. drains the leader mailbox (user guidance)
+3. resolves task dependencies
+4. detects team completion
+5. fires an LLM leader turn when there's work to decide (ready task with idle owner, or fresh guidance)
+6. detects stalled tasks and retries or blocks them
+7. updates the team summary and emits a summary signal
+
+Mechanical upkeep (dependency promotion, stall detection, completion) runs on every tick regardless. LLM turns only fire when there's something to decide.
+
+### Leader turns
+
+On launch, the runtime spawns a one-shot pi subprocess with a state snapshot and the full team toolbelt. The subprocess authors the task graph (via `team_task_create`), assigns work (via `team_spawn_teammate`), relays user guidance, and exits. Turns are serialised per team via an in-flight guard so overlapping triggers never spawn duplicate coordinators.
+
+### Event-driven wake
+
+The runtime responds to events without waiting for the 20s polling tick:
+- teammate subprocess completion → immediate cycle (via `spawnTeammate`'s result handler)
+- user guidance / broadcast message to the leader → debounced wake (~200ms) via a `MailboxManager` listener
+
+Polling remains as a safety net (catches stalled tasks and any edge cases), but the common path is event-driven.
 
 ### Tool restriction model
 
-Conceptually, the leader is **orchestration-only**:
+The leader is **orchestration-only** in both modes:
 
-- it tracks tasks
-- it decides phase transitions
+- it creates/tracks tasks
 - it delegates work
 - it summarizes progress
 
@@ -283,10 +287,11 @@ Signals shown in watch mode include:
 
 ## Persistence Layout
 
-All runtime state is stored under:
+All runtime state is stored globally under the user's home directory (resolved
+via `os.homedir()`), so team state is shared across projects:
 
 ```text
-.pi/
+~/.pi/agent/extensions/
   teams/
     <team-id>/
       team.json

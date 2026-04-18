@@ -158,9 +158,9 @@ describe("generateId", () => {
 // ---------------------------------------------------------------------------
 
 describe("TeamStore — directory helpers", () => {
-  test("getTeamsDir returns .pi/teams path", async () => {
+  test("getTeamsDir returns <baseDir>/teams path", async () => {
     const { store, dir } = await makeStore();
-    assert.equal(store.getTeamsDir(), join(dir, ".pi", "teams"));
+    assert.equal(store.getTeamsDir(), join(dir, "teams"));
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -168,7 +168,7 @@ describe("TeamStore — directory helpers", () => {
     const { store, dir } = await makeStore();
     assert.equal(
       store.getTeamDir("team-001"),
-      join(dir, ".pi", "teams", "team-001"),
+      join(dir, "teams", "team-001"),
     );
     await rm(dir, { recursive: true, force: true });
   });
@@ -177,7 +177,7 @@ describe("TeamStore — directory helpers", () => {
     const { store, dir } = await makeStore();
     assert.equal(
       store.getTeammateDir("team-001", "backend"),
-      join(dir, ".pi", "teams", "team-001", "teammates", "backend"),
+      join(dir, "teams", "team-001", "teammates", "backend"),
     );
     await rm(dir, { recursive: true, force: true });
   });
@@ -188,16 +188,15 @@ describe("TeamStore — directory helpers", () => {
 
     const { access } = await import("node:fs/promises");
     await assert.doesNotReject(() =>
-      access(join(dir, ".pi", "teams", "team-001", "memory")),
+      access(join(dir, "teams", "team-001", "memory")),
     );
     await assert.doesNotReject(() =>
-      access(join(dir, ".pi", "teams", "team-001", "leader")),
+      access(join(dir, "teams", "team-001", "leader")),
     );
     await assert.doesNotReject(() =>
       access(
         join(
           dir,
-          ".pi",
           "teams",
           "team-001",
           "teammates",

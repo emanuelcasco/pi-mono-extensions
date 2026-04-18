@@ -324,7 +324,6 @@ export class TeamManager {
       name: team.name,
       status: team.status,
       objective: team.objective,
-      currentPhase: team.currentPhase,
       progress: { done, total },
       teammates,
       blockers,

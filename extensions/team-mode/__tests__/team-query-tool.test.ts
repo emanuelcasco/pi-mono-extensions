@@ -65,7 +65,6 @@ function makeTeam(overrides: Partial<TeamRecord> = {}): TeamRecord {
 		objective: "Ship compact responses",
 		repoRoots: [],
 		teammates: ["backend"],
-		currentPhase: "implementation",
 		...overrides,
 	};
 }
@@ -151,8 +150,10 @@ describe("team_query tool", () => {
 		registerTeamMode(pi as any);
 
 		const toolNames = pi.tools.map((tool) => tool.name).sort();
-		assert.equal(toolNames.length, 9);
+		assert.equal(toolNames.length, 11);
 		assert.equal(toolNames.includes("team_query"), true);
+		assert.equal(toolNames.includes("team_handoff"), true);
+		assert.equal(toolNames.includes("team_task_create"), true);
 		assert.equal(toolNames.includes("team_status"), false);
 		assert.equal(toolNames.includes("team_tasks"), false);
 		assert.equal(toolNames.includes("team_signals"), false);
@@ -163,6 +164,9 @@ describe("team_query tool", () => {
 	test("routes compact and verbose queries through team_query", async () => {
 		dir = await mkdtemp(join(tmpdir(), "pi-teams-query-tool-"));
 		await seedTeamState(dir);
+		const prevRoot = process.env.PI_TEAM_STORAGE_ROOT;
+		process.env.PI_TEAM_STORAGE_ROOT = dir;
+		try {
 		const pi = createMockPi();
 		registerTeamMode(pi as any);
 		const ctx = {
@@ -180,7 +184,7 @@ describe("team_query tool", () => {
 		assert.ok(teamQuery, "team_query should be registered");
 
 		const statusResult = await teamQuery!.execute("call-1", { action: "status", teamId: "tool-team-001" }, null, null, ctx);
-		assert.match(statusResult.content[0].text, /^alpha: 1\/2 done \| phase: implementation/);
+		assert.match(statusResult.content[0].text, /^alpha: 1\/2 done/);
 
 		const verboseStatus = await teamQuery!.execute("call-2", { action: "status", teamId: "tool-team-001", verbose: true }, null, null, ctx);
 		assert.match(verboseStatus.content[0].text, /Team alpha \[tool-team-001\] — running/);
@@ -205,6 +209,10 @@ describe("team_query tool", () => {
 		assert.match(askResult.content[0].text, /Forwarded to backend's mailbox/);
 
 		await pi.events.get("session_shutdown")?.({}, ctx);
+		} finally {
+			if (prevRoot === undefined) delete process.env.PI_TEAM_STORAGE_ROOT;
+			else process.env.PI_TEAM_STORAGE_ROOT = prevRoot;
+		}
 	});
 
 	test("team_create guidance prefers objective-only calls", async () => {

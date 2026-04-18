@@ -75,7 +75,6 @@ function makeSummary(overrides: Partial<TeamSummary> = {}): TeamSummary {
 		name: "alpha",
 		status: "running",
 		objective: "Build feature X",
-		currentPhase: "implementation",
 		progress: { done: 2, total: 5 },
 		teammates: [],
 		blockers: [],
@@ -112,13 +111,12 @@ function makeTeammateSummary(overrides: Partial<TeammateSummary> = {}): Teammate
 // ---------------------------------------------------------------------------
 
 describe("formatTeamSummary", () => {
-	test("includes team name, id, status, and phase in header", () => {
+	test("includes team name, id, and status in header", () => {
 		const summary = makeSummary();
 		const output = formatTeamSummary(summary);
 		assert.ok(output.includes("alpha"), "should include team name");
 		assert.ok(output.includes("team-001"), "should include team id");
 		assert.ok(output.includes("running"), "should include status");
-		assert.ok(output.includes("implementation"), "should include phase");
 	});
 
 	test("shows progress as done/total tasks", () => {
@@ -189,7 +187,7 @@ describe("formatCompactTeamSummary", () => {
 			}),
 		);
 
-		assert.match(output, /^alpha: 2\/5 done \| phase: implementation \| blockers: 1/);
+		assert.match(output, /^alpha: 2\/5 done \| blockers: 1/);
 		assert.match(output, /active: backend/);
 		assert.equal(output.includes("\n"), false);
 	});

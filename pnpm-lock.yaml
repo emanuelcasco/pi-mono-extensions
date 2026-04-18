@@ -26,7 +26,10 @@ importers:
     devDependencies:
       '@changesets/cli':
         specifier: ^2.30.0
-        version: 2.30.0(@types/node@25.5.2)
+        version: 2.30.0(@types/node@25.6.0)
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
 
   extensions/ask-user-question:
     dependencies:
@@ -73,20 +76,20 @@ importers:
         specifier: '*'
         version: 0.34.49
 
-  extensions/loop:
+  extensions/context-guard:
     dependencies:
-      '@mariozechner/pi-ai':
-        specifier: '*'
-        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
       '@mariozechner/pi-coding-agent':
         specifier: '*'
         version: 0.65.0(ws@8.20.0)(zod@4.3.6)
-      '@mariozechner/pi-tui':
-        specifier: '*'
-        version: 0.65.0
       '@sinclair/typebox':
         specifier: '*'
         version: 0.34.49
+
+  extensions/loop:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
 
   extensions/multi-edit:
     dependencies:
@@ -107,6 +110,30 @@ importers:
         version: 8.0.4
 
   extensions/review:
+    dependencies:
+      '@mariozechner/pi-ai':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-tui':
+        specifier: '*'
+        version: 0.65.0
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+
+  extensions/sentinel:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+
+  extensions/simplify:
     dependencies:
       '@mariozechner/pi-ai':
         specifier: '*'
@@ -727,6 +754,9 @@ packages:
 
   '@types/node@25.5.2':
     resolution: {integrity: sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg==}
+
+  '@types/node@25.6.0':
+    resolution: {integrity: sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==}
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
@@ -1469,6 +1499,9 @@ packages:
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
+  undici-types@7.19.2:
+    resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
+
   undici@7.24.7:
     resolution: {integrity: sha512-H/nlJ/h0ggGC+uRL3ovD+G0i4bqhvsDOpbDv7At5eFLlj2b41L8QliGbnl2H7SnDiYhENphh1tQFJZf+MyfLsQ==}
     engines: {node: '>=20.18.1'}
@@ -1966,7 +1999,7 @@ snapshots:
     dependencies:
       '@changesets/types': 6.1.0
 
-  '@changesets/cli@2.30.0(@types/node@25.5.2)':
+  '@changesets/cli@2.30.0(@types/node@25.6.0)':
     dependencies:
       '@changesets/apply-release-plan': 7.1.0
       '@changesets/assemble-release-plan': 6.0.9
@@ -1982,7 +2015,7 @@ snapshots:
       '@changesets/should-skip-package': 0.1.2
       '@changesets/types': 6.1.0
       '@changesets/write': 0.4.0
-      '@inquirer/external-editor': 1.0.3(@types/node@25.5.2)
+      '@inquirer/external-editor': 1.0.3(@types/node@25.6.0)
       '@manypkg/get-packages': 1.1.3
       ansi-colors: 4.1.3
       enquirer: 2.4.1
@@ -2091,12 +2124,12 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@inquirer/external-editor@1.0.3(@types/node@25.5.2)':
+  '@inquirer/external-editor@1.0.3(@types/node@25.6.0)':
     dependencies:
       chardet: 2.1.1
       iconv-lite: 0.7.2
     optionalDependencies:
-      '@types/node': 25.5.2
+      '@types/node': 25.6.0
 
   '@manypkg/find-root@1.1.0':
     dependencies:
@@ -2607,6 +2640,10 @@ snapshots:
   '@types/node@25.5.2':
     dependencies:
       undici-types: 7.18.2
+
+  '@types/node@25.6.0':
+    dependencies:
+      undici-types: 7.19.2
 
   '@types/retry@0.12.0': {}
 
@@ -3316,6 +3353,8 @@ snapshots:
   uint8array-extras@1.5.0: {}
 
   undici-types@7.18.2: {}
+
+  undici-types@7.19.2: {}
 
   undici@7.24.7: {}
 

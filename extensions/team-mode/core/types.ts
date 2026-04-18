@@ -54,13 +54,6 @@ export type SignalSeverity = "info" | "warning" | "error";
 /** Risk level used to determine whether a task requires approval. */
 export type RiskLevel = "low" | "medium" | "high";
 
-/** Phase the leader is currently operating in. */
-export type LeaderPhase =
-  | "research"
-  | "synthesis"
-  | "implementation"
-  | "verification";
-
 /**
  * The role identifier for a teammate.
  * Built-in roles are listed explicitly; custom roles are allowed via `string`.
@@ -101,8 +94,6 @@ export interface TeamRecord {
   teammates: string[];
   /** Short narrative summary produced by the leader. */
   summary?: string;
-  /** Current leader phase. */
-  currentPhase?: LeaderPhase;
   /** ISO 8601 timestamp — last time the user inspected this team. */
   lastCheckedAt?: string;
 }
@@ -274,7 +265,6 @@ export interface TeamSummary {
   name: string;
   status: TeamStatus;
   objective: string;
-  currentPhase?: LeaderPhase;
   /** How many tasks are done vs. total. */
   progress: { done: number; total: number };
   /** Per-teammate status snapshot. */

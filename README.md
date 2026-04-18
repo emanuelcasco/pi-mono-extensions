@@ -320,7 +320,9 @@ pi install npm:pi-mono-status-line
 
 ## team-mode
 
-The `team-mode` extension adds team-based orchestration: a leader-driven control plane for running long-running multi-agent work in the background. A team has a Leader that advances through `research → synthesis → implementation → verification` phases, Teammates spawned as isolated pi subprocesses, a durable task board with dependencies, a signal log, a mailbox for handoffs, optional approval gates, and a watch-mode widget that shows live updates below the editor. State is persisted under `.pi/teams/`.
+The `team-mode` extension adds team-based orchestration: an LLM-driven control plane for running long-running multi-agent work in the background.
+
+A team has an LLM Leader (pi subprocess coordinator) that authors the task graph and assigns work via tool calls, Teammates spawned as isolated pi subprocesses, a durable task board with dependencies, a signal log, a mailbox for peer handoffs, optional approval gates, and a watch-mode widget that shows live updates below the editor.
 
 Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
 
