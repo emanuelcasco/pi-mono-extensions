@@ -35,6 +35,14 @@ import {
 import { updateTeamWidget } from "./ui/widget.js";
 import { LeaderRuntime } from "./runtime/leader-runtime.js";
 import { WatchManager } from "./runtime/watch-mode.js";
+import {
+	DEFAULT_MODEL_CONFIG,
+	detectProvider,
+	isModelTier,
+	loadModelConfig,
+	saveModelConfig,
+	type ModelConfig,
+} from "./core/model-config.js";
 
 // ---------------------------------------------------------------------------
 // /team subcommand definitions — single source of truth for autocomplete + handler
@@ -50,6 +58,7 @@ const TEAM_SUBCOMMANDS = [
 	{ value: "resume", label: "resume", description: "Resume a stopped team", needsTeamId: true },
 	{ value: "watch", label: "watch", description: "Start live monitoring", needsTeamId: true },
 	{ value: "unwatch", label: "unwatch", description: "Stop live monitoring", needsTeamId: false },
+	{ value: "models", label: "models", description: "Show or configure teammate model tiers", needsTeamId: false },
 ] as const;
 
 const TEAM_ID_SUBCOMMANDS: ReadonlySet<string> = new Set(
@@ -361,6 +370,140 @@ async function executeTeamQuery(params: TeamQueryParams, ctx?: ExtensionContext)
 // ---------------------------------------------------------------------------
 // Extension default export
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// /team models — handler for the model-tier configuration subcommand
+// ---------------------------------------------------------------------------
+
+function formatModelsConfig(config: ModelConfig): string {
+	const activeProvider = detectProvider(config.provider);
+	const catalog = config.providers[activeProvider];
+	const lines: string[] = [];
+
+	lines.push("## Team model configuration");
+	lines.push("");
+	lines.push(`Provider: **${config.provider}** (resolves to \`${activeProvider}\`)`);
+	lines.push(`Default tier: **${config.defaultTier}**`);
+	lines.push("");
+
+	lines.push("### Active catalog");
+	if (catalog) {
+		for (const tier of ["cheap", "mid", "deep"] as const) {
+			lines.push(`- ${tier}: \`${catalog[tier]}\``);
+		}
+	} else {
+		lines.push(`_No catalog defined for \`${activeProvider}\`._`);
+	}
+
+	lines.push("");
+	lines.push("### Role → tier");
+	const roles = Object.keys(config.roleTiers).sort();
+	for (const role of roles) {
+		const tier = config.roleTiers[role];
+		const model = catalog?.[tier] ?? "—";
+		lines.push(`- ${role} → ${tier} (\`${model}\`)`);
+	}
+
+	lines.push("");
+	lines.push("### All known providers");
+	for (const [name, c] of Object.entries(config.providers)) {
+		lines.push(`- ${name}: cheap=\`${c.cheap}\`, mid=\`${c.mid}\`, deep=\`${c.deep}\``);
+	}
+
+	lines.push("");
+	lines.push("Commands:");
+	lines.push("  /team models show");
+	lines.push("  /team models provider <name|auto>");
+	lines.push("  /team models role <role> <cheap|mid|deep>");
+	lines.push("  /team models set <provider> <cheap|mid|deep> <modelId>");
+	lines.push("  /team models default-tier <cheap|mid|deep>");
+	lines.push("  /team models reset");
+
+	return lines.join("\n");
+}
+
+async function handleModelsSubcommand(
+	args: string[],
+	teamsDir: string,
+	onChange: () => void,
+): Promise<string> {
+	const action = (args[0] ?? "show").toLowerCase();
+	const config = await loadModelConfig(teamsDir);
+
+	switch (action) {
+		case "show":
+		case "": {
+			return formatModelsConfig(config);
+		}
+
+		case "provider": {
+			const provider = args[1];
+			if (!provider) throw new Error("Usage: /team models provider <name|auto>");
+			if (provider !== "auto" && !config.providers[provider]) {
+				throw new Error(
+					`Unknown provider "${provider}". Known: ${Object.keys(config.providers).join(", ")}, auto`,
+				);
+			}
+			const next: ModelConfig = { ...config, provider };
+			await saveModelConfig(teamsDir, next);
+			onChange();
+			return `Provider set to **${provider}**\n\n` + formatModelsConfig(next);
+		}
+
+		case "role": {
+			const role = args[1];
+			const tier = args[2];
+			if (!role || !tier) throw new Error("Usage: /team models role <role> <cheap|mid|deep>");
+			if (!isModelTier(tier)) throw new Error(`Invalid tier "${tier}". Use cheap, mid, or deep.`);
+			const next: ModelConfig = {
+				...config,
+				roleTiers: { ...config.roleTiers, [role]: tier },
+			};
+			await saveModelConfig(teamsDir, next);
+			onChange();
+			return `Role **${role}** set to tier **${tier}**`;
+		}
+
+		case "set": {
+			const provider = args[1];
+			const tier = args[2];
+			const model = args.slice(3).join(" ").trim();
+			if (!provider || !tier || !model) {
+				throw new Error("Usage: /team models set <provider> <cheap|mid|deep> <modelId>");
+			}
+			if (!isModelTier(tier)) throw new Error(`Invalid tier "${tier}". Use cheap, mid, or deep.`);
+			const existing = config.providers[provider] ?? { cheap: "", mid: "", deep: "" };
+			const next: ModelConfig = {
+				...config,
+				providers: {
+					...config.providers,
+					[provider]: { ...existing, [tier]: model },
+				},
+			};
+			await saveModelConfig(teamsDir, next);
+			onChange();
+			return `Set ${provider}.${tier} = \`${model}\``;
+		}
+
+		case "default-tier": {
+			const tier = args[1];
+			if (!tier || !isModelTier(tier)) throw new Error("Usage: /team models default-tier <cheap|mid|deep>");
+			const next: ModelConfig = { ...config, defaultTier: tier };
+			await saveModelConfig(teamsDir, next);
+			onChange();
+			return `Default tier set to **${tier}**`;
+		}
+
+		case "reset": {
+			await saveModelConfig(teamsDir, DEFAULT_MODEL_CONFIG);
+			onChange();
+			return "Model configuration reset to defaults\n\n" + formatModelsConfig(DEFAULT_MODEL_CONFIG);
+		}
+
+		default:
+			throw new Error(`Unknown models action "${action}". Try: show, provider, role, set, default-tier, reset`);
+	}
+}
 
 export default function (pi: ExtensionAPI): void {
 	// -------------------------------------------------------------------------
@@ -1098,6 +1241,24 @@ export default function (pi: ExtensionAPI): void {
 				case "unwatch": {
 					watchManager.stopWatch(ctx);
 					ctx.ui.notify("Watch stopped", "info");
+					break;
+				}
+
+				case "models": {
+					try {
+						const output = await handleModelsSubcommand(parts.slice(1), managers.store.getTeamsDir(), () => {
+							managers?.leaderRuntime.reloadModelConfig();
+						});
+						pi.sendMessage(
+							{ customType: "team-output", content: output, display: true },
+							{ triggerTurn: false },
+						);
+					} catch (err) {
+						ctx.ui.notify(
+							`models: ${err instanceof Error ? err.message : String(err)}`,
+							"error",
+						);
+					}
 					break;
 				}
 

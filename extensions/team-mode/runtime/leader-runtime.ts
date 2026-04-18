@@ -14,7 +14,11 @@
  * prompts.
  */
 
-import { execFile as execFileCb, spawn, type ChildProcess } from "node:child_process";
+import {
+  execFile as execFileCb,
+  spawn,
+  type ChildProcess,
+} from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -33,6 +37,12 @@ import type {
   TeammateProcess,
 } from "../core/types.js";
 import { TEAMMATE_ROLE_PROMPTS, TEAM_TEMPLATES } from "../core/types.js";
+import type { ModelConfig } from "../core/model-config.js";
+import {
+  DEFAULT_MODEL_CONFIG,
+  loadModelConfig,
+  resolveModel,
+} from "../core/model-config.js";
 import type { TeamStore } from "../core/store.js";
 import type { SignalManager } from "../managers/signal-manager.js";
 import type { TaskManager } from "../managers/task-manager.js";
@@ -54,13 +64,20 @@ const WRITE_CAPABLE_ROLES = new Set(["backend", "frontend", "tester", "docs"]);
  * or the cwd is not inside a git repository — callers should fall back to
  * the shared working directory gracefully.
  */
-async function createWorktree(repoRoot: string, worktreePath: string): Promise<string | null> {
+async function createWorktree(
+  repoRoot: string,
+  worktreePath: string,
+): Promise<string | null> {
   try {
     await fs.promises.mkdir(path.dirname(worktreePath), { recursive: true });
-    await execFile("git", ["worktree", "add", "--detach", worktreePath, "HEAD"], {
-      cwd: repoRoot,
-      timeout: 30_000,
-    });
+    await execFile(
+      "git",
+      ["worktree", "add", "--detach", worktreePath, "HEAD"],
+      {
+        cwd: repoRoot,
+        timeout: 30_000,
+      },
+    );
     return worktreePath;
   } catch {
     // git not available, not a repo, or worktree already exists — fall back silently
@@ -72,7 +89,10 @@ async function createWorktree(repoRoot: string, worktreePath: string): Promise<s
  * Remove a previously-allocated git worktree.
  * Best-effort: silently ignores errors (e.g. already removed).
  */
-async function removeWorktree(repoRoot: string, worktreePath: string): Promise<void> {
+async function removeWorktree(
+  repoRoot: string,
+  worktreePath: string,
+): Promise<void> {
   try {
     await execFile("git", ["worktree", "remove", "--force", worktreePath], {
       cwd: repoRoot,
@@ -179,7 +199,9 @@ function collectPiOutput(
       // Capture final assistant output (existing behavior).
       if (event.type === "message_end" && event.message?.role === "assistant") {
         const text = (event.message.content ?? [])
-          .filter((part) => part?.type === "text" && typeof part.text === "string")
+          .filter(
+            (part) => part?.type === "text" && typeof part.text === "string",
+          )
           .map((part) => part.text)
           .join("\n")
           .trim();
@@ -191,11 +213,12 @@ function collectPiOutput(
       // signal noise without adding information a reader can act on.
       if (onProgress) {
         if (event.type === "tool_execution_end" && event.toolName) {
-          const preview = typeof event.result === "string"
-            ? event.result.slice(0, 200)
-            : event.result != null
-              ? JSON.stringify(event.result).slice(0, 200)
-              : undefined;
+          const preview =
+            typeof event.result === "string"
+              ? event.result.slice(0, 200)
+              : event.result != null
+                ? JSON.stringify(event.result).slice(0, 200)
+                : undefined;
           onProgress({
             type: "tool_end",
             toolName: event.toolName,
@@ -206,7 +229,9 @@ function collectPiOutput(
           onProgress({ type: "turn_end" });
         }
       }
-    } catch { /* ignore malformed lines */ }
+    } catch {
+      /* ignore malformed lines */
+    }
   };
 
   proc.stdout?.on("data", (data: Buffer) => {
@@ -226,12 +251,22 @@ function collectPiOutput(
 }
 
 /** Spawn a one-shot pi subprocess in JSON mode with an appended system prompt. */
-function spawnPiJsonMode(promptFilePath: string, userMessage: string, cwd: string): ChildProcess {
+function spawnPiJsonMode(
+  promptFilePath: string,
+  userMessage: string,
+  cwd: string,
+  model?: string,
+): ChildProcess {
   const args = [
-    "--mode", "json", "-p", "--no-session",
-    "--append-system-prompt", promptFilePath,
-    userMessage,
+    "--mode",
+    "json",
+    "-p",
+    "--no-session",
+    "--append-system-prompt",
+    promptFilePath,
   ];
+  if (model) args.push("--model", model);
+  args.push(userMessage);
   const invocation = getPiInvocation(args);
   return spawn(invocation.command, invocation.args, {
     cwd,
@@ -276,7 +311,10 @@ function roleDisplay(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-export function summarizeCompletionOutput(output: string, fallback: string): string {
+export function summarizeCompletionOutput(
+  output: string,
+  fallback: string,
+): string {
   const lines = output
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -461,7 +499,10 @@ export class LeaderRuntime {
    */
   private static readonly STATUS_CHANGE_THROTTLE_MS = 2_000;
   private readonly lastStatusChangeAt = new Map<string, number>();
-  private readonly pendingStatusChange = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pendingStatusChange = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
 
   /**
    * Fire the `onStatusChange` callback at most once per
@@ -479,7 +520,11 @@ export class LeaderRuntime {
 
     if (elapsed >= window) {
       this.lastStatusChangeAt.set(teamId, now);
-      try { callback(teamId); } catch { /* best-effort */ }
+      try {
+        callback(teamId);
+      } catch {
+        /* best-effort */
+      }
       return;
     }
 
@@ -488,10 +533,17 @@ export class LeaderRuntime {
     const timer = setTimeout(() => {
       this.pendingStatusChange.delete(teamId);
       this.lastStatusChangeAt.set(teamId, Date.now());
-      try { this.onStatusChange?.(teamId); } catch { /* best-effort */ }
+      try {
+        this.onStatusChange?.(teamId);
+      } catch {
+        /* best-effort */
+      }
     }, window - elapsed);
     // Don't keep the Node event loop alive just for a trailing UI refresh.
-    if (typeof timer === "object" && typeof (timer as { unref?: () => void }).unref === "function") {
+    if (
+      typeof timer === "object" &&
+      typeof (timer as { unref?: () => void }).unref === "function"
+    ) {
       (timer as { unref: () => void }).unref();
     }
     this.pendingStatusChange.set(teamId, timer);
@@ -503,7 +555,32 @@ export class LeaderRuntime {
    * the real `spawnPiJsonMode`.
    * @internal Exposed for testing only.
    */
-  _spawnFn?: (promptFilePath: string, userMessage: string, cwd: string) => ChildProcess;
+  _spawnFn?: (
+    promptFilePath: string,
+    userMessage: string,
+    cwd: string,
+    model?: string,
+  ) => ChildProcess;
+
+  /**
+   * Cached model-config. Loaded lazily on first use and invalidated via
+   * reloadModelConfig() when the user edits the file through /team models.
+   */
+  private modelConfig: ModelConfig = DEFAULT_MODEL_CONFIG;
+  private modelConfigLoaded = false;
+
+  private async ensureModelConfig(): Promise<ModelConfig> {
+    if (!this.modelConfigLoaded) {
+      this.modelConfig = await loadModelConfig(this.store.getTeamsDir());
+      this.modelConfigLoaded = true;
+    }
+    return this.modelConfig;
+  }
+
+  /** Drop the cached config so the next spawn picks up on-disk changes. */
+  reloadModelConfig(): void {
+    this.modelConfigLoaded = false;
+  }
 
   constructor(
     private store: TeamStore,
@@ -610,7 +687,8 @@ export class LeaderRuntime {
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
     // Resolve the baseline working directory before worktree allocation.
-    let effectiveCwd = cwd ?? task.worktree ?? team.repoRoots[0] ?? process.cwd();
+    let effectiveCwd =
+      cwd ?? task.worktree ?? team.repoRoots[0] ?? process.cwd();
 
     // -----------------------------------------------------------------------
     // Git worktree isolation
@@ -628,7 +706,9 @@ export class LeaderRuntime {
         allocatedWorktree = created;
         effectiveCwd = created;
         // Record the worktree path on the task so it survives a restart.
-        await this.taskManager.updateTask(teamId, taskId, { worktree: created });
+        await this.taskManager.updateTask(teamId, taskId, {
+          worktree: created,
+        });
       }
     }
 
@@ -647,10 +727,19 @@ export class LeaderRuntime {
 
     const controller = new AbortController();
     const spawnFn = this._spawnFn ?? spawnPiJsonMode;
-    const proc = spawnFn(tempPrompt.filePath, `Task: ${taskDescription}`, effectiveCwd);
+    const modelConfig = await this.ensureModelConfig();
+    const resolved = resolveModel(modelConfig, role, task.modelTier);
+    const proc = spawnFn(
+      tempPrompt.filePath,
+      `Task: ${taskDescription}`,
+      effectiveCwd,
+      resolved?.model,
+    );
 
     let stderr = "";
-    proc.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+    proc.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
 
     // Track last progress emission to throttle signals.
     const activeTeammate: ActiveTeammate = {
@@ -733,7 +822,13 @@ export class LeaderRuntime {
 
     controller.signal.addEventListener(
       "abort",
-      () => { try { proc.kill("SIGTERM"); } catch { /* ignore */ } },
+      () => {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+      },
       { once: true },
     );
 
@@ -744,7 +839,11 @@ export class LeaderRuntime {
         clearInterval(activeTeammate.heartbeatInterval);
       }
       this.activeTeammates.delete(key);
-      try { await rm(tempPrompt.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        await rm(tempPrompt.dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
       // Clean up git worktree if one was allocated for this teammate.
       if (allocatedWorktree) {
         await removeWorktree(repoRoot, allocatedWorktree);
@@ -756,14 +855,20 @@ export class LeaderRuntime {
 
       if (wasCancelled || latestTeam?.status === "cancelled") {
         await this.store.saveTeammateProcess(teamId, {
-          ...processState, state: "cancelled", completedAt, output,
+          ...processState,
+          state: "cancelled",
+          completedAt,
+          output,
         });
         return;
       }
 
       if (code === 0) {
         await this.store.saveTeammateProcess(teamId, {
-          ...processState, state: "completed", completedAt, output,
+          ...processState,
+          state: "completed",
+          completedAt,
+          output,
         });
         const outputFile = `${completedAt.replace(/[:.]/g, "-")}-${safeKebab(task.id)}.md`;
         if (output.trim()) {
@@ -783,17 +888,27 @@ export class LeaderRuntime {
           severity: "info",
           taskId,
           message: output.split("\n")[0]?.trim() || `Completed ${task.title}`,
-          links: output.trim() ? [`teammates/${role}/outputs/${outputFile}`] : [],
+          links: output.trim()
+            ? [`teammates/${role}/outputs/${outputFile}`]
+            : [],
         });
         await this.automateTeammateHandoffs(
-          teamId, role, task, output,
+          teamId,
+          role,
+          task,
+          output,
           output.trim() ? `teammates/${role}/outputs/${outputFile}` : undefined,
         );
         await this.taskManager.resolveDependencies(teamId);
       } else {
-        const errorMessage = stderr.trim() || output || `Process exited with code ${code ?? 1}`;
+        const errorMessage =
+          stderr.trim() || output || `Process exited with code ${code ?? 1}`;
         await this.store.saveTeammateProcess(teamId, {
-          ...processState, state: "failed", completedAt, output, error: errorMessage,
+          ...processState,
+          state: "failed",
+          completedAt,
+          output,
+          error: errorMessage,
         });
         await this.taskManager.updateTask(teamId, taskId, {
           status: "blocked",
@@ -932,43 +1047,73 @@ export class LeaderRuntime {
       'Example: ["backend", "tester", "reviewer"]',
     ].join("\n");
 
-    const tempPrompt = await writePromptToTempFile(`planner-${safeKebab(team.id)}`, prompt);
+    const tempPrompt = await writePromptToTempFile(
+      `planner-${safeKebab(team.id)}`,
+      prompt,
+    );
 
     try {
       const cwd = team.repoRoots[0] ?? process.cwd();
       const spawnFn = this._spawnFn ?? spawnPiJsonMode;
-      const proc = spawnFn(tempPrompt.filePath, `Select the right team roles for this objective: ${team.objective}`, cwd);
+      // Role planning is a lightweight JSON classification — always use the
+      // cheap tier, regardless of the team's roster.
+      const modelConfig = await this.ensureModelConfig();
+      const plannerResolved = resolveModel(modelConfig, "researcher", "cheap");
+      const proc = spawnFn(
+        tempPrompt.filePath,
+        `Select the right team roles for this objective: ${team.objective}`,
+        cwd,
+        plannerResolved?.model,
+      );
 
       const timeoutFallback = new Promise<PiProcessResult>((resolve) => {
         setTimeout(() => {
-          try { proc.kill("SIGTERM"); } catch { /* ignore */ }
+          try {
+            proc.kill("SIGTERM");
+          } catch {
+            /* ignore */
+          }
           resolve({ output: "", exitCode: null });
         }, PLANNING_TIMEOUT_MS);
       });
 
-      const { output } = await Promise.race([collectPiOutput(proc), timeoutFallback]);
+      const { output } = await Promise.race([
+        collectPiOutput(proc),
+        timeoutFallback,
+      ]);
 
       return this.parseRolesFromOutput(output, KNOWN_ROLES) ?? FALLBACK_ROLES;
     } catch {
       return FALLBACK_ROLES;
     } finally {
-      try { await rm(tempPrompt.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        await rm(tempPrompt.dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   }
 
   /** Extract a valid roles array from LLM output, or null if unparseable. */
-  private parseRolesFromOutput(output: string, knownRoles: Set<string>): string[] | null {
+  private parseRolesFromOutput(
+    output: string,
+    knownRoles: Set<string>,
+  ): string[] | null {
     // Try parsing the entire output as JSON first (cleanest case)
     try {
       const parsed = JSON.parse(output) as unknown;
       if (Array.isArray(parsed)) {
-        const valid = parsed.filter((r): r is string => typeof r === "string" && knownRoles.has(r));
+        const valid = parsed.filter(
+          (r): r is string => typeof r === "string" && knownRoles.has(r),
+        );
         if (valid.length > 0) {
           if (!valid.includes("reviewer")) valid.push("reviewer");
           return valid;
         }
       }
-    } catch { /* not pure JSON, try extracting */ }
+    } catch {
+      /* not pure JSON, try extracting */
+    }
 
     // Fallback: find the last [...] block (greedy — handles nested content)
     const matches = [...output.matchAll(/\[[^\]]*\]/g)];
@@ -976,13 +1121,17 @@ export class LeaderRuntime {
       try {
         const parsed = JSON.parse(matches[i][0]) as unknown;
         if (Array.isArray(parsed)) {
-          const valid = parsed.filter((r): r is string => typeof r === "string" && knownRoles.has(r));
+          const valid = parsed.filter(
+            (r): r is string => typeof r === "string" && knownRoles.has(r),
+          );
           if (valid.length > 0) {
             if (!valid.includes("reviewer")) valid.push("reviewer");
             return valid;
           }
         }
-      } catch { /* try next match */ }
+      } catch {
+        /* try next match */
+      }
     }
 
     return null;
@@ -1005,8 +1154,7 @@ export class LeaderRuntime {
     );
     const explicitPlanner = team.teammates.find((role) => role === "planner");
     const plannerOwner =
-      explicitPlanner ??
-      (researchOwner ? undefined : team.teammates[0]);
+      explicitPlanner ?? (researchOwner ? undefined : team.teammates[0]);
     const implementationOwners = team.teammates.filter((role) =>
       ["backend", "frontend", "tester", "docs"].includes(role),
     );
@@ -1087,9 +1235,10 @@ export class LeaderRuntime {
       });
     }
 
-    const planTask = created.find((task) =>
-      task.title.startsWith("Create implementation plan") ||
-      task.title.startsWith("Research and plan"),
+    const planTask = created.find(
+      (task) =>
+        task.title.startsWith("Create implementation plan") ||
+        task.title.startsWith("Research and plan"),
     );
     const implementationDepends = planTask
       ? [planTask.id]
@@ -1234,7 +1383,9 @@ export class LeaderRuntime {
         message: `Team completed — ${team.objective}`,
         links: [],
       });
-      await this.signalManager.rebuildCompactedSignals(teamId, { completed: true });
+      await this.signalManager.rebuildCompactedSignals(teamId, {
+        completed: true,
+      });
 
       const active = this.activeLeaders.get(teamId);
       if (active) {
@@ -1301,9 +1452,8 @@ export class LeaderRuntime {
     // Detect tasks that are stuck in in_progress but whose teammate process
     // is no longer running (e.g. after a session restart or unexpected exit).
     // Spawn calls above mutate task state; re-read once if any were spawned.
-    const tasksForStallCheck = readyTasks.length > 0
-      ? await this.taskManager.getTasks(teamId)
-      : tasks;
+    const tasksForStallCheck =
+      readyTasks.length > 0 ? await this.taskManager.getTasks(teamId) : tasks;
     await this.detectStalledTasks(teamId, tasksForStallCheck);
 
     const summary = await this.teamManager.getTeamSummary(teamId);
@@ -1374,36 +1524,59 @@ export class LeaderRuntime {
     teamId: string,
     task: TaskRecord,
   ): Promise<string> {
-    const [summary, signals, allTasks, taskMailbox, directMailbox, team, discoveries, contracts, decisions] =
-      await Promise.all([
-        this.teamManager.getTeamSummary(teamId),
-        this.signalManager.getContextSignals(teamId),
-        this.taskManager.getTasks(teamId),
-        this.mailboxManager.getMessages(teamId, { taskId: task.id }),
-        task.owner
-          ? this.mailboxManager.getMessagesFor(teamId, task.owner)
-          : Promise.resolve([]),
-        this.store.loadTeam(teamId),
-        this.store.loadMemory(teamId, "discoveries"),
-        this.store.loadMemory(teamId, "contracts"),
-        this.store.loadMemory(teamId, "decisions"),
-      ]);
+    const [
+      summary,
+      signals,
+      allTasks,
+      taskMailbox,
+      directMailbox,
+      team,
+      discoveries,
+      contracts,
+      decisions,
+    ] = await Promise.all([
+      this.teamManager.getTeamSummary(teamId),
+      this.signalManager.getContextSignals(teamId),
+      this.taskManager.getTasks(teamId),
+      this.mailboxManager.getMessages(teamId, { taskId: task.id }),
+      task.owner
+        ? this.mailboxManager.getMessagesFor(teamId, task.owner)
+        : Promise.resolve([]),
+      this.store.loadTeam(teamId),
+      this.store.loadMemory(teamId, "discoveries"),
+      this.store.loadMemory(teamId, "contracts"),
+      this.store.loadMemory(teamId, "decisions"),
+    ]);
 
     const relevantTaskIds = new Set([task.id, ...task.dependsOn]);
-    const dependencyTasks = allTasks.filter((candidate) => task.dependsOn.includes(candidate.id));
+    const dependencyTasks = allTasks.filter((candidate) =>
+      task.dependsOn.includes(candidate.id),
+    );
     const relevantSignals = signals
-      .filter((signal) => signalMatchesTaskContext(signal, relevantTaskIds, task.owner))
+      .filter((signal) =>
+        signalMatchesTaskContext(signal, relevantTaskIds, task.owner),
+      )
       .slice(-10)
-      .map((signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`);
+      .map(
+        (signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`,
+      );
     const generalSignals = signals
-      .filter((signal) => !signalMatchesTaskContext(signal, relevantTaskIds, task.owner) && !signal.isSidechain)
+      .filter(
+        (signal) =>
+          !signalMatchesTaskContext(signal, relevantTaskIds, task.owner) &&
+          !signal.isSidechain,
+      )
       .slice(-3)
-      .map((signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`);
+      .map(
+        (signal) => `- [${signal.type}] ${signal.source}: ${signal.message}`,
+      );
 
     const mailbox = [
       ...new Map(
         [...directMailbox, ...taskMailbox]
-          .filter((message) => mailboxMatchesTaskContext(message, relevantTaskIds, task.owner))
+          .filter((message) =>
+            mailboxMatchesTaskContext(message, relevantTaskIds, task.owner),
+          )
           .map((message) => [message.id, message]),
       ).values(),
     ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1413,10 +1586,17 @@ export class LeaderRuntime {
       return `- ${message.from} → ${message.to}${taskScope}: ${message.message}`;
     });
 
-    const dependencyLines = dependencyTasks.length > 0
-      ? dependencyTasks.map((dependency) => `- ${dependency.id}: ${dependency.title} (${dependency.status})`)
-      : ["- none"];
-    const blockerLines = task.blockers.length > 0 ? task.blockers.map((blocker) => `- ${blocker}`) : ["- none"];
+    const dependencyLines =
+      dependencyTasks.length > 0
+        ? dependencyTasks.map(
+            (dependency) =>
+              `- ${dependency.id}: ${dependency.title} (${dependency.status})`,
+          )
+        : ["- none"];
+    const blockerLines =
+      task.blockers.length > 0
+        ? task.blockers.map((blocker) => `- ${blocker}`)
+        : ["- none"];
 
     const baseParts: string[] = [
       `Team: ${team?.name ?? teamId}`,
@@ -1432,9 +1612,14 @@ export class LeaderRuntime {
     const sections: string[] = [baseParts.join("\n")];
     let usedBudget = sections.join("\n\n").length;
 
-    const pushSection = (title: string, body: string, budgetLimit = TASK_CONTEXT_CHAR_BUDGET): void => {
+    const pushSection = (
+      title: string,
+      body: string,
+      budgetLimit = TASK_CONTEXT_CHAR_BUDGET,
+    ): void => {
       if (!body.trim()) return;
-      const remaining = Math.min(budgetLimit, TASK_CONTEXT_CHAR_BUDGET) - usedBudget;
+      const remaining =
+        Math.min(budgetLimit, TASK_CONTEXT_CHAR_BUDGET) - usedBudget;
       if (remaining <= 0) return;
       const sectionText = `${title}:\n${truncateToBudget(body, remaining - title.length - 2)}`;
       if (!sectionText.trim()) return;
@@ -1452,22 +1637,13 @@ export class LeaderRuntime {
       mailboxLines.length > 0 ? mailboxLines.join("\n") : "- none",
       TASK_CONTEXT_RELEVANT_BUDGET,
     );
-    pushSection(
-      "Team Contracts (highest priority)",
-      contracts ?? "",
-    );
+    pushSection("Team Contracts (highest priority)", contracts ?? "");
     pushSection(
       "General awareness",
       generalSignals.length > 0 ? generalSignals.join("\n") : "- none",
     );
-    pushSection(
-      "Team Discoveries",
-      discoveries ?? "",
-    );
-    pushSection(
-      "Team Decisions",
-      decisions ?? "",
-    );
+    pushSection("Team Discoveries", discoveries ?? "");
+    pushSection("Team Decisions", decisions ?? "");
 
     return truncateToBudget(sections.join("\n\n"), TASK_CONTEXT_CHAR_BUDGET);
   }
@@ -1519,7 +1695,13 @@ export class LeaderRuntime {
     // Roles that rarely need to write to durable team memory get a trimmed
     // prompt — the `team_memory` block is ~300 tokens of boilerplate that
     // never gets used by verification / validation roles.
-    const MEMORY_CAPABLE_ROLES = new Set(["researcher", "planner", "backend", "frontend", "docs"]);
+    const MEMORY_CAPABLE_ROLES = new Set([
+      "researcher",
+      "planner",
+      "backend",
+      "frontend",
+      "docs",
+    ]);
     const includeMemoryBlock = MEMORY_CAPABLE_ROLES.has(role);
 
     const parts: string[] = [
@@ -1567,7 +1749,10 @@ export class LeaderRuntime {
    */
   private async processLeaderMailbox(teamId: string): Promise<void> {
     try {
-      const allMessages = await this.mailboxManager.getMessagesFor(teamId, "leader");
+      const allMessages = await this.mailboxManager.getMessagesFor(
+        teamId,
+        "leader",
+      );
       const lastCount = this.lastMailboxCount.get(teamId) ?? 0;
 
       if (allMessages.length <= lastCount) return;
@@ -1604,9 +1789,12 @@ export class LeaderRuntime {
    * Stalled tasks are moved to `blocked` with a clear reason, and a `blocked`
    * signal is emitted so the main session can react.
    */
-  private async detectStalledTasks(teamId: string, preloadedTasks?: TaskRecord[]): Promise<void> {
+  private async detectStalledTasks(
+    teamId: string,
+    preloadedTasks?: TaskRecord[],
+  ): Promise<void> {
     try {
-      const tasks = preloadedTasks ?? await this.taskManager.getTasks(teamId);
+      const tasks = preloadedTasks ?? (await this.taskManager.getTasks(teamId));
       const inProgressTasks = tasks.filter(
         (t) => t.status === "in_progress" && t.owner,
       );
@@ -1616,7 +1804,8 @@ export class LeaderRuntime {
         // If the teammate is still running, this task is fine.
         if (this.isTeammateRunning(teamId, task.owner)) continue;
         // Skip if already flagged as stalled (avoid duplicate signals).
-        if (task.blockers.some((b) => b.includes(STALL_BLOCKER_MARKER))) continue;
+        if (task.blockers.some((b) => b.includes(STALL_BLOCKER_MARKER)))
+          continue;
 
         // Only declare a task stalled after the grace period has elapsed,
         // to avoid false positives on the same cycle that spawned the subprocess.
@@ -1649,11 +1838,16 @@ export class LeaderRuntime {
         // can resume instead of restarting from scratch.
         let partial: string | undefined;
         try {
-          const prevProcess = await this.store.loadTeammateProcess(teamId, task.owner);
+          const prevProcess = await this.store.loadTeammateProcess(
+            teamId,
+            task.owner,
+          );
           if (prevProcess?.output && prevProcess.output.trim()) {
             partial = prevProcess.output.trim().slice(0, 4000);
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
 
         await this.taskManager.updateTask(teamId, task.id, {
           status: "blocked",

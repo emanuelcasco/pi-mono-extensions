@@ -149,6 +149,11 @@ export interface TaskRecord {
    * restarting from scratch.
    */
   previousAttemptOutput?: string;
+  /**
+   * Optional per-task override for the teammate model tier.
+   * When omitted, the runtime resolves a tier from the role default.
+   */
+  modelTier?: "cheap" | "mid" | "deep";
 }
 
 /** An append-only event in the team signal log. Stored in `signals.ndjson`. */
