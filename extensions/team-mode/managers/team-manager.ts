@@ -125,7 +125,10 @@ export class TeamManager {
       createdAt: now,
       updatedAt: now,
       objective,
-      repoRoots: config?.repoRoots ?? [],
+      repoRoots:
+        config?.repoRoots && config.repoRoots.length > 0
+          ? config.repoRoots
+          : [process.cwd()],
       teammates,
     };
 
@@ -495,6 +498,12 @@ export class TeamManager {
 
     // Deduplicated artifact list from all tasks owned by this role
     const artifacts = [...new Set(roleTasks.flatMap((t) => t.artifacts))];
+    const debugArtifacts = [
+      process?.promptArtifact,
+      process?.invocationArtifact,
+      process?.stderrArtifact,
+      process?.eventsArtifact,
+    ].filter(Boolean) as string[];
 
     // Attempt to read the most-recently written file from the outputs dir
     let lastOutput: string | undefined;
@@ -561,10 +570,20 @@ export class TeamManager {
       name: role,
       role,
       status,
+      pid: process?.pid,
       currentTask: currentTaskSummary,
       lastOutput: process?.output ?? lastOutput,
-      worktree: process?.cwd,
+      worktree: process?.worktree ?? process?.cwd,
+      model: process?.model,
+      modelTier: process?.modelTier,
+      modelProvider: process?.modelProvider,
+      terminationReason: process?.terminationReason,
+      exitCode: process?.exitCode,
+      exitSignal: process?.exitSignal,
+      stderrTail: process?.stderrTail,
+      toolExecutions: process?.toolExecutions,
       artifacts,
+      debugArtifacts,
       signalsSinceLastCheck: roleSignalCount,
       updatedAt: new Date().toISOString(),
       lastProgressAge,

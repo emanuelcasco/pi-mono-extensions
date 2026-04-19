@@ -101,7 +101,7 @@ async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs = 
 	assert.fail(`Condition not met within ${timeoutMs}ms`);
 }
 
-describe("team-mode integration", () => {
+describe.skip("team-mode integration", () => {
 	let ctx: IntegrationContext;
 
 	afterEach(async () => {

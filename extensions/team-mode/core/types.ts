@@ -313,6 +313,7 @@ export interface TeammateSummary {
   name: string;
   role: string;
   status: string;
+  pid?: number;
   currentTask?: {
     id: string;
     title: string;
@@ -321,7 +322,16 @@ export interface TeammateSummary {
   };
   lastOutput?: string;
   worktree?: string;
+  model?: string;
+  modelTier?: "cheap" | "mid" | "deep";
+  modelProvider?: string;
+  terminationReason?: ProcessTerminationReason;
+  exitCode?: number | null;
+  exitSignal?: string | null;
+  stderrTail?: string;
+  toolExecutions?: number;
   artifacts: string[];
+  debugArtifacts: string[];
   signalsSinceLastCheck: number;
   updatedAt: string;
   /**
@@ -405,6 +415,42 @@ export type TeamTemplate = {
 // Leader & Teammate runtime types
 // ---------------------------------------------------------------------------
 
+/**
+ * Durable record of an intent queued by a subprocess that must be executed
+ * by the main session's `LeaderRuntime`. See
+ * `specs/2026/04/team-mode-queue-handoff/001-queue-based-teammate-spawn.md`.
+ */
+export type TeamIntent = {
+  kind: "spawn_teammate";
+  /** Unique identifier, used as the filename stem on disk. */
+  id: string;
+  /** The team this intent targets. */
+  teamId: string;
+  /** ISO 8601 timestamp — when the intent was queued. */
+  createdAt: string;
+  /** Teammate role to spawn. */
+  role: string;
+  /** Task the teammate should execute. */
+  taskId: string;
+  /** Full task description passed into the teammate prompt. */
+  taskDescription: string;
+  /** Optional leader brief prepended to the teammate context. */
+  context?: string;
+  /** Optional working directory override for the teammate subprocess. */
+  cwd?: string;
+};
+
+/** Tracks the state of a running teammate process. */
+export type ProcessTerminationReason =
+  | "completed"
+  | "failed"
+  | "manual_stop"
+  | "team_cancelled"
+  | "parent_cleanup"
+  | "spawn_error"
+  | "stalled_process_missing"
+  | "unknown";
+
 /** Tracks the state of a running teammate process. */
 export interface TeammateProcess {
   /** Teammate role name. */
@@ -419,14 +465,42 @@ export interface TeammateProcess {
   pid?: number;
   /** Working directory for this teammate. */
   cwd?: string;
+  /** Resolved concrete model string used for this subprocess. */
+  model?: string;
+  /** Model tier that resolved the concrete model. */
+  modelTier?: "cheap" | "mid" | "deep";
+  /** Provider used to resolve the model. */
+  modelProvider?: string;
+  /** Filesystem path of the worktree used by this subprocess, if any. */
+  worktree?: string;
   /** ISO 8601 timestamp — when the process started. */
   startedAt?: string;
   /** ISO 8601 timestamp — when the process completed. */
   completedAt?: string;
+  /** Process exit code, if available. */
+  exitCode?: number | null;
+  /** Process exit signal, if available. */
+  exitSignal?: string | null;
+  /** Why the subprocess stopped. */
+  terminationReason?: ProcessTerminationReason;
+  /** Number of tool executions observed in the subprocess event stream. */
+  toolExecutions?: number;
+  /** ISO 8601 timestamp — last observed progress/tool activity. */
+  lastProgressAt?: string;
   /** Output text from the process. */
   output?: string;
   /** Error message if the process failed. */
   error?: string;
+  /** Tail of captured stderr for quick inspection. */
+  stderrTail?: string;
+  /** Relative path to the persisted prompt snapshot. */
+  promptArtifact?: string;
+  /** Relative path to the persisted invocation metadata. */
+  invocationArtifact?: string;
+  /** Relative path to the persisted stderr log. */
+  stderrArtifact?: string;
+  /** Relative path to the persisted raw event log. */
+  eventsArtifact?: string;
 }
 
 /** Tracks the state of the leader process for a team. */
@@ -437,10 +511,34 @@ export interface LeaderProcess {
   state: "running" | "completed" | "failed" | "cancelled";
   /** PID of the leader pi subprocess. */
   pid?: number;
+  /** Resolved concrete model string used for the latest leader turn. */
+  model?: string;
+  /** Model tier that resolved the concrete model. */
+  modelTier?: "cheap" | "mid" | "deep";
+  /** Provider used to resolve the model. */
+  modelProvider?: string;
   /** ISO 8601 timestamp — when the leader started. */
   startedAt: string;
   /** ISO 8601 timestamp — when the leader completed. */
   completedAt?: string;
+  /** Exit code of the latest leader turn, if available. */
+  exitCode?: number | null;
+  /** Exit signal of the latest leader turn, if available. */
+  exitSignal?: string | null;
+  /** Why the latest leader turn stopped. */
+  terminationReason?: ProcessTerminationReason;
+  /** Number of tool executions observed in the latest leader turn. */
+  toolExecutions?: number;
+  /** Tail of captured stderr for quick inspection. */
+  stderrTail?: string;
+  /** Relative path to the persisted leader prompt snapshot. */
+  promptArtifact?: string;
+  /** Relative path to the persisted leader invocation metadata. */
+  invocationArtifact?: string;
+  /** Relative path to the persisted leader stderr log. */
+  stderrArtifact?: string;
+  /** Relative path to the persisted leader raw event log. */
+  eventsArtifact?: string;
 }
 
 /** Role-specific system prompt templates for teammates. */

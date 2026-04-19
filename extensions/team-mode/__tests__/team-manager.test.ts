@@ -161,6 +161,13 @@ describe("TeamManager.createTeam", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  test("defaults repoRoots to the current working directory when omitted", async () => {
+    const { manager, dir } = await setup();
+    const team = await manager.createTeam("Build feature");
+    assert.deepEqual(team.repoRoots, [process.cwd()]);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   test("stores repoRoots from config", async () => {
     const { manager, dir } = await setup();
     const team = await manager.createTeam("Build feature", {
@@ -1199,6 +1206,50 @@ describe("TeamManager.getTeammateSummary", () => {
 
     const result = await manager.getTeammateSummary(team.id, "backend");
     assert.equal(result?.status, "idle");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("surfaces persisted debug metadata from teammate process", async () => {
+    const { store, manager, dir } = await setup();
+    const team = await seedTeam(store, { teammates: ["backend"] });
+    await store.ensureTeamDirs(team.id, ["backend"]);
+
+    await store.saveTeammateProcess(team.id, {
+      role: "backend",
+      teamId: team.id,
+      state: "failed",
+      taskId: "task-001",
+      pid: 5150,
+      cwd: "/tmp/workdir",
+      worktree: "/tmp/worktree",
+      model: "openai-codex/gpt-5.4-mini",
+      modelTier: "cheap",
+      modelProvider: "openai-codex",
+      terminationReason: "failed",
+      exitCode: 1,
+      stderrTail: "boom",
+      toolExecutions: 3,
+      promptArtifact: "teammates/backend/debug/prompt.md",
+      invocationArtifact: "teammates/backend/debug/invocation.json",
+      stderrArtifact: "teammates/backend/debug/stderr.log",
+      eventsArtifact: "teammates/backend/debug/events.ndjson",
+    });
+
+    const result = await manager.getTeammateSummary(team.id, "backend");
+    assert.ok(result);
+    assert.equal(result!.pid, 5150);
+    assert.equal(result!.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(result!.terminationReason, "failed");
+    assert.equal(result!.exitCode, 1);
+    assert.equal(result!.stderrTail, "boom");
+    assert.equal(result!.toolExecutions, 3);
+    assert.deepEqual(result!.debugArtifacts, [
+      "teammates/backend/debug/prompt.md",
+      "teammates/backend/debug/invocation.json",
+      "teammates/backend/debug/stderr.log",
+      "teammates/backend/debug/events.ndjson",
+    ]);
+    assert.equal(result!.worktree, "/tmp/worktree");
     await rm(dir, { recursive: true, force: true });
   });
 });

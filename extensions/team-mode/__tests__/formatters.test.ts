@@ -100,6 +100,7 @@ function makeTeammateSummary(overrides: Partial<TeammateSummary> = {}): Teammate
 		role: "backend",
 		status: "idle",
 		artifacts: [],
+		debugArtifacts: [],
 		signalsSinceLastCheck: 0,
 		updatedAt: new Date().toISOString(),
 		...overrides,
@@ -355,6 +356,7 @@ describe("formatTeammateSummary", () => {
 		role: "backend",
 		status: "in_progress",
 		artifacts: [],
+		debugArtifacts: [],
 		signalsSinceLastCheck: 0,
 		updatedAt: new Date().toISOString(),
 	};
@@ -425,6 +427,27 @@ describe("formatTeammateSummary", () => {
 		const output = formatTeammateSummary(summary);
 		assert.ok(output.includes("7"));
 	});
+
+	test("includes debug metadata when present", () => {
+		const summary: TeammateSummary = {
+			...baseSummary,
+			pid: 4242,
+			model: "openai-codex/gpt-5.4-mini",
+			modelTier: "cheap",
+			modelProvider: "openai-codex",
+			terminationReason: "failed",
+			exitCode: 1,
+			stderrTail: "Authentication failed",
+			toolExecutions: 2,
+			debugArtifacts: ["teammates/backend/debug/stderr.log"],
+		};
+		const output = formatTeammateSummary(summary);
+		assert.ok(output.includes("PID: 4242"));
+		assert.ok(output.includes("openai-codex/gpt-5.4-mini"));
+		assert.ok(output.includes("Termination: failed | exit=1"));
+		assert.ok(output.includes("Authentication failed"));
+		assert.ok(output.includes("Debug artifacts:"));
+	});
 });
 
 describe("formatCompactTeammateSummary", () => {
@@ -441,6 +464,17 @@ describe("formatCompactTeammateSummary", () => {
 		assert.match(output, /^backend: in_progress \| task: task-002/);
 		assert.match(output, /artifacts: 1/);
 		assert.match(output, /last progress: 15s ago/);
+	});
+
+	test("includes termination reason when available", () => {
+		const output = formatCompactTeammateSummary(
+			makeTeammateSummary({
+				status: "failed",
+				terminationReason: "failed",
+			}),
+		);
+
+		assert.match(output, /term: failed/);
 	});
 });
 

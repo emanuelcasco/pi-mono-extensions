@@ -11,7 +11,7 @@
 
 import { describe, test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -25,7 +25,7 @@ import {
   summarizeCompletionOutput,
   buildTaskPrompt,
 } from "../runtime/leader-runtime.ts";
-import type { TaskRecord, TeamRecord } from "../core/types.ts";
+import type { TaskRecord, TeamIntent, TeamRecord } from "../core/types.ts";
 import { createMockChildProcess } from "./helpers/mock-subprocess.ts";
 
 // ---------------------------------------------------------------------------
@@ -229,6 +229,10 @@ describe("launchLeader", () => {
     await ctx.runtime.launchLeader(team.id);
     assert.ok(ctx.runtime.isLeaderRunning(team.id));
 
+    // The first LLM leader turn is fire-and-forget, so spawn may still be
+    // pending microtasks when launchLeader resolves. Wait a tick.
+    await new Promise((r) => setTimeout(r, 50));
+
     // The LLM leader subprocess was spawned (task authoring happens via its tool calls).
     assert.ok(
       mockProcs.length >= 1,
@@ -289,12 +293,17 @@ describe("launchLeader", () => {
     await ctx.store.ensureTeamDirs(team.id, team.teammates);
     await ctx.store.saveTeam(team);
 
+    const procs: ReturnType<typeof createMockChildProcess>[] = [];
     ctx.runtime._spawnFn = () => {
       const proc = createMockChildProcess();
+      procs.push(proc);
       return proc as any;
     };
 
     await ctx.runtime.launchLeader(team.id);
+    // Let the fire-and-forget leader turn reach its spawn so teardown can
+    // later complete it cleanly (otherwise in-flight file writes race rm).
+    await new Promise((r) => setTimeout(r, 50));
     const signalsBefore = (await ctx.signalManager.getSignals(team.id)).length;
 
     // Second launch should be a no-op
@@ -307,6 +316,11 @@ describe("launchLeader", () => {
       signalsAfter,
       "Second launch should not emit signals",
     );
+
+    // Complete the pending leader turn before teardown to avoid a race
+    // between a still-in-flight saveLeaderProcess and the temp-dir removal.
+    for (const proc of procs) proc.complete("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
   });
 
   test("cleans up activeLeaders slot on setup failure", async () => {
@@ -329,8 +343,10 @@ describe("launchLeader", () => {
     await ctx.store.ensureTeamDirs(team.id, team.teammates);
     await ctx.store.saveTeam(team);
 
+    const procs: ReturnType<typeof createMockChildProcess>[] = [];
     ctx.runtime._spawnFn = () => {
       const proc = createMockChildProcess();
+      procs.push(proc);
       return proc as any;
     };
 
@@ -340,6 +356,89 @@ describe("launchLeader", () => {
       (s) => s.type === "team_summary" && s.message.includes("Leader started"),
     );
     assert.ok(summarySignals.length > 0, "Should emit leader started signal");
+
+    // Complete the fire-and-forget leader turn so teardown doesn't race with
+    // in-flight saveLeaderProcess writes against the temp dir.
+    await new Promise((r) => setTimeout(r, 50));
+    for (const proc of procs) proc.complete("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  test("retries awaited bootstrap before failing when early turns produce no tasks", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend", "reviewer"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    let spawnCount = 0;
+    ctx.runtime._spawnFn = () => {
+      spawnCount += 1;
+      const proc = createMockChildProcess();
+
+      setTimeout(async () => {
+        if (spawnCount === 1) {
+          proc.complete("");
+          return;
+        }
+
+        await ctx.taskManager.createTask(team.id, {
+          title: "Bootstrap task",
+          owner: "backend",
+          priority: "high",
+        });
+        proc.complete("");
+      }, 0);
+
+      return proc as any;
+    };
+
+    await ctx.runtime.launchLeader(team.id, { awaitBootstrap: true });
+
+    const tasks = await ctx.taskManager.getTasks(team.id);
+    assert.equal(tasks.length, 1, "should keep retrying until a task exists");
+    assert.equal(spawnCount, 2, "should need a second bootstrap attempt");
+
+    const signals = await ctx.signalManager.getSignals(team.id);
+    assert.ok(
+      signals.some((s) =>
+        s.message.includes("Bootstrap attempt 1/3 produced no tasks"),
+      ),
+      "should record the retry nudge in signals",
+    );
+  });
+});
+
+describe("runLlmLeaderTurn", () => {
+  let ctx: TestContext;
+
+  afterEach(async () => {
+    if (ctx) await teardown(ctx);
+  });
+
+  test("does not emit the no-op warning when the subprocess executed tools", async () => {
+    ctx = await setup();
+    const team = makeTeam({ status: "running" });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    ctx.runtime._spawnFn = () => {
+      const proc = createMockChildProcess();
+      setTimeout(() => {
+        proc.emitToolExecution("team_query", { teamId: team.id, action: "tasks" });
+        proc.complete("");
+      }, 0);
+      return proc as any;
+    };
+
+    await ctx.runtime.runLlmLeaderTurn(team.id);
+
+    const signals = await ctx.signalManager.getSignals(team.id);
+    assert.ok(
+      !signals.some((s) =>
+        s.message.includes("produced no output and made no tool calls"),
+      ),
+      "tool-driven turns without final text should not be labelled as no-op",
+    );
   });
 });
 
@@ -489,6 +588,44 @@ describe("spawnTeammate", () => {
     assert.ok(signals.some((s) => s.type === "error" && s.taskId === task.id));
   });
 
+  test("persists teammate debug metadata and artifacts on failure", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend", "reviewer"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    const task = makeTask(team.id, { owner: "backend" });
+    await ctx.store.saveTasks(team.id, [task]);
+
+    const mockProc = createMockChildProcess();
+    ctx.runtime._spawnFn = () => mockProc as any;
+
+    await ctx.runtime.spawnTeammate(team.id, "backend", task.id, "Implement");
+
+    mockProc.emitToolExecution("bash", { command: "pwd" }, "ok");
+    mockProc.fail(1, "Authentication failed\nprovider error");
+    await new Promise((r) => setTimeout(r, 200));
+
+    const procState = await ctx.store.loadTeammateProcess(team.id, "backend");
+    assert.ok(procState);
+    assert.equal(procState!.state, "failed");
+    assert.equal(procState!.terminationReason, "failed");
+    assert.equal(procState!.exitCode, 1);
+    assert.equal(procState!.toolExecutions, 1);
+    assert.ok(procState!.promptArtifact);
+    assert.ok(procState!.invocationArtifact);
+    assert.ok(procState!.stderrArtifact);
+    assert.ok(procState!.eventsArtifact);
+
+    const stderrPath = join(ctx.store.getTeamDir(team.id), procState!.stderrArtifact!);
+    const stderrLog = await readFile(stderrPath, "utf8");
+    assert.match(stderrLog, /Authentication failed/);
+
+    const eventsPath = join(ctx.store.getTeamDir(team.id), procState!.eventsArtifact!);
+    const eventsLog = await readFile(eventsPath, "utf8");
+    assert.match(eventsLog, /tool_execution_end/);
+  });
+
   test("handles cancellation — marks task cancelled", async () => {
     ctx = await setup();
     const team = makeTeam({ teammates: ["backend", "reviewer"] });
@@ -511,6 +648,9 @@ describe("spawnTeammate", () => {
     await new Promise((r) => setTimeout(r, 200));
 
     assert.ok(!ctx.runtime.isTeammateRunning(team.id, "backend"));
+
+    const procState = await ctx.store.loadTeammateProcess(team.id, "backend");
+    assert.equal(procState?.terminationReason, "manual_stop");
   });
 
   test("triggers automateTeammateHandoffs on success", async () => {
@@ -1271,7 +1411,10 @@ describe("LLM leader path", () => {
 
     assert.ok(leaderSpawnArgs, "LLM leader subprocess should be spawned");
     assert.match(leaderSpawnArgs!.userMessage, /Current state/);
-    assert.match(leaderSpawnArgs!.userMessage, /Decide the next actions/);
+    assert.match(
+      leaderSpawnArgs!.userMessage,
+      /(?:Decide the next actions|IMPORTANT: The task graph is empty)/,
+    );
 
     // Task authoring is delegated to the LLM — no runtime-created bootstrap tasks.
     const tasks = await ctx.taskManager.getTasks(team.id);
@@ -1280,6 +1423,52 @@ describe("LLM leader path", () => {
       0,
       "Runtime must not pre-create hardcoded tasks",
     );
+  });
+
+  test("injects referenced objective plan content into bootstrap state when the graph is empty", async () => {
+    ctx = await setup();
+    const planDir = await mkdtemp(join(tmpdir(), "pi-team-plan-"));
+    const planPath = join(planDir, "plan.md");
+    await writeFile(
+      planPath,
+      "# Target Tracking Plan\n\n- Add API endpoint\n- Implement service\n- Add tests\n",
+      "utf8",
+    );
+
+    try {
+      const team = makeTeam({
+        objective: `implement this plan ${planPath}`,
+        teammates: ["backend", "reviewer"],
+      });
+      await ctx.store.ensureTeamDirs(team.id, team.teammates);
+      await ctx.store.saveTeam(team);
+
+      let leaderSpawnArgs:
+        | { promptFilePath: string; userMessage: string }
+        | undefined;
+      ctx.runtime._spawnFn = (promptFilePath, userMessage) => {
+        if (!leaderSpawnArgs) {
+          leaderSpawnArgs = { promptFilePath, userMessage };
+        }
+        const proc = createMockChildProcess();
+        setTimeout(() => proc.complete("Leader finished the turn."), 5);
+        return proc as any;
+      };
+
+      await ctx.runtime.launchLeader(team.id, { awaitBootstrap: true }).catch(() => {
+        // No tasks are created in this mocked run; we only care about the prompt payload.
+      });
+
+      assert.ok(leaderSpawnArgs, "LLM leader subprocess should be spawned");
+      assert.match(
+        leaderSpawnArgs!.userMessage,
+        /Objective documents referenced by the objective/,
+      );
+      assert.match(leaderSpawnArgs!.userMessage, /Target Tracking Plan/);
+      assert.match(leaderSpawnArgs!.userMessage, /IMPORTANT: The task graph is empty/);
+    } finally {
+      await rm(planDir, { recursive: true, force: true });
+    }
   });
 
   test("never auto-spawns teammates — only the LLM decides via team_spawn_teammate", async () => {
@@ -1374,6 +1563,7 @@ describe("event-driven wake", () => {
     const team = makeTeam({ teammates: ["backend", "frontend"] });
     await ctx.store.ensureTeamDirs(team.id, team.teammates);
     await ctx.store.saveTeam(team);
+    ctx.runtime._spawnFn = () => createMockChildProcess() as any;
 
     await ctx.runtime.launchLeader(team.id);
     await new Promise((r) => setTimeout(r, 50));
@@ -1430,6 +1620,218 @@ describe("event-driven wake", () => {
     assert.ok(
       signals.some((s) => s.message.includes("User guidance received")),
       "Broadcast messages should also wake the leader",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// drainPendingIntents (queued spawn_teammate)
+// ---------------------------------------------------------------------------
+
+function makeIntent(overrides: Partial<TeamIntent> = {}): TeamIntent {
+  return {
+    kind: "spawn_teammate",
+    id: `intent-${Math.random().toString(36).slice(2, 10)}`,
+    teamId: "test-team-001",
+    createdAt: new Date().toISOString(),
+    role: "backend",
+    taskId: "task-001",
+    taskDescription: "Queued task",
+    ...overrides,
+  };
+}
+
+describe("drainPendingIntents", () => {
+  let ctx: TestContext;
+
+  afterEach(async () => {
+    if (ctx) await teardown(ctx);
+  });
+
+  test("spawns a teammate and marks the intent processed", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    const task = makeTask(team.id, { owner: "backend", status: "ready" });
+    await ctx.store.saveTasks(team.id, [task]);
+
+    ctx.runtime._spawnFn = () => createMockChildProcess() as any;
+
+    const intent = makeIntent({
+      teamId: team.id,
+      role: "backend",
+      taskId: task.id,
+      taskDescription: "Do the work",
+    });
+    await ctx.store.writeIntent(team.id, intent);
+
+    // Drive a leader cycle; drainPendingIntents runs as its first step.
+    await ctx.runtime.launchLeader(team.id);
+    await new Promise((r) => setTimeout(r, 300));
+
+    assert.ok(
+      ctx.runtime.isTeammateRunning(team.id, "backend"),
+      "backend teammate should be running after drain",
+    );
+    const pending = await ctx.store.listPendingIntents(team.id);
+    assert.equal(pending.length, 0);
+  });
+
+  test("drops intents whose task is already done without spawning", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    const task = makeTask(team.id, { owner: "backend", status: "done" });
+    await ctx.store.saveTasks(team.id, [task]);
+
+    let spawnCalled = 0;
+    ctx.runtime._spawnFn = () => {
+      spawnCalled += 1;
+      return createMockChildProcess() as any;
+    };
+
+    const intent = makeIntent({
+      teamId: team.id,
+      role: "backend",
+      taskId: task.id,
+    });
+    await ctx.store.writeIntent(team.id, intent);
+
+    await ctx.runtime.launchLeader(team.id);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Only the leader turn's spawn counts; no teammate spawn should happen.
+    assert.ok(
+      !ctx.runtime.isTeammateRunning(team.id, "backend"),
+      "teammate must not be spawned for a done task",
+    );
+    const pending = await ctx.store.listPendingIntents(team.id);
+    assert.equal(pending.length, 0, "intent should be marked processed");
+    // The planner+leader spawns themselves count — we only care the teammate
+    // slot stayed empty.
+    assert.ok(spawnCalled >= 0);
+  });
+
+  test("leaves the intent pending when the role slot is busy, retries after completion", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    const task1 = makeTask(team.id, {
+      id: "task-001",
+      owner: "backend",
+      status: "ready",
+    });
+    const task2 = makeTask(team.id, {
+      id: "task-002",
+      owner: "backend",
+      status: "ready",
+    });
+    await ctx.store.saveTasks(team.id, [task1, task2]);
+
+    // First process belongs to the direct spawn, second to the drained intent.
+    const first = createMockChildProcess();
+    const second = createMockChildProcess();
+    const procs = [first, second];
+    ctx.runtime._spawnFn = () => procs.shift() as any;
+
+    // Occupy the backend slot by spawning task1 directly.
+    await ctx.runtime.spawnTeammate(
+      team.id,
+      "backend",
+      task1.id,
+      "Task 1",
+    );
+    assert.ok(ctx.runtime.isTeammateRunning(team.id, "backend"));
+
+    // Queue a second intent for the same role while busy.
+    const intent = makeIntent({
+      teamId: team.id,
+      role: "backend",
+      taskId: task2.id,
+    });
+    await ctx.store.writeIntent(team.id, intent);
+
+    // A drain now should NOT spawn because the role slot is still busy.
+    await (ctx.runtime as any).drainPendingIntents(team.id);
+    const pendingWhileBusy = await ctx.store.listPendingIntents(team.id);
+    assert.equal(
+      pendingWhileBusy.length,
+      1,
+      "intent must remain pending while role slot is busy",
+    );
+    assert.equal(
+      (ctx.runtime as any).activeTeammates.size,
+      1,
+      "no extra teammate should have been spawned during the busy drain",
+    );
+
+    // Finish the first teammate. Its completion handler triggers a leader
+    // cycle whose first step is drainPendingIntents — so the queued intent
+    // is picked up and the backend slot is re-occupied by task2.
+    first.complete("Task 1 done");
+    await new Promise((r) => setTimeout(r, 300));
+
+    const pendingAfter = await ctx.store.listPendingIntents(team.id);
+    assert.equal(
+      pendingAfter.length,
+      0,
+      "intent must be drained once the role slot frees",
+    );
+    assert.ok(
+      ctx.runtime.isTeammateRunning(team.id, "backend"),
+      "task2 teammate should now be running",
+    );
+    const task2State = await ctx.taskManager.getTask(team.id, task2.id);
+    assert.equal(task2State!.status, "in_progress");
+  });
+
+  test("fs.watch on intents/pending wakes the leader cycle", async () => {
+    ctx = await setup();
+    const team = makeTeam({ teammates: ["backend"] });
+    await ctx.store.ensureTeamDirs(team.id, team.teammates);
+    await ctx.store.saveTeam(team);
+
+    const task = makeTask(team.id, { owner: "backend", status: "ready" });
+    await ctx.store.saveTasks(team.id, [task]);
+
+    ctx.runtime._spawnFn = () => createMockChildProcess() as any;
+    await ctx.runtime.launchLeader(team.id);
+    // Let launch settle so the initial cycle (and any initial spawn) completes.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Stop the initial teammate, if any, so we can observe a fresh spawn
+    // triggered by the watcher path specifically.
+    if (ctx.runtime.isTeammateRunning(team.id, "backend")) {
+      await ctx.runtime.stopTeammate(team.id, "backend", "manual_stop");
+    }
+    // Reset task back to ready so the drained intent has work to do.
+    await ctx.taskManager.updateTask(team.id, task.id, {
+      status: "ready",
+      owner: "backend",
+      blockers: [],
+    });
+
+    const intent = makeIntent({
+      teamId: team.id,
+      role: "backend",
+      taskId: task.id,
+    });
+    await ctx.store.writeIntent(team.id, intent);
+
+    // Wait long enough for fs.watch → scheduleWake (WAKE_DEBOUNCE_MS = 200ms)
+    // plus drain + spawn. Fall well short of LEADER_POLL_MS (20s) so we prove
+    // the watcher — not the poll — drove the wake.
+    await new Promise((r) => setTimeout(r, 800));
+
+    assert.ok(
+      ctx.runtime.isTeammateRunning(team.id, "backend"),
+      "watcher-triggered cycle should have drained the intent and spawned the teammate",
     );
   });
 });

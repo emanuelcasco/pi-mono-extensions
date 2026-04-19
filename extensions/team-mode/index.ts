@@ -10,6 +10,7 @@
  *  - 4   lifecycle handlers  (session_start, session_switch, agent_end, session_shutdown)
  */
 
+import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -19,6 +20,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 
 import { TeamStore } from "./core/store.js";
+import type { TeamIntent } from "./core/types.js";
 import { TeamManager } from "./managers/team-manager.js";
 import { TaskManager } from "./managers/task-manager.js";
 import { SignalManager } from "./managers/signal-manager.js";
@@ -151,7 +153,22 @@ async function refreshWidget(ctx: ExtensionContext): Promise<void> {
 	try {
 		// Only show teams that are still active — hide completed/cancelled ones.
 		const teams = await managers.teamManager.listTeams({ status: WIDGET_ACTIVE_STATUSES });
-		updateTeamWidget(ctx, teams);
+		// Build the summaries map so the widget can detect blockers and
+		// pending approvals. Without this the "needs attention" check only
+		// sees `paused`/`failed` and every team with a live blocker is
+		// mislabeled as "running smoothly".
+		const summaries = new Map<string, import("./core/types.js").TeamSummary>();
+		await Promise.all(
+			teams.map(async (team) => {
+				try {
+					const summary = await managers?.teamManager.getTeamSummary(team.id);
+					if (summary) summaries.set(team.id, summary);
+				} catch {
+					/* best-effort per team */
+				}
+			}),
+		);
+		updateTeamWidget(ctx, teams, summaries);
 	} catch {
 		// Widget updates are best-effort — never surface errors from here.
 	}
@@ -583,15 +600,26 @@ export default function (pi: ExtensionAPI): void {
 
 				await refreshWidget(ctx);
 
-				let leaderLaunchNote = "";
-				let effectiveStatus = team.status;
+				// Block until the leader's first turn has populated the task
+				// graph. Returning earlier leaves the user staring at an empty
+				// team that may never bootstrap (the runLeaderCycle gate only
+				// fires the leader when there's ready work or fresh mail, so a
+				// first-turn no-op silently wedges the team).
 				try {
-					await leaderRuntime.launchLeader(team.id);
-					effectiveStatus = "running";
+					await leaderRuntime.launchLeader(team.id, {
+						awaitBootstrap: true,
+					});
 				} catch (leaderErr) {
-					leaderLaunchNote = `\n\nNote: Leader launch failed: ${leaderErr instanceof Error ? leaderErr.message : String(leaderErr)}. Use team_control to retry.`;
+					await refreshWidget(ctx);
+					throw new Error(
+						`Team created but bootstrap failed: ${leaderErr instanceof Error ? leaderErr.message : String(leaderErr)} (team id: ${team.id})`,
+					);
 				}
 
+				await refreshWidget(ctx);
+
+				const { taskManager } = getManagers();
+				const tasks = await taskManager.getTasks(team.id);
 				const rosterLine =
 					team.teammates.length > 0
 						? `Roster: ${team.teammates.join(", ")}`
@@ -599,10 +627,12 @@ export default function (pi: ExtensionAPI): void {
 
 				const text = [
 					`Team created: ${team.name} (${team.id})`,
-					`Status: ${effectiveStatus}`,
+					`Status: running`,
 					rosterLine,
 					`Objective: ${team.objective}`,
-				].join("\n") + leaderLaunchNote;
+					`Initial tasks: ${tasks.length}`,
+					`Follow up with: /team status ${team.id}, /team tasks ${team.id}, /team watch ${team.id}`,
+				].join("\n");
 
 				return {
 					content: [{ type: "text", text }],
@@ -1062,6 +1092,116 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// Tool: team_task_create_batch
+	//
+	// Bootstrap optimization: authoring the initial task graph via single
+	// `team_task_create` calls costs one LLM round-trip per task (~3s each
+	// with thinking models). This tool accepts the whole DAG in one call so
+	// the leader can emit all N tasks at once.
+	// -------------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "team_task_create_batch",
+		label: "Create Tasks (Batch)",
+		description:
+			"Create multiple tasks in one call. Prefer this over repeated `team_task_create` when authoring the initial task graph — " +
+			"each `team_task_create` is a separate LLM round-trip, batching is dramatically faster. " +
+			"Dependencies are resolved by the listed order of tasks: later tasks can `dependsOn` earlier ones using either " +
+			"the runtime-assigned IDs that will be returned or the human-readable `tempId` you supply here (the runtime rewrites " +
+			"tempId references to real task IDs before persisting). Tasks with no dependencies start as 'ready'; others start as 'todo'.",
+		parameters: Type.Object({
+			teamId: Type.String({ description: "The team ID" }),
+			tasks: Type.Array(
+				Type.Object({
+					tempId: Type.Optional(
+						Type.String({
+							description:
+								"Optional caller-chosen alias for this task so later tasks in this same batch can reference it in `dependsOn`. The runtime rewrites tempId references to the real task ID.",
+						}),
+					),
+					title: Type.String({ description: "Short title of the task" }),
+					description: Type.Optional(Type.String()),
+					owner: Type.String({
+						description: "Teammate role responsible for this task (must be on the team roster)",
+					}),
+					dependsOn: Type.Optional(
+						Type.Array(Type.String(), {
+							description:
+								"IDs or tempIds of tasks that must complete before this one becomes ready. tempIds must refer to earlier entries in this same batch.",
+						}),
+					),
+					priority: Type.Optional(StringEnum(["low", "medium", "high"] as const)),
+					riskLevel: Type.Optional(StringEnum(["low", "medium", "high"] as const)),
+					approvalRequired: Type.Optional(Type.Boolean()),
+					modelTier: Type.Optional(StringEnum(["cheap", "mid", "deep"] as const)),
+				}),
+				{ minItems: 1 },
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const { taskManager, teamManager, signalManager } = getManagers();
+
+			const team = await teamManager.getTeam(params.teamId);
+			if (!team) throw new Error(`Team not found: ${params.teamId}`);
+
+			// Validate all owners up front so we fail fast, before persisting any task.
+			for (const t of params.tasks) {
+				if (!team.teammates.includes(t.owner)) {
+					throw new Error(
+						`Owner "${t.owner}" (task "${t.title}") is not on the team. Available: ${team.teammates.join(", ")}`,
+					);
+				}
+			}
+
+			// tempId -> real task id, populated as we persist.
+			const tempIdMap = new Map<string, string>();
+			const created = [];
+
+			for (const t of params.tasks) {
+				const resolvedDeps = (t.dependsOn ?? []).map((dep) => tempIdMap.get(dep) ?? dep);
+				const status = resolvedDeps.length > 0 ? "todo" : "ready";
+				const task = await taskManager.createTask(params.teamId, {
+					title: t.title,
+					description: t.description,
+					owner: t.owner,
+					status,
+					priority: t.priority ?? "medium",
+					dependsOn: resolvedDeps,
+					riskLevel: t.riskLevel ?? "low",
+					approvalRequired: t.approvalRequired ?? false,
+					artifacts: [],
+					blockers: [],
+					modelTier: t.modelTier,
+				});
+				if (t.tempId) tempIdMap.set(t.tempId, task.id);
+				created.push({ ...task, tempId: t.tempId });
+				await signalManager.emit(params.teamId, {
+					source: "leader",
+					type: "task_created",
+					severity: "info",
+					taskId: task.id,
+					message: `Created ${task.id} (${task.title}) for ${t.owner}`,
+					links: [],
+				});
+			}
+
+			const summaryLines = created.map(
+				(task) =>
+					`- ${task.id} [${task.status}] owner=${task.owner}: ${task.title}`,
+			);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Created ${created.length} task(s):\n${summaryLines.join("\n")}`,
+					},
+				],
+				details: { tasks: created },
+			};
+		},
+	});
+
+	// -------------------------------------------------------------------------
 	// Tool: team_spawn_teammate
 	// -------------------------------------------------------------------------
 
@@ -1069,7 +1209,8 @@ export default function (pi: ExtensionAPI): void {
 		name: "team_spawn_teammate",
 		label: "Spawn Teammate",
 		description:
-			"Spawn a teammate subprocess to work on a specific task. The teammate runs as an isolated pi process with its own context.",
+			"Spawn a teammate subprocess to work on a specific task. The teammate runs as an isolated pi process with its own context. " +
+			"When called from within a leader subprocess (PI_TEAM_SUBPROCESS), the spawn is queued as an intent and executed by the main session's runtime instead.",
 		parameters: Type.Object({
 			teamId: Type.String({ description: "The team ID" }),
 			role: Type.String({ description: "Teammate role (backend, frontend, researcher, reviewer, etc.)" }),
@@ -1080,8 +1221,41 @@ export default function (pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const m = getManagers();
+			// Subprocess path: the leader turn runs in a short-lived pi process
+			// that exits before the teammate it spawns can finish. Queue the
+			// intent on disk so the main session's LeaderRuntime owns the
+			// subprocess lifecycle instead.
+			if (process.env.PI_TEAM_SUBPROCESS) {
+				const intent: TeamIntent = {
+					kind: "spawn_teammate",
+					id: randomUUID(),
+					teamId: params.teamId,
+					createdAt: new Date().toISOString(),
+					role: params.role,
+					taskId: params.taskId,
+					taskDescription: params.taskDescription,
+					context: params.context,
+					cwd: params.cwd,
+				};
+				try {
+					await m.store.writeIntent(params.teamId, intent);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Queued spawn of ${params.role} for task ${params.taskId} (intent ${intent.id}). The main session will start the subprocess.`,
+							},
+						],
+						details: { queued: true, intent },
+					};
+				} catch (err) {
+					throw new Error(`Failed to queue teammate spawn: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+
+			// Main-session path: spawn the teammate directly.
 			try {
-				const process = await m.leaderRuntime.spawnTeammate(
+				const teammate = await m.leaderRuntime.spawnTeammate(
 					params.teamId,
 					params.role,
 					params.taskId,
@@ -1094,10 +1268,10 @@ export default function (pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `Teammate ${params.role} spawned for task ${params.taskId} in team ${params.teamId}. PID: ${process.pid ?? "N/A"}`,
+							text: `Teammate ${params.role} spawned for task ${params.taskId} in team ${params.teamId}. PID: ${teammate.pid ?? "N/A"}`,
 						},
 					],
-					details: process,
+					details: teammate,
 				};
 			} catch (err) {
 				throw new Error(`Failed to spawn teammate: ${err instanceof Error ? err.message : String(err)}`);
@@ -1251,7 +1425,7 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.notify("Team managers not initialized", "error");
 				return;
 			}
-			const { teamManager, leaderRuntime, watchManager } = managers;
+			const { teamManager, leaderRuntime, watchManager, taskManager } = managers;
 
 			const parts = (args?.trim() ?? "").split(/\s+/).filter(Boolean);
 			const subcommand = parts[0]?.toLowerCase() ?? "";
@@ -1455,13 +1629,29 @@ export default function (pi: ExtensionAPI): void {
 					}
 					try {
 						const team = await teamManager.createTeam(objective);
+						ctx.ui.notify(
+							`Team "${team.name}" bootstrapping — waiting for initial tasks…`,
+							"info",
+						);
+						await refreshWidget(ctx);
 						try {
-							await leaderRuntime.launchLeader(team.id);
-						} catch {
-							// non-fatal
+							await leaderRuntime.launchLeader(team.id, {
+								awaitBootstrap: true,
+							});
+						} catch (bootErr) {
+							await refreshWidget(ctx);
+							ctx.ui.notify(
+								`Team "${team.name}" bootstrap failed: ${bootErr instanceof Error ? bootErr.message : String(bootErr)}`,
+								"error",
+							);
+							break;
 						}
 						await refreshWidget(ctx);
-						ctx.ui.notify(`Team "${team.name}" created (${team.id})`, "info");
+						const tasks = await taskManager.getTasks(team.id);
+						ctx.ui.notify(
+							`Team "${team.name}" running with ${tasks.length} task(s) (${team.id}) — /team tasks ${team.id} to follow up`,
+							"info",
+						);
 					} catch (err) {
 						ctx.ui.notify(
 							`Failed to create team: ${err instanceof Error ? err.message : String(err)}`,
@@ -1478,48 +1668,98 @@ export default function (pi: ExtensionAPI): void {
 	// Lifecycle event handlers
 	// -------------------------------------------------------------------------
 
+	/**
+	 * Relaunch leaders for any team that survived a parent session
+	 * cleanup/switch in `running` state. Surfaces failures as both a team
+	 * signal and a user-visible notification so a silently-stalled team is
+	 * never invisible.
+	 *
+	 * No-op when called from a teammate subprocess (PI_TEAM_SUBPROCESS=1),
+	 * because nested pi instances must not spawn their own leader runtimes.
+	 */
+	const relaunchRunningTeams = async (ctx: ExtensionContext): Promise<void> => {
+		if (process.env.PI_TEAM_SUBPROCESS || !managers) return;
+		const runningTeams = await managers.teamManager.listTeams({ status: ["running"] });
+		for (const team of runningTeams) {
+			try {
+				await managers.leaderRuntime.launchLeader(team.id);
+			} catch (err) {
+				const reason = err instanceof Error ? err.message : String(err);
+				try {
+					await managers.signalManager.emit(team.id, {
+						source: "system",
+						type: "error",
+						severity: "error",
+						message: `Failed to relaunch leader after session reset: ${reason}. Run /team resume ${team.id} once the underlying issue is fixed.`,
+						links: [],
+					});
+				} catch {
+					/* signal store may be unavailable — fall through to UI */
+				}
+				ctx.ui.notify(
+					`Team "${team.name}" (${team.id}) could not be auto-resumed: ${reason}. Use /team resume ${team.id} after fixing.`,
+					"error",
+				);
+			}
+		}
+	};
+
+	/**
+	 * Re-point an existing runtime at a new extension context without
+	 * touching in-flight teammates. pi can re-emit `session_start` /
+	 * `session_switch` inside the same Node process (e.g. context compaction),
+	 * and tearing the runtime down in that case SIGTERMs every live teammate
+	 * subprocess — killing teams seconds after they start. We only need to
+	 * replace the `onStatusChange` closure so widget refreshes flow through
+	 * the current ctx.
+	 */
+	const rewireStatusChange = (ctx: ExtensionContext): void => {
+		if (!managers) return;
+		managers.leaderRuntime.onStatusChange = () => {
+			void refreshWidget(ctx);
+		};
+	};
+
 	/** Initialize managers when a session starts. */
 	pi.on("session_start", async (_event, ctx) => {
+		// Preserve in-flight work: if the runtime already exists and is
+		// managing live leaders/teammates, just re-wire the callback and
+		// refresh the widget. Tearing it down would SIGTERM active teammates
+		// via `parent_cleanup` for no reason on a re-emitted session_start.
+		if (managers?.leaderRuntime.hasActiveWork()) {
+			rewireStatusChange(ctx);
+			await refreshWidget(ctx);
+			return;
+		}
 		if (managers) {
 			await managers.leaderRuntime.cleanup();
 			managers.watchManager.cleanup();
 		}
 		initManagers();
-		// Wire up the status-change callback so the widget refreshes when a
-		// team completes, fails, or stops in the background (outside an agent turn).
-		if (managers) {
-			managers.leaderRuntime.onStatusChange = () => {
-				void refreshWidget(ctx);
-			};
-		}
-		// Fix #1: teammate subprocesses must never spawn their own leader instances.
-		// They set PI_TEAM_SUBPROCESS=1 in their env (see spawnPiJsonMode).
-		if (!process.env.PI_TEAM_SUBPROCESS && managers) {
-			const runningTeams = await managers.teamManager.listTeams({ status: ["running"] });
-			for (const team of runningTeams) {
-				try {
-					await managers.leaderRuntime.launchLeader(team.id);
-				} catch {
-					// best effort only
-				}
-			}
-		}
+		rewireStatusChange(ctx);
+		await relaunchRunningTeams(ctx);
 		await refreshWidget(ctx);
 	});
 
 	/** Re-initialize managers when switching sessions. */
 	pi.on("session_switch", async (_event: SessionSwitchEvent, ctx) => {
+		// Same rationale as session_start: a live runtime with active work
+		// must survive a context swap — only the callback needs to change.
+		if (managers?.leaderRuntime.hasActiveWork()) {
+			rewireStatusChange(ctx);
+			await refreshWidget(ctx);
+			return;
+		}
 		if (managers) {
 			await managers.leaderRuntime.cleanup();
 			managers.watchManager.cleanup();
 		}
 		initManagers();
-		// Wire up the status-change callback for the new session context.
-		if (managers) {
-			managers.leaderRuntime.onStatusChange = () => {
-				void refreshWidget(ctx);
-			};
-		}
+		rewireStatusChange(ctx);
+		// Session switches reset the runtime just like session_start, so any
+		// team still flagged `running` needs a fresh leader — otherwise it
+		// stays "running" forever with no driver and no visible signal.
+		await relaunchRunningTeams(ctx);
 		await refreshWidget(ctx);
 	});
 

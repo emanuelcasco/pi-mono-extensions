@@ -10,7 +10,9 @@
  * lets users swap providers without rewriting task logic.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type ModelTier = "cheap" | "mid" | "deep";
@@ -48,14 +50,14 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	provider: "auto",
 	providers: {
 		anthropic: {
-			cheap: "claude-haiku-4-5",
-			mid: "claude-sonnet-4-6",
-			deep: "claude-opus-4-7:high",
+			cheap: "anthropic/claude-haiku-4-5",
+			mid: "anthropic/claude-sonnet-4-6",
+			deep: "anthropic/claude-opus-4-7:high",
 		},
 		"openai-codex": {
-			cheap: "gpt-5.4-codex",
-			mid: "gpt-5.3-codex",
-			deep: "gpt-5.3-codex:high",
+			cheap: "openai-codex/gpt-5.4-mini",
+			mid: "openai-codex/gpt-5.4",
+			deep: "openai-codex/gpt-5.4:high",
 		},
 	},
 	roleTiers: {
@@ -71,10 +73,34 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 };
 
 const CONFIG_FILENAME = "model-config.json";
+const SETTINGS_FILENAME = "settings.json";
+const AUTH_FILENAME = "auth.json";
+
+function getPiAgentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+}
+
+function readJsonFileSync<T>(filePath: string): T | null {
+	try {
+		if (!existsSync(filePath)) return null;
+		return JSON.parse(readFileSync(filePath, "utf8")) as T;
+	} catch {
+		return null;
+	}
+}
+
+function providerFromModelHint(modelHint: string): string | null {
+	if (!modelHint) return null;
+	if (/claude|anthropic|haiku|sonnet|opus/i.test(modelHint)) return "anthropic";
+	if (/gpt|codex|openai/i.test(modelHint)) return "openai-codex";
+	return null;
+}
 
 /**
  * Infer which provider the user is on.
- * Priority: explicit config > PI_TEAM_MODEL_PROVIDER env > pi/claude model hints > API keys > anthropic fallback.
+ * Priority: explicit config > PI_TEAM_MODEL_PROVIDER env > process model hints >
+ * pi settings.json defaultProvider/defaultModel > auth.json presence > API keys >
+ * anthropic fallback.
  */
 export function detectProvider(explicit?: string): string {
 	if (explicit && explicit !== "auto") return explicit;
@@ -83,8 +109,27 @@ export function detectProvider(explicit?: string): string {
 	if (envOverride) return envOverride;
 
 	const modelHint = process.env.PI_MODEL ?? process.env.ANTHROPIC_MODEL ?? process.env.OPENAI_MODEL ?? "";
-	if (/claude|anthropic|haiku|sonnet|opus/i.test(modelHint)) return "anthropic";
-	if (/gpt|codex|openai/i.test(modelHint)) return "openai-codex";
+	const hintedProvider = providerFromModelHint(modelHint);
+	if (hintedProvider) return hintedProvider;
+
+	const piAgentDir = getPiAgentDir();
+	const settings = readJsonFileSync<{ defaultProvider?: string; defaultModel?: string }>(
+		join(piAgentDir, SETTINGS_FILENAME),
+	);
+	if (settings?.defaultProvider && settings.defaultProvider in DEFAULT_MODEL_CONFIG.providers) {
+		return settings.defaultProvider;
+	}
+	const settingsHint = providerFromModelHint(settings?.defaultModel ?? "");
+	if (settingsHint) return settingsHint;
+
+	const auth = readJsonFileSync<Record<string, unknown>>(join(piAgentDir, AUTH_FILENAME));
+	if (auth) {
+		if (settings?.defaultProvider && auth[settings.defaultProvider]) {
+			return settings.defaultProvider;
+		}
+		if (auth["openai-codex"]) return "openai-codex";
+		if (auth.anthropic) return "anthropic";
+	}
 
 	if (process.env.ANTHROPIC_API_KEY) return "anthropic";
 	if (process.env.OPENAI_API_KEY) return "openai-codex";

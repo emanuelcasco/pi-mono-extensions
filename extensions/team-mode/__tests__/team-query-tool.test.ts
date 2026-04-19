@@ -150,10 +150,11 @@ describe("team_query tool", () => {
 		registerTeamMode(pi as any);
 
 		const toolNames = pi.tools.map((tool) => tool.name).sort();
-		assert.equal(toolNames.length, 11);
+		assert.equal(toolNames.length, 12);
 		assert.equal(toolNames.includes("team_query"), true);
 		assert.equal(toolNames.includes("team_handoff"), true);
 		assert.equal(toolNames.includes("team_task_create"), true);
+		assert.equal(toolNames.includes("team_task_create_batch"), true);
 		assert.equal(toolNames.includes("team_status"), false);
 		assert.equal(toolNames.includes("team_tasks"), false);
 		assert.equal(toolNames.includes("team_signals"), false);

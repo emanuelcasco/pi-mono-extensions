@@ -13,17 +13,17 @@
  */
 
 import type {
-	ApprovalRequest,
-	DeltaResponse,
-	MultiTeamDashboard,
-	Signal,
-	SignalSeverity,
-	SignalType,
-	TaskBoard,
-	TaskRecord,
-	TaskStatus,
-	TeamSummary,
-	TeammateSummary,
+  ApprovalRequest,
+  DeltaResponse,
+  MultiTeamDashboard,
+  Signal,
+  SignalSeverity,
+  SignalType,
+  TaskBoard,
+  TaskRecord,
+  TaskStatus,
+  TeamSummary,
+  TeammateSummary,
 } from "../core/types.js";
 
 // ---------------------------------------------------------------------------
@@ -32,103 +32,105 @@ import type {
 
 /** Return a human-readable description of the elapsed time since `isoTimestamp`. */
 function humanizeDiff(isoTimestamp: string): string {
-	const diffMs = Date.now() - new Date(isoTimestamp).getTime();
-	if (diffMs < 0) return "just now";
-	const totalSecs = Math.floor(diffMs / 1_000);
-	if (totalSecs < 60) return "just now";
-	const mins = Math.floor(totalSecs / 60);
-	if (mins < 60) return `${mins} min ago`;
-	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) return `${hrs} hour${hrs !== 1 ? "s" : ""} ago`;
-	const days = Math.floor(hrs / 24);
-	return `${days} day${days !== 1 ? "s" : ""} ago`;
+  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
+  if (diffMs < 0) return "just now";
+  const totalSecs = Math.floor(diffMs / 1_000);
+  if (totalSecs < 60) return "just now";
+  const mins = Math.floor(totalSecs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs !== 1 ? "s" : ""} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days !== 1 ? "s" : ""} ago`;
 }
 
 /** Map a signal type + severity to a compact status icon. */
 function signalIcon(type: SignalType, severity: SignalSeverity): string {
-	switch (type) {
-		case "task_completed":
-		case "team_completed":
-		case "approval_granted":
-			return "✓";
-		case "blocked":
-			return "⏸";
-		case "approval_requested":
-		case "plan_submitted":
-			return "⏳";
-		case "error":
-		case "approval_rejected":
-			return "⚠";
-		default:
-			break;
-	}
-	// Fallback to severity
-	if (severity === "error" || severity === "warning") return "⚠";
-	return "⚙";
+  switch (type) {
+    case "task_completed":
+    case "team_completed":
+    case "approval_granted":
+      return "✓";
+    case "blocked":
+      return "⏸";
+    case "approval_requested":
+    case "plan_submitted":
+      return "⏳";
+    case "error":
+    case "approval_rejected":
+      return "⚠";
+    default:
+      break;
+  }
+  // Fallback to severity
+  if (severity === "error" || severity === "warning") return "⚠";
+  return "⚙";
 }
 
 /** Map a task status to a compact status icon. */
 function taskIcon(status: TaskStatus): string {
-	switch (status) {
-		case "done":
-			return "✓";
-		case "cancelled":
-			return "✗";
-		case "blocked":
-			return "⏸";
-		case "awaiting_approval":
-			return "⏳";
-		case "in_progress":
-		case "in_review":
-		case "planning":
-			return "⚙";
-		case "todo":
-		case "ready":
-			return "○";
-	}
+  switch (status) {
+    case "done":
+      return "✓";
+    case "cancelled":
+      return "✗";
+    case "blocked":
+      return "⏸";
+    case "awaiting_approval":
+      return "⏳";
+    case "in_progress":
+    case "in_review":
+    case "planning":
+      return "⚙";
+    case "todo":
+    case "ready":
+      return "○";
+  }
 }
 
 /** Format a task line for a task board section. */
 function formatTaskLine(task: TaskRecord): string {
-	const icon = taskIcon(task.status);
-	const ownerPart = task.owner ? ` (${task.owner})` : "";
-	const priorityPart = task.priority === "high" ? " — high priority" : "";
+  const icon = taskIcon(task.status);
+  const ownerPart = task.owner ? ` (${task.owner})` : "";
+  const priorityPart = task.priority === "high" ? " — high priority" : "";
 
-	let extra = "";
-	if (task.status === "blocked" && task.blockers.length > 0) {
-		extra = ` — ${task.blockers[0]}`;
-	} else if (task.status === "awaiting_approval") {
-		extra = " — plan submitted";
-	} else if (task.dependsOn.length > 0 && task.status === "blocked") {
-		extra = ` — waiting on ${task.dependsOn.join(", ")}`;
-	}
+  let extra = "";
+  if (task.status === "blocked" && task.blockers.length > 0) {
+    extra = ` — ${task.blockers[0]}`;
+  } else if (task.status === "awaiting_approval") {
+    extra = " — plan submitted";
+  } else if (task.dependsOn.length > 0 && task.status === "blocked") {
+    extra = ` — waiting on ${task.dependsOn.join(", ")}`;
+  }
 
-	return `${icon} ${task.id}: ${task.title}${ownerPart}${priorityPart}${extra}`;
+  return `${icon} ${task.id}: ${task.title}${ownerPart}${priorityPart}${extra}`;
 }
 
 function truncate(value: string, max: number): string {
-	if (value.length <= max) return value;
-	if (max <= 3) return value.slice(0, max);
-	return `${value.slice(0, max - 3)}...`;
+  if (value.length <= max) return value;
+  if (max <= 3) return value.slice(0, max);
+  return `${value.slice(0, max - 3)}...`;
 }
 
 /** Group tasks by broad status category. */
 function groupTasks(tasks: TaskRecord[]): {
-	done: TaskRecord[];
-	inProgress: TaskRecord[];
-	inReview: TaskRecord[];
-	blocked: TaskRecord[];
-	awaitingApproval: TaskRecord[];
-	todo: TaskRecord[];
+  done: TaskRecord[];
+  inProgress: TaskRecord[];
+  inReview: TaskRecord[];
+  blocked: TaskRecord[];
+  awaitingApproval: TaskRecord[];
+  todo: TaskRecord[];
 } {
-	return {
-		done: tasks.filter((t) => t.status === "done"),
-		inProgress: tasks.filter((t) => t.status === "in_progress" || t.status === "planning"),
-		inReview: tasks.filter((t) => t.status === "in_review"),
-		blocked: tasks.filter((t) => t.status === "blocked"),
-		awaitingApproval: tasks.filter((t) => t.status === "awaiting_approval"),
-		todo: tasks.filter((t) => t.status === "todo" || t.status === "ready"),
-	};
+  return {
+    done: tasks.filter((t) => t.status === "done"),
+    inProgress: tasks.filter(
+      (t) => t.status === "in_progress" || t.status === "planning",
+    ),
+    inReview: tasks.filter((t) => t.status === "in_review"),
+    blocked: tasks.filter((t) => t.status === "blocked"),
+    awaitingApproval: tasks.filter((t) => t.status === "awaiting_approval"),
+    todo: tasks.filter((t) => t.status === "todo" || t.status === "ready"),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,72 +159,77 @@ function groupTasks(tasks: TaskRecord[]): {
  * ```
  */
 export function formatTeamSummary(summary: TeamSummary): string {
-	const lines: string[] = [];
+  const lines: string[] = [];
 
-	// Header
-	lines.push(`Team ${summary.name} [${summary.teamId}] — ${summary.status}`);
-	lines.push(`Progress: ${summary.progress.done}/${summary.progress.total} tasks done`);
+  // Header
+  lines.push(`Team ${summary.name} [${summary.teamId}] — ${summary.status}`);
+  lines.push(
+    `Progress: ${summary.progress.done}/${summary.progress.total} tasks done`,
+  );
 
-	// Determine which teammates are blocked
-	const blockedOwners = new Set(summary.blockers.map((b) => b.owner));
-	const activeTeammates = summary.teammates.filter(
-		(t) => !blockedOwners.has(t.name) && t.status !== "done" && t.status !== "idle",
-	);
+  // Determine which teammates are blocked
+  const blockedOwners = new Set(summary.blockers.map((b) => b.owner));
+  const activeTeammates = summary.teammates.filter(
+    (t) =>
+      !blockedOwners.has(t.name) && t.status !== "done" && t.status !== "idle",
+  );
 
-	// Active teammates
-	if (activeTeammates.length > 0) {
-		lines.push("");
-		lines.push("Active");
-		for (const t of activeTeammates) {
-			const desc = t.summary ?? t.currentTask ?? t.status;
-			const progressHint = t.lastProgressAge ? ` (last update: ${t.lastProgressAge})` : "";
-			lines.push(`⚙ ${t.name}: ${desc}${progressHint}`);
-		}
-	}
+  // Active teammates
+  if (activeTeammates.length > 0) {
+    lines.push("");
+    lines.push("Active");
+    for (const t of activeTeammates) {
+      const desc = t.summary ?? t.currentTask ?? t.status;
+      const progressHint = t.lastProgressAge
+        ? ` (last update: ${t.lastProgressAge})`
+        : "";
+      lines.push(`⚙ ${t.name}: ${desc}${progressHint}`);
+    }
+  }
 
-	// Blockers
-	if (summary.blockers.length > 0) {
-		lines.push("");
-		lines.push("Blocked");
-		for (const b of summary.blockers) {
-			lines.push(`⏸ ${b.owner}: ${b.reason} (${b.taskId})`);
-		}
-	}
+  // Blockers
+  if (summary.blockers.length > 0) {
+    lines.push("");
+    lines.push("Blocked");
+    for (const b of summary.blockers) {
+      lines.push(`⏸ ${b.owner}: ${b.reason} (${b.taskId})`);
+    }
+  }
 
-	// Pending approvals
-	if (summary.approvalsPending.length > 0) {
-		lines.push("");
-		lines.push("Pending Approval");
-		for (const a of summary.approvalsPending) {
-			lines.push(`⏳ ${a.taskId}: submitted by ${a.owner}`);
-		}
-	}
+  // Pending approvals
+  if (summary.approvalsPending.length > 0) {
+    lines.push("");
+    lines.push("Pending Approval");
+    for (const a of summary.approvalsPending) {
+      lines.push(`⏳ ${a.taskId}: submitted by ${a.owner}`);
+    }
+  }
 
-	// Next milestone
-	if (summary.nextMilestone) {
-		lines.push("");
-		lines.push(`Next milestone: ${summary.nextMilestone}`);
-	}
+  // Next milestone
+  if (summary.nextMilestone) {
+    lines.push("");
+    lines.push(`Next milestone: ${summary.nextMilestone}`);
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 /** Format a team summary as a single compact line for tool responses. */
 export function formatCompactTeamSummary(summary: TeamSummary): string {
-	const blockerSummary =
-		summary.blockers.length > 0
-			? `${summary.blockers.length} (${truncate(`${summary.blockers[0].taskId}: ${summary.blockers[0].reason}`, 50)})`
-			: "0";
-	const active = summary.teammates
-		.filter((teammate) => teammate.status === "in_progress")
-		.map((teammate) => teammate.name)
-		.slice(0, 3);
+  const blockerSummary =
+    summary.blockers.length > 0
+      ? `${summary.blockers.length} (${truncate(`${summary.blockers[0].taskId}: ${summary.blockers[0].reason}`, 50)})`
+      : "0";
+  const active = summary.teammates
+    .filter((teammate) => teammate.status === "in_progress")
+    .map((teammate) => teammate.name)
+    .slice(0, 3);
 
-	return [
-		`${summary.name}: ${summary.progress.done}/${summary.progress.total} done`,
-		`blockers: ${blockerSummary}`,
-		`active: ${active.length > 0 ? active.join(", ") : "none"}`,
-	].join(" | ");
+  return [
+    `${summary.name}: ${summary.progress.done}/${summary.progress.total} done`,
+    `blockers: ${blockerSummary}`,
+    `active: ${active.length > 0 ? active.join(", ") : "none"}`,
+  ].join(" | ");
 }
 
 /**
@@ -237,22 +244,22 @@ export function formatCompactTeamSummary(summary: TeamSummary): string {
  * ```
  */
 export function formatDelta(delta: DeltaResponse): string {
-	const lines: string[] = [];
-	const timeAgo = humanizeDiff(delta.since);
+  const lines: string[] = [];
+  const timeAgo = humanizeDiff(delta.since);
 
-	lines.push(`Since your last check (${timeAgo}):`);
+  lines.push(`Since your last check (${timeAgo}):`);
 
-	if (delta.signals.length === 0) {
-		lines.push("(no new events)");
-		return lines.join("\n");
-	}
+  if (delta.signals.length === 0) {
+    lines.push("(no new events)");
+    return lines.join("\n");
+  }
 
-	for (const signal of delta.signals) {
-		const icon = signalIcon(signal.type, signal.severity);
-		lines.push(`${icon} ${signal.source}: ${signal.message}`);
-	}
+  for (const signal of delta.signals) {
+    const icon = signalIcon(signal.type, signal.severity);
+    lines.push(`${icon} ${signal.source}: ${signal.message}`);
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 /**
@@ -278,75 +285,88 @@ export function formatDelta(delta: DeltaResponse): string {
  * ```
  */
 export function formatTaskBoard(board: TaskBoard): string {
-	const lines: string[] = [];
-	const s = board.summary;
+  const lines: string[] = [];
+  const s = board.summary;
 
-	const parts: string[] = [];
-	if (s.done > 0) parts.push(`${s.done} done`);
-	if (s.inProgress > 0) parts.push(`${s.inProgress} active`);
-	if (s.blocked > 0) parts.push(`${s.blocked} blocked`);
-	if (s.awaitingApproval > 0) parts.push(`${s.awaitingApproval} pending`);
+  const parts: string[] = [];
+  if (s.done > 0) parts.push(`${s.done} done`);
+  if (s.inProgress > 0) parts.push(`${s.inProgress} active`);
+  if (s.blocked > 0) parts.push(`${s.blocked} blocked`);
+  if (s.awaitingApproval > 0) parts.push(`${s.awaitingApproval} pending`);
 
-	lines.push(`Team ${board.teamId} Tasks (${parts.join(", ")})`);
+  lines.push(`Team ${board.teamId} Tasks (${parts.join(", ")})`);
 
-	const groups = groupTasks(board.tasks);
+  const groups = groupTasks(board.tasks);
 
-	if (groups.done.length > 0) {
-		lines.push("");
-		lines.push("Done");
-		for (const t of groups.done) lines.push(formatTaskLine(t));
-	}
+  if (groups.done.length > 0) {
+    lines.push("");
+    lines.push("Done");
+    for (const t of groups.done) lines.push(formatTaskLine(t));
+  }
 
-	if (groups.inProgress.length > 0) {
-		lines.push("");
-		lines.push("In Progress");
-		for (const t of groups.inProgress) lines.push(formatTaskLine(t));
-	}
+  if (groups.inProgress.length > 0) {
+    lines.push("");
+    lines.push("In Progress");
+    for (const t of groups.inProgress) lines.push(formatTaskLine(t));
+  }
 
-	if (groups.inReview.length > 0) {
-		lines.push("");
-		lines.push("In Review");
-		for (const t of groups.inReview) lines.push(formatTaskLine(t));
-	}
+  if (groups.inReview.length > 0) {
+    lines.push("");
+    lines.push("In Review");
+    for (const t of groups.inReview) lines.push(formatTaskLine(t));
+  }
 
-	if (groups.blocked.length > 0) {
-		lines.push("");
-		lines.push("Blocked");
-		for (const t of groups.blocked) lines.push(formatTaskLine(t));
-	}
+  if (groups.blocked.length > 0) {
+    lines.push("");
+    lines.push("Blocked");
+    for (const t of groups.blocked) lines.push(formatTaskLine(t));
+  }
 
-	if (groups.awaitingApproval.length > 0) {
-		lines.push("");
-		lines.push("Awaiting Approval");
-		for (const t of groups.awaitingApproval) lines.push(formatTaskLine(t));
-	}
+  if (groups.awaitingApproval.length > 0) {
+    lines.push("");
+    lines.push("Awaiting Approval");
+    for (const t of groups.awaitingApproval) lines.push(formatTaskLine(t));
+  }
 
-	if (groups.todo.length > 0) {
-		lines.push("");
-		lines.push("Todo");
-		for (const t of groups.todo) lines.push(formatTaskLine(t));
-	}
+  if (groups.todo.length > 0) {
+    lines.push("");
+    lines.push("Todo");
+    for (const t of groups.todo) lines.push(formatTaskLine(t));
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 /** Format the task board into a short digest suitable for compact tool responses. */
 export function formatCompactTaskBoard(board: TaskBoard): string {
-	const active = board.tasks.filter((task) => ["in_progress", "planning", "in_review"].includes(task.status)).length;
-	const blocked = board.tasks.filter((task) => task.status === "blocked").length;
-	const awaitingApproval = board.tasks.filter((task) => task.status === "awaiting_approval").length;
-	const nextTasks = board.tasks
-		.filter((task) => ["in_progress", "ready", "blocked", "awaiting_approval"].includes(task.status))
-		.slice(0, 3)
-		.map((task) => `${taskIcon(task.status)} ${task.id} (${task.owner ?? "unassigned"})`);
+  const active = board.tasks.filter((task) =>
+    ["in_progress", "planning", "in_review"].includes(task.status),
+  ).length;
+  const blocked = board.tasks.filter(
+    (task) => task.status === "blocked",
+  ).length;
+  const awaitingApproval = board.tasks.filter(
+    (task) => task.status === "awaiting_approval",
+  ).length;
+  const nextTasks = board.tasks
+    .filter((task) =>
+      ["in_progress", "ready", "blocked", "awaiting_approval"].includes(
+        task.status,
+      ),
+    )
+    .slice(0, 3)
+    .map(
+      (task) =>
+        `${taskIcon(task.status)} ${task.id} (${task.owner ?? "unassigned"})`,
+    );
 
-	return [
-		`${board.teamId}: ${board.summary.done}/${board.summary.total} done`,
-		`active: ${active}`,
-		`blocked: ${blocked}`,
-		`pending approval: ${awaitingApproval}`,
-		nextTasks.length > 0 ? `focus: ${nextTasks.join(", ")}` : "focus: none",
-	].join(" | ");
+  return [
+    `${board.teamId}: ${board.summary.done}/${board.summary.total} done`,
+    `active: ${active}`,
+    `blocked: ${blocked}`,
+    `pending approval: ${awaitingApproval}`,
+    nextTasks.length > 0 ? `focus: ${nextTasks.join(", ")}` : "focus: none",
+  ].join(" | ");
 }
 
 /**
@@ -363,50 +383,93 @@ export function formatCompactTaskBoard(board: TaskBoard): string {
  * ```
  */
 export function formatTeammateSummary(summary: TeammateSummary): string {
-	const lines: string[] = [];
+  const lines: string[] = [];
 
-	lines.push(`${summary.name} — in Team ${summary.teamId}`);
-	lines.push(`Status: ${summary.status}`);
+  lines.push(`${summary.name} — in Team ${summary.teamId}`);
+  lines.push(`Status: ${summary.status}`);
 
-	if (summary.currentTask) {
-		const t = summary.currentTask;
-		lines.push(`Current task: ${t.id} (${t.title})`);
-		if (t.blocker) {
-			lines.push(`Blocker: ${t.blocker}`);
-		}
-	}
+  if (summary.currentTask) {
+    const t = summary.currentTask;
+    lines.push(`Current task: ${t.id} (${t.title})`);
+    if (t.blocker) {
+      lines.push(`Blocker: ${t.blocker}`);
+    }
+  }
 
-	if (summary.lastProgressAge) {
-		lines.push(`Last progress: ${summary.lastProgressAge}`);
-	}
+  if (summary.pid) {
+    lines.push(`PID: ${summary.pid}`);
+  }
 
-	if (summary.lastOutput) {
-		lines.push(`Last output: ${summary.lastOutput}`);
-	}
+  if (summary.model) {
+    const tier = summary.modelTier ? ` (${summary.modelTier})` : "";
+    const provider = summary.modelProvider
+      ? ` via ${summary.modelProvider}`
+      : "";
+    lines.push(`Model: ${summary.model}${tier}${provider}`);
+  }
 
-	if (summary.worktree) {
-		lines.push(`Worktree: ${summary.worktree}`);
-	}
+  if (
+    summary.terminationReason ||
+    summary.exitCode != null ||
+    summary.exitSignal
+  ) {
+    const parts = [summary.terminationReason ?? "unknown"];
+    if (summary.exitCode != null) parts.push(`exit=${summary.exitCode}`);
+    if (summary.exitSignal) parts.push(`signal=${summary.exitSignal}`);
+    lines.push(`Termination: ${parts.join(" | ")}`);
+  }
 
-	if (summary.artifacts.length > 0) {
-		lines.push(`Artifacts: ${summary.artifacts.join(", ")}`);
-	}
+  if (summary.toolExecutions != null) {
+    lines.push(`Tool executions: ${summary.toolExecutions}`);
+  }
 
-	if (summary.signalsSinceLastCheck > 0) {
-		lines.push(`Signals since last check: ${summary.signalsSinceLastCheck}`);
-	}
+  if (summary.lastProgressAge) {
+    lines.push(`Last progress: ${summary.lastProgressAge}`);
+  }
 
-	return lines.join("\n");
+  if (summary.stderrTail) {
+    lines.push(`stderr: ${summary.stderrTail}`);
+  }
+
+  if (summary.lastOutput) {
+    lines.push(`Last output: ${summary.lastOutput}`);
+  }
+
+  if (summary.worktree) {
+    lines.push(`Worktree: ${summary.worktree}`);
+  }
+
+  if (summary.artifacts.length > 0) {
+    lines.push(`Artifacts: ${summary.artifacts.join(", ")}`);
+  }
+
+  if (summary.debugArtifacts.length > 0) {
+    lines.push(`Debug artifacts: ${summary.debugArtifacts.join(", ")}`);
+  }
+
+  if (summary.signalsSinceLastCheck > 0) {
+    lines.push(`Signals since last check: ${summary.signalsSinceLastCheck}`);
+  }
+
+  return lines.join("\n");
 }
 
 /** Format a teammate summary as a short 1–2 line response. */
 export function formatCompactTeammateSummary(summary: TeammateSummary): string {
-	const task = summary.currentTask
-		? `${summary.currentTask.id} — ${truncate(summary.currentTask.title, 40)} (${summary.currentTask.status})`
-		: "none";
-	const artifacts = summary.artifacts.length > 0 ? ` | artifacts: ${summary.artifacts.length}` : "";
-	const progress = summary.lastProgressAge ? ` | last progress: ${summary.lastProgressAge}` : "";
-	return `${summary.name}: ${summary.status} | task: ${task}${artifacts}${progress}`;
+  const task = summary.currentTask
+    ? `${summary.currentTask.id} — ${truncate(summary.currentTask.title, 40)} (${summary.currentTask.status})`
+    : "none";
+  const artifacts =
+    summary.artifacts.length > 0
+      ? ` | artifacts: ${summary.artifacts.length}`
+      : "";
+  const progress = summary.lastProgressAge
+    ? ` | last progress: ${summary.lastProgressAge}`
+    : "";
+  const debug = summary.terminationReason
+    ? ` | term: ${summary.terminationReason}`
+    : "";
+  return `${summary.name}: ${summary.status} | task: ${task}${artifacts}${progress}${debug}`;
 }
 
 /**
@@ -428,36 +491,39 @@ export function formatCompactTeammateSummary(summary: TeammateSummary): string {
  * ```
  */
 export function formatDashboard(dashboard: MultiTeamDashboard): string {
-	const lines: string[] = [];
+  const lines: string[] = [];
 
-	lines.push(`Active teams: ${dashboard.activeTeams}`);
+  lines.push(`Active teams: ${dashboard.activeTeams}`);
 
-	if (dashboard.needsAttention.length > 0) {
-		lines.push("");
-		lines.push("Needs Attention");
-		for (const item of dashboard.needsAttention) {
-			lines.push(`⚠ ${item.teamId}: ${item.reason}`);
-		}
-	}
+  if (dashboard.needsAttention.length > 0) {
+    lines.push("");
+    lines.push("Needs Attention");
+    for (const item of dashboard.needsAttention) {
+      lines.push(`⚠ ${item.teamId}: ${item.reason}`);
+    }
+  }
 
-	if (dashboard.recentUpdates.length > 0) {
-		lines.push("");
-		lines.push("Recent Updates");
-		for (const update of dashboard.recentUpdates) {
-			const icon = update.type === "team_completed" || update.type === "task_completed" ? "✓" : "⚙";
-			lines.push(`${icon} ${update.teamId}: ${update.message}`);
-		}
-	}
+  if (dashboard.recentUpdates.length > 0) {
+    lines.push("");
+    lines.push("Recent Updates");
+    for (const update of dashboard.recentUpdates) {
+      const icon =
+        update.type === "team_completed" || update.type === "task_completed"
+          ? "✓"
+          : "⚙";
+      lines.push(`${icon} ${update.teamId}: ${update.message}`);
+    }
+  }
 
-	if (dashboard.noAttentionNeeded.length > 0) {
-		lines.push("");
-		lines.push("Running Smoothly");
-		for (const item of dashboard.noAttentionNeeded) {
-			lines.push(`⚙ ${item.teamId} (${item.status}): ${item.progress}`);
-		}
-	}
+  if (dashboard.noAttentionNeeded.length > 0) {
+    lines.push("");
+    lines.push("Running Smoothly");
+    for (const item of dashboard.noAttentionNeeded) {
+      lines.push(`⚙ ${item.teamId} (${item.status}): ${item.progress}`);
+    }
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 /**
@@ -467,38 +533,40 @@ export function formatDashboard(dashboard: MultiTeamDashboard): string {
  *   `{icon} [{time}] {source}: {message}`
  */
 export function formatSignals(signals: Signal[]): string {
-	if (signals.length === 0) {
-		return "(no signals)";
-	}
+  if (signals.length === 0) {
+    return "(no signals)";
+  }
 
-	const lines: string[] = [];
-	for (const signal of signals) {
-		const icon = signalIcon(signal.type, signal.severity);
-		const time = humanizeDiff(signal.timestamp);
-		lines.push(`${icon} [${time}] ${signal.source}: ${signal.message}`);
-		if (signal.links.length > 0) {
-			lines.push(`   → ${signal.links.join(", ")}`);
-		}
-	}
+  const lines: string[] = [];
+  for (const signal of signals) {
+    const icon = signalIcon(signal.type, signal.severity);
+    const time = humanizeDiff(signal.timestamp);
+    lines.push(`${icon} [${time}] ${signal.source}: ${signal.message}`);
+    if (signal.links.length > 0) {
+      lines.push(`   → ${signal.links.join(", ")}`);
+    }
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 /** Format recent signals as compact one-liners, capped by the caller. */
 export function formatCompactSignals(signals: Signal[]): string {
-	if (signals.length === 0) {
-		return "(no signals)";
-	}
+  if (signals.length === 0) {
+    return "(no signals)";
+  }
 
-	return signals.map((signal) => {
-		const icon = signalIcon(signal.type, signal.severity);
-		const time = new Date(signal.timestamp).toLocaleTimeString("en-US", {
-			hour: "2-digit",
-			minute: "2-digit",
-			hour12: false,
-		});
-		return `${icon} [${time}] ${signal.source}: ${truncate(signal.message, 120)}`;
-	}).join("\n");
+  return signals
+    .map((signal) => {
+      const icon = signalIcon(signal.type, signal.severity);
+      const time = new Date(signal.timestamp).toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      return `${icon} [${time}] ${signal.source}: ${truncate(signal.message, 120)}`;
+    })
+    .join("\n");
 }
 
 /**
@@ -512,30 +580,34 @@ export function formatCompactSignals(signals: Signal[]): string {
  * ```
  */
 export function formatApprovals(approvals: ApprovalRequest[]): string {
-	if (approvals.length === 0) {
-		return "(no pending approvals)";
-	}
+  if (approvals.length === 0) {
+    return "(no pending approvals)";
+  }
 
-	const pending = approvals.filter((a) => a.status === "pending");
-	const rejected = approvals.filter((a) => a.status === "rejected");
+  const pending = approvals.filter((a) => a.status === "pending");
+  const rejected = approvals.filter((a) => a.status === "rejected");
 
-	const lines: string[] = [];
+  const lines: string[] = [];
 
-	if (pending.length > 0) {
-		lines.push(`Pending Approvals (${pending.length})`);
-		for (const a of pending) {
-			lines.push(`⏳ ${a.taskId}: submitted by ${a.submittedBy} — ${a.artifact}`);
-		}
-	}
+  if (pending.length > 0) {
+    lines.push(`Pending Approvals (${pending.length})`);
+    for (const a of pending) {
+      lines.push(
+        `⏳ ${a.taskId}: submitted by ${a.submittedBy} — ${a.artifact}`,
+      );
+    }
+  }
 
-	if (rejected.length > 0) {
-		if (lines.length > 0) lines.push("");
-		lines.push(`Rejected (${rejected.length})`);
-		for (const a of rejected) {
-			const feedback = a.feedback ? ` — ${a.feedback}` : "";
-			lines.push(`⚠ ${a.taskId}: rejected by ${a.reviewedBy ?? "reviewer"}${feedback}`);
-		}
-	}
+  if (rejected.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Rejected (${rejected.length})`);
+    for (const a of rejected) {
+      const feedback = a.feedback ? ` — ${a.feedback}` : "";
+      lines.push(
+        `⚠ ${a.taskId}: rejected by ${a.reviewedBy ?? "reviewer"}${feedback}`,
+      );
+    }
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }

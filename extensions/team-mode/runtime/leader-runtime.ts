@@ -30,6 +30,7 @@ const execFile = promisify(execFileCb);
 import type {
   LeaderProcess,
   MailboxMessage,
+  ProcessTerminationReason,
   Signal,
   TaskRecord,
   TeamRecord,
@@ -55,6 +56,7 @@ import type { MailboxManager } from "../managers/mailbox-manager.js";
 import type { TeamManager } from "../managers/team-manager.js";
 
 const LEADER_POLL_MS = 20_000;
+const BOOTSTRAP_MAX_ATTEMPTS = 3;
 
 /**
  * Allocate a dedicated git worktree for a teammate at `worktreePath`.
@@ -114,6 +116,8 @@ type ActiveTeammate = {
   heartbeatInterval?: ReturnType<typeof setInterval>;
   /** Timestamp of the last progress/heartbeat signal emitted for this teammate. */
   lastProgressAt: number;
+  /** Why the parent runtime explicitly aborted this subprocess, if known. */
+  stopReason?: ProcessTerminationReason;
 };
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -143,7 +147,28 @@ async function writePromptToTempFile(
   return { dir, filePath };
 }
 
-type PiProcessResult = { output: string; exitCode: number | null };
+type PiProcessResult = {
+  output: string;
+  exitCode: number | null;
+  exitSignal: NodeJS.Signals | null;
+  toolExecutions: number;
+  stderr: string;
+  rawEvents: string;
+};
+
+type TeammateDebugArtifacts = {
+  promptArtifact: string;
+  invocationArtifact: string;
+  stderrArtifact?: string;
+  eventsArtifact?: string;
+};
+
+type LeaderDebugArtifacts = {
+  promptArtifact: string;
+  invocationArtifact: string;
+  stderrArtifact?: string;
+  eventsArtifact?: string;
+};
 
 /** Callback fired when the subprocess reports intermediate progress. */
 type ProgressCallback = (event: PiProgressEvent) => void;
@@ -158,6 +183,17 @@ type PiProgressEvent = {
   resultPreview?: string;
 };
 
+type CollectPiOutputOptions = {
+  onProgress?: ProgressCallback;
+  /**
+   * Abort the collection: kills the subprocess and resolves with whatever
+   * output/stderr has been buffered so far. Use `AbortSignal.timeout(ms)` for
+   * a simple deadline, or an `AbortController` to compose with other cancel
+   * sources (team stop, parent cleanup).
+   */
+  signal?: AbortSignal;
+};
+
 /**
  * Collect the final assistant text from a pi subprocess running in JSON mode.
  * Handles buffered line splitting and pi JSON event parsing.
@@ -168,13 +204,20 @@ type PiProgressEvent = {
  */
 function collectPiOutput(
   proc: ChildProcess,
-  onProgress?: ProgressCallback,
+  options: CollectPiOutputOptions = {},
 ): Promise<PiProcessResult> {
+  const { onProgress, signal } = options;
   let buffer = "";
   let output = "";
+  let toolExecutions = 0;
+  const RAW_EVENTS_BUDGET = 200_000;
+  let rawEvents = "";
 
   const parseLine = (line: string) => {
     if (!line.trim()) return;
+    if (rawEvents.length < RAW_EVENTS_BUDGET) {
+      rawEvents += `${line.slice(0, RAW_EVENTS_BUDGET - rawEvents.length)}\n`;
+    }
     try {
       const event = JSON.parse(line) as {
         type?: string;
@@ -206,6 +249,7 @@ function collectPiOutput(
       // signal noise without adding information a reader can act on.
       if (onProgress) {
         if (event.type === "tool_execution_end" && event.toolName) {
+          toolExecutions += 1;
           const preview =
             typeof event.result === "string"
               ? event.result.slice(0, 200)
@@ -221,6 +265,8 @@ function collectPiOutput(
         } else if (event.type === "turn_end") {
           onProgress({ type: "turn_end" });
         }
+      } else if (event.type === "tool_execution_end") {
+        toolExecutions += 1;
       }
     } catch {
       /* ignore malformed lines */
@@ -234,12 +280,72 @@ function collectPiOutput(
     for (const line of lines) parseLine(line);
   });
 
+  // Capture stderr so non-zero exits can surface the actual pi error message.
+  // Cap to avoid unbounded growth when a misbehaving subprocess floods stderr.
+  const STDERR_BUDGET = 4_000;
+  let stderr = "";
+  proc.stderr?.on("data", (data: Buffer) => {
+    if (stderr.length >= STDERR_BUDGET) return;
+    stderr += data.toString().slice(0, STDERR_BUDGET - stderr.length);
+  });
+
   return new Promise<PiProcessResult>((resolve) => {
-    proc.on("close", (code) => {
+    let settled = false;
+    const settle = (result: PiProcessResult) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+
+    const onAbort = () => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      // Resolve with whatever we've buffered so far — the `close` handler
+      // below will still run when the process actually exits, but by then
+      // we've already settled so it's a no-op.
+      settle({
+        output,
+        exitCode: null,
+        exitSignal: null,
+        toolExecutions,
+        stderr,
+        rawEvents,
+      });
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    proc.on("close", (code, exitSignal) => {
       if (buffer.trim()) parseLine(buffer);
-      resolve({ output, exitCode: code });
+      settle({
+        output,
+        exitCode: code,
+        exitSignal,
+        toolExecutions,
+        stderr,
+        rawEvents,
+      });
     });
-    proc.on("error", () => resolve({ output: "", exitCode: 1 }));
+    proc.on("error", () =>
+      settle({
+        output: "",
+        exitCode: 1,
+        exitSignal: null,
+        toolExecutions,
+        stderr,
+        rawEvents,
+      }),
+    );
   });
 }
 
@@ -358,6 +464,55 @@ const STALL_BLOCKER_MARKER = "teammate process lost";
 const STALL_BLOCKER_MESSAGE = `${STALL_BLOCKER_MARKER} — process exited without completing task`;
 const TASK_CONTEXT_CHAR_BUDGET = 6_000;
 const TASK_CONTEXT_RELEVANT_BUDGET = Math.floor(TASK_CONTEXT_CHAR_BUDGET * 0.6);
+const OBJECTIVE_DOC_CHAR_BUDGET = 2_500;
+const OBJECTIVE_DOC_MAX_FILES = 2;
+
+type ObjectiveDocSnippet = {
+  filePath: string;
+  content: string;
+};
+
+function extractObjectivePathCandidates(objective: string): string[] {
+  const matches = objective.match(/(?:\.{1,2}\/|\/)[^\s"'`]+/g) ?? [];
+  return matches
+    .map((value) => value.replace(/[),.;:!?]+$/g, ""))
+    .filter((value) => /\.[a-z0-9]+$/i.test(value));
+}
+
+async function loadObjectiveDocSnippets(
+  objective: string,
+  cwd: string,
+): Promise<ObjectiveDocSnippet[]> {
+  const snippets: ObjectiveDocSnippet[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of extractObjectivePathCandidates(objective)) {
+    if (snippets.length >= OBJECTIVE_DOC_MAX_FILES) break;
+
+    const resolved = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(cwd, candidate);
+
+    try {
+      const stat = await fs.promises.stat(resolved);
+      if (!stat.isFile()) continue;
+
+      const realPath = await fs.promises.realpath(resolved);
+      if (seen.has(realPath)) continue;
+      seen.add(realPath);
+
+      const raw = await fs.promises.readFile(realPath, "utf8");
+      const content = truncateToBudget(raw.trim(), OBJECTIVE_DOC_CHAR_BUDGET);
+      if (!content) continue;
+
+      snippets.push({ filePath: realPath, content });
+    } catch {
+      // Best-effort only — objective paths may be informal or unavailable.
+    }
+  }
+
+  return snippets;
+}
 
 function signalMatchesTaskContext(
   signal: Signal,
@@ -392,6 +547,26 @@ function truncateToBudget(value: string, budget: number): string {
   return `${value.slice(0, budget - 3)}...`;
 }
 
+function summarizeTerminationReason(
+  reason?: ProcessTerminationReason,
+  exitCode?: number | null,
+  exitSignal?: string | null,
+): string {
+  if (reason === "completed") return "completed successfully";
+  if (reason === "failed") {
+    if (exitCode != null) return `failed (exit code ${exitCode})`;
+    if (exitSignal) return `failed (signal ${exitSignal})`;
+    return "failed";
+  }
+  if (reason === "manual_stop") return "stopped manually";
+  if (reason === "team_cancelled") return "stopped because the team was cancelled";
+  if (reason === "parent_cleanup") return "stopped during parent runtime cleanup";
+  if (reason === "spawn_error") return "failed to spawn";
+  if (reason === "stalled_process_missing") return "marked stalled after the process disappeared";
+  if (exitSignal) return `stopped by signal ${exitSignal}`;
+  return reason ?? "unknown";
+}
+
 export class LeaderRuntime {
   private activeLeaders = new Map<string, ActiveLeader>();
   private activeTeammates = new Map<string, ActiveTeammate>();
@@ -416,6 +591,14 @@ export class LeaderRuntime {
 
   /** Unsubscribe handle for the mailbox listener, set in the constructor. */
   private readonly mailboxUnsubscribe: () => void;
+
+  /**
+   * Per-team `fs.watch` handle on the intents/pending directory. Delivers
+   * low-latency wake-ups when a subprocess (e.g. the LLM leader) queues an
+   * intent. The 20s poll loop acts as a fallback for filesystems where
+   * `fs.watch` is unreliable.
+   */
+  private intentWatchers = new Map<string, fs.FSWatcher>();
 
   /**
    * Optional callback invoked whenever a team's status changes in the
@@ -584,7 +767,21 @@ export class LeaderRuntime {
     this.pendingWakes.set(teamId, timer);
   }
 
-  async launchLeader(teamId: string): Promise<void> {
+  /**
+   * Launch the leader runtime for a team.
+   *
+   * By default the first LLM leader turn runs fire-and-forget so callers
+   * (`/team resume`, extension boot) don't block on a slow subprocess.
+   *
+   * When `awaitBootstrap` is true, the first turn is awaited and the task
+   * graph is verified afterwards. If no tasks were created the team is
+   * stopped and an error is thrown so the caller can surface it to the user
+   * instead of leaving a silently-idle team. Used by `team_create`.
+   */
+  async launchLeader(
+    teamId: string,
+    options: { awaitBootstrap?: boolean } = {},
+  ): Promise<void> {
     if (this.activeLeaders.has(teamId)) return;
 
     // Claim the slot immediately to prevent concurrent launches (TOCTOU guard).
@@ -619,6 +816,7 @@ export class LeaderRuntime {
         startedAt: now,
       };
       await this.store.saveLeaderProcess(teamId, leaderState);
+      this.startIntentWatcher(teamId);
 
       await this.teamManager.updateTeam(teamId, {
         status: "running",
@@ -656,12 +854,58 @@ export class LeaderRuntime {
       // completion detection via runLeaderCycle — but task authoring happens
       // exclusively through the LLM leader's tool calls.
       //
-      // Fire-and-forget: a leader turn can take tens of seconds (real LLM) or
-      // hang indefinitely (unit-test mocks that never close). We don't want
-      // callers of `launchLeader` (the extension start-up path, the
-      // `/team resume` command, etc.) to wait on it. The `llmTurnInFlight`
-      // guard inside `runLlmLeaderTurn` prevents duplicate concurrent turns.
-      void this.runLlmLeaderTurn(teamId);
+      // Fire-and-forget by default: a leader turn can take tens of seconds
+      // (real LLM) or hang indefinitely (unit-test mocks). We don't want
+      // callers like `/team resume` or extension boot to wait on it. The
+      // `llmTurnInFlight` guard inside `runLlmLeaderTurn` prevents duplicate
+      // concurrent turns. `team_create` opts into awaited bootstrap via
+      // `awaitBootstrap: true` so the user sees a real task graph before the
+      // tool returns — or a clear error if the first turn was a no-op.
+      if (options.awaitBootstrap) {
+        let tasks = await this.taskManager.getTasks(teamId);
+        for (let attempt = 1; attempt <= BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
+          await this.runLlmLeaderTurn(teamId);
+          tasks = await this.taskManager.getTasks(teamId);
+          if (tasks.length > 0) break;
+          if (attempt < BOOTSTRAP_MAX_ATTEMPTS) {
+            await this.signalManager.emit(teamId, {
+              source: "leader",
+              type: "team_summary",
+              severity: "warning",
+              message:
+                `Bootstrap attempt ${attempt}/${BOOTSTRAP_MAX_ATTEMPTS} produced no tasks. Retrying with a stronger nudge to create the initial task graph.`,
+              links: [],
+            });
+          }
+        }
+        if (tasks.length === 0) {
+          // Pull the last leader error signal so the thrown error can
+          // include pi's actual failure reason (e.g. invalid model, auth),
+          // not just the opaque "no tasks" outcome.
+          const recentSignals = await this.signalManager.getSignals(teamId);
+          const lastLeaderError = [...recentSignals]
+            .reverse()
+            .find((s) => s.source === "leader" && s.type === "error");
+          const lastReason = lastLeaderError?.message ?? "";
+          await this.signalManager.emit(teamId, {
+            source: "leader",
+            type: "error",
+            severity: "warning",
+            message:
+              `Bootstrap failed — leader produced no tasks after ${BOOTSTRAP_MAX_ATTEMPTS} attempts. Stopping team.`,
+            links: [],
+          });
+          await this.stopTeam(teamId);
+          await this.teamManager.updateTeam(teamId, { status: "failed" });
+          throw new Error(
+            lastReason
+              ? `Leader bootstrap produced no tasks after ${BOOTSTRAP_MAX_ATTEMPTS} attempts (last error: ${lastReason}). Check team signals for details.`
+              : `Leader bootstrap produced no tasks after ${BOOTSTRAP_MAX_ATTEMPTS} attempts. Check team signals for details and retry with a more specific objective or explicit repoRoots.`,
+          );
+        }
+      } else {
+        void this.runLlmLeaderTurn(teamId);
+      }
       await this.runLeaderCycle(teamId);
     } catch (err) {
       // Release the slot if setup failed so a retry can succeed.
@@ -747,17 +991,42 @@ export class LeaderRuntime {
     const spawnFn = this._spawnFn ?? spawnPiJsonMode;
     const modelConfig = await this.ensureModelConfig();
     const resolved = resolveModel(modelConfig, role, task.modelTier);
+    const spawnUserMessage = `Task: ${taskDescription}`;
+    const startedAt = new Date().toISOString();
+    const artifactStem = `${startedAt.replace(/[:.]/g, "-")}-${safeKebab(task.id)}`;
+    const promptArtifact = await this.store.saveTeammateDebugArtifact(
+      teamId,
+      role,
+      `${artifactStem}-prompt.md`,
+      prompt,
+    );
+    const invocationArtifact = await this.store.saveTeammateDebugArtifact(
+      teamId,
+      role,
+      `${artifactStem}-invocation.json`,
+      `${JSON.stringify(
+        {
+          teamId,
+          role,
+          taskId,
+          cwd: effectiveCwd,
+          repoRoot,
+          worktree: allocatedWorktree ?? task.worktree,
+          userMessage: spawnUserMessage,
+          model: resolved?.model,
+          modelTier: resolved?.tier ?? task.modelTier,
+          modelProvider: resolved?.provider,
+        },
+        null,
+        2,
+      )}\n`,
+    );
     const proc = spawnFn(
       tempPrompt.filePath,
-      `Task: ${taskDescription}`,
+      spawnUserMessage,
       effectiveCwd,
       resolved?.model,
     );
-
-    let stderr = "";
-    proc.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
 
     // Track last progress emission to throttle signals.
     const activeTeammate: ActiveTeammate = {
@@ -792,8 +1061,7 @@ export class LeaderRuntime {
       });
     };
 
-    const resultPromise = collectPiOutput(proc, onProgress);
-    const startedAt = new Date().toISOString();
+    const resultPromise = collectPiOutput(proc, { onProgress });
 
     const processState: TeammateProcess = {
       role,
@@ -802,8 +1070,18 @@ export class LeaderRuntime {
       state: "running",
       pid: proc.pid,
       cwd: effectiveCwd,
+      worktree: allocatedWorktree ?? task.worktree,
       startedAt,
+      model: resolved?.model,
+      modelTier: resolved?.tier ?? task.modelTier,
+      modelProvider: resolved?.provider,
+      promptArtifact,
+      invocationArtifact,
     };
+    // Archive the previous task's final process state under history/ so
+    // reusing the same role slot for the next task doesn't erase the prior
+    // run's exit code, artifacts, or termination reason.
+    await this.store.archiveTeammateProcess(teamId, role, taskId);
     await this.store.saveTeammateProcess(teamId, processState);
     await this.taskManager.updateTask(teamId, taskId, {
       status: "in_progress",
@@ -818,6 +1096,11 @@ export class LeaderRuntime {
       message: `Started ${task.title}`,
       links: [],
     });
+    // Refresh the widget now that the task flipped to in_progress. The
+    // tool-handler path used to call `refreshWidget(ctx)` directly; the
+    // intent-queue path has no tool context, so we rely on notifyStatusChange
+    // (throttled) to keep the TUI in sync for both paths.
+    this.notifyStatusChange(teamId);
 
     // Heartbeat timer: if no progress event fires for HEARTBEAT_INTERVAL_MS,
     // emit a heartbeat signal so the signal log shows the teammate is alive.
@@ -851,7 +1134,8 @@ export class LeaderRuntime {
     );
 
     // Fire-and-forget: handle completion when the subprocess exits
-    void resultPromise.then(async ({ output, exitCode: code }) => {
+    void resultPromise.then(
+      async ({ output, exitCode: code, exitSignal, stderr, toolExecutions, rawEvents }) => {
       // Clear heartbeat timer before removing the teammate entry.
       if (activeTeammate.heartbeatInterval) {
         clearInterval(activeTeammate.heartbeatInterval);
@@ -870,23 +1154,75 @@ export class LeaderRuntime {
       const completedAt = new Date().toISOString();
       const wasCancelled = controller.signal.aborted;
       const latestTeam = await this.store.loadTeam(teamId);
+      const stderrArtifact = stderr.trim()
+        ? await this.store.saveTeammateDebugArtifact(
+            teamId,
+            role,
+            `${artifactStem}-stderr.log`,
+            stderr,
+          )
+        : undefined;
+      const eventsArtifact = rawEvents.trim()
+        ? await this.store.saveTeammateDebugArtifact(
+            teamId,
+            role,
+            `${artifactStem}-events.ndjson`,
+            rawEvents,
+          )
+        : undefined;
+      const stderrTail = stderr.trim()
+        ? stderr.trim().split(/\r?\n/).slice(-5).join(" | ")
+        : undefined;
+      const baseProcessState: TeammateProcess = {
+        ...processState,
+        completedAt,
+        output,
+        exitCode: code,
+        exitSignal,
+        toolExecutions,
+        stderrTail,
+        stderrArtifact,
+        eventsArtifact,
+        lastProgressAt: new Date(activeTeammate.lastProgressAt).toISOString(),
+      };
 
       if (wasCancelled || latestTeam?.status === "cancelled") {
+        const terminationReason =
+          activeTeammate.stopReason ??
+          (latestTeam?.status === "cancelled"
+            ? "team_cancelled"
+            : "unknown");
         await this.store.saveTeammateProcess(teamId, {
-          ...processState,
+          ...baseProcessState,
           state: "cancelled",
-          completedAt,
-          output,
+          terminationReason,
         });
+        // If the parent pi session aborted the teammate (e.g. cleanup on
+        // shutdown or explicit stopTeammate), requeue the task so the next
+        // leader run re-spawns it cleanly instead of the stall detector
+        // flagging it as "process lost" on the next boot.
+        if (
+          wasCancelled &&
+          latestTeam?.status !== "cancelled" &&
+          terminationReason === "parent_cleanup"
+        ) {
+          const currentTask = await this.taskManager.getTask(teamId, taskId);
+          if (currentTask && currentTask.status === "in_progress") {
+            await this.taskManager.updateTask(teamId, taskId, {
+              status: "ready",
+              owner: undefined,
+              previousAttemptOutput: output.trim().slice(0, 4000) || undefined,
+            });
+          }
+        }
         return;
       }
 
       if (code === 0) {
         await this.store.saveTeammateProcess(teamId, {
-          ...processState,
+          ...baseProcessState,
           state: "completed",
-          completedAt,
-          output,
+          terminationReason: "completed",
         });
         const outputFile = `${completedAt.replace(/[:.]/g, "-")}-${safeKebab(task.id)}.md`;
         if (output.trim()) {
@@ -922,10 +1258,9 @@ export class LeaderRuntime {
         const errorMessage =
           stderr.trim() || output || `Process exited with code ${code ?? 1}`;
         await this.store.saveTeammateProcess(teamId, {
-          ...processState,
+          ...baseProcessState,
           state: "failed",
-          completedAt,
-          output,
+          terminationReason: "failed",
           error: errorMessage,
         });
         await this.taskManager.updateTask(teamId, taskId, {
@@ -938,17 +1273,25 @@ export class LeaderRuntime {
           severity: "error",
           taskId,
           message: `Failed ${task.title}: ${errorMessage}`,
-          links: [],
+          links: [stderrArtifact, eventsArtifact].filter(Boolean) as string[],
         });
       }
 
+      // Surface the completion/failure in the widget. The follow-up
+      // `runLeaderCycle` may trigger another fire on promotion, but throttling
+      // coalesces them.
+      this.notifyStatusChange(teamId);
       await this.runLeaderCycle(teamId);
-    });
+      },
+    );
 
     return processState;
   }
 
-  async stopTeam(teamId: string): Promise<void> {
+  async stopTeam(
+    teamId: string,
+    reason: ProcessTerminationReason = "team_cancelled",
+  ): Promise<void> {
     const leader = this.activeLeaders.get(teamId);
     if (leader) {
       clearInterval(leader.interval);
@@ -964,9 +1307,13 @@ export class LeaderRuntime {
       this.pendingWakes.delete(teamId);
     }
 
+    // Tear down the intents/pending watcher; intents written after stopTeam
+    // will be picked up only when the leader is relaunched.
+    this.stopIntentWatcher(teamId);
+
     const roles = this.getActiveTeammates(teamId);
     for (const role of roles) {
-      await this.stopTeammate(teamId, role);
+      await this.stopTeammate(teamId, role, reason);
     }
 
     const existing = await this.store.loadLeaderProcess(teamId);
@@ -975,6 +1322,7 @@ export class LeaderRuntime {
         ...existing,
         state: "cancelled",
         completedAt: new Date().toISOString(),
+        terminationReason: reason,
       });
     }
 
@@ -982,11 +1330,16 @@ export class LeaderRuntime {
     this.notifyStatusChange(teamId);
   }
 
-  async stopTeammate(teamId: string, role: string): Promise<void> {
+  async stopTeammate(
+    teamId: string,
+    role: string,
+    reason: ProcessTerminationReason = "manual_stop",
+  ): Promise<void> {
     const key = `${teamId}:${role}`;
     const active = this.activeTeammates.get(key);
     if (active) {
       if (active.heartbeatInterval) clearInterval(active.heartbeatInterval);
+      active.stopReason = reason;
       active.abortController.abort();
       this.activeTeammates.delete(key);
     }
@@ -997,6 +1350,7 @@ export class LeaderRuntime {
         ...current,
         state: "cancelled",
         completedAt: new Date().toISOString(),
+        terminationReason: reason,
       });
       if (current.taskId) {
         await this.taskManager.updateTask(teamId, current.taskId, {
@@ -1015,6 +1369,16 @@ export class LeaderRuntime {
     return this.activeTeammates.has(`${teamId}:${role}`);
   }
 
+  /**
+   * True if this runtime has any in-flight leader loop or teammate
+   * subprocess. Used by the extension lifecycle hooks to decide whether a
+   * re-emitted `session_start` (same process, new ctx) should preserve
+   * in-flight work or tear it down.
+   */
+  hasActiveWork(): boolean {
+    return this.activeLeaders.size > 0 || this.activeTeammates.size > 0;
+  }
+
   getActiveTeammates(teamId: string): string[] {
     const prefix = `${teamId}:`;
     return [...this.activeTeammates.keys()]
@@ -1024,10 +1388,11 @@ export class LeaderRuntime {
 
   async cleanup(): Promise<void> {
     for (const [teamId] of this.activeLeaders) {
-      await this.stopTeam(teamId);
+      await this.stopTeam(teamId, "parent_cleanup");
     }
     for (const [key, active] of this.activeTeammates) {
       if (active.heartbeatInterval) clearInterval(active.heartbeatInterval);
+      active.stopReason = active.stopReason ?? "parent_cleanup";
       active.abortController.abort();
       this.activeTeammates.delete(key);
     }
@@ -1040,7 +1405,104 @@ export class LeaderRuntime {
       clearTimeout(timer);
     }
     this.pendingWakes.clear();
+    for (const teamId of [...this.intentWatchers.keys()]) {
+      this.stopIntentWatcher(teamId);
+    }
     this.mailboxUnsubscribe();
+  }
+
+  private async persistTeammateDebugArtifacts(
+    teamId: string,
+    role: string,
+    taskId: string,
+    prompt: string,
+    invocation: Record<string, unknown>,
+    result?: Pick<PiProcessResult, "stderr" | "rawEvents">,
+  ): Promise<TeammateDebugArtifacts> {
+    const stem = `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeKebab(taskId)}`;
+    const promptArtifact = await this.store.saveTeammateDebugArtifact(
+      teamId,
+      role,
+      `${stem}-prompt.md`,
+      prompt,
+    );
+    const invocationArtifact = await this.store.saveTeammateDebugArtifact(
+      teamId,
+      role,
+      `${stem}-invocation.json`,
+      `${JSON.stringify(invocation, null, 2)}\n`,
+    );
+
+    let stderrArtifact: string | undefined;
+    if (result?.stderr?.trim()) {
+      stderrArtifact = await this.store.saveTeammateDebugArtifact(
+        teamId,
+        role,
+        `${stem}-stderr.log`,
+        result.stderr,
+      );
+    }
+
+    let eventsArtifact: string | undefined;
+    if (result?.rawEvents?.trim()) {
+      eventsArtifact = await this.store.saveTeammateDebugArtifact(
+        teamId,
+        role,
+        `${stem}-events.ndjson`,
+        result.rawEvents,
+      );
+    }
+
+    return {
+      promptArtifact,
+      invocationArtifact,
+      stderrArtifact,
+      eventsArtifact,
+    };
+  }
+
+  private async persistLeaderDebugArtifacts(
+    teamId: string,
+    prompt: string,
+    invocation: Record<string, unknown>,
+    result?: Pick<PiProcessResult, "stderr" | "rawEvents">,
+  ): Promise<LeaderDebugArtifacts> {
+    const stem = `${new Date().toISOString().replace(/[:.]/g, "-")}-leader-turn`;
+    const promptArtifact = await this.store.saveLeaderDebugArtifact(
+      teamId,
+      `${stem}-prompt.md`,
+      prompt,
+    );
+    const invocationArtifact = await this.store.saveLeaderDebugArtifact(
+      teamId,
+      `${stem}-invocation.json`,
+      `${JSON.stringify(invocation, null, 2)}\n`,
+    );
+
+    let stderrArtifact: string | undefined;
+    if (result?.stderr?.trim()) {
+      stderrArtifact = await this.store.saveLeaderDebugArtifact(
+        teamId,
+        `${stem}-stderr.log`,
+        result.stderr,
+      );
+    }
+
+    let eventsArtifact: string | undefined;
+    if (result?.rawEvents?.trim()) {
+      eventsArtifact = await this.store.saveLeaderDebugArtifact(
+        teamId,
+        `${stem}-events.ndjson`,
+        result.rawEvents,
+      );
+    }
+
+    return {
+      promptArtifact,
+      invocationArtifact,
+      stderrArtifact,
+      eventsArtifact,
+    };
   }
 
   /**
@@ -1097,21 +1559,12 @@ export class LeaderRuntime {
         plannerResolved?.model,
       );
 
-      const timeoutFallback = new Promise<PiProcessResult>((resolve) => {
-        setTimeout(() => {
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            /* ignore */
-          }
-          resolve({ output: "", exitCode: null });
-        }, PLANNING_TIMEOUT_MS);
+      // The signal owns the timer — it auto-cleans when the subprocess exits
+      // normally, so there is no dangling timeout keeping the event loop alive
+      // (which previously caused `node --test` to hang for 30s after each run).
+      const { output } = await collectPiOutput(proc, {
+        signal: AbortSignal.timeout(PLANNING_TIMEOUT_MS),
       });
-
-      const { output } = await Promise.race([
-        collectPiOutput(proc),
-        timeoutFallback,
-      ]);
 
       return this.parseRolesFromOutput(output, KNOWN_ROLES) ?? FALLBACK_ROLES;
     } catch {
@@ -1178,6 +1631,106 @@ export class LeaderRuntime {
     }
   }
 
+  /**
+   * Drain all pending intents for a team and execute them in this
+   * (main-session) runtime. Intents are written by subprocess tool handlers
+   * (e.g. `team_spawn_teammate` running inside the LLM leader subprocess)
+   * that cannot own long-lived child processes themselves.
+   *
+   * Failures are logged as error signals and the intent is marked processed
+   * so the drain cannot loop forever on a poisoned intent.
+   */
+  private async drainPendingIntents(teamId: string): Promise<void> {
+    const intents = await this.store.listPendingIntents(teamId);
+    for (const intent of intents) {
+      try {
+        if (intent.kind === "spawn_teammate") {
+          const task = await this.taskManager.getTask(
+            intent.teamId,
+            intent.taskId,
+          );
+          if (!task || task.status === "done" || task.status === "cancelled") {
+            await this.store.markIntentProcessed(teamId, intent.id);
+            continue;
+          }
+          // Role slot is occupied — leave the intent pending so the next
+          // drain retries it once the current teammate exits.
+          if (this.isTeammateRunning(intent.teamId, intent.role)) {
+            continue;
+          }
+          await this.spawnTeammate(
+            intent.teamId,
+            intent.role,
+            intent.taskId,
+            intent.taskDescription,
+            intent.context,
+            intent.cwd,
+          );
+        }
+        await this.store.markIntentProcessed(teamId, intent.id);
+      } catch (err) {
+        const taskId =
+          intent.kind === "spawn_teammate" ? intent.taskId : undefined;
+        await this.signalManager
+          .emit(teamId, {
+            source: "leader",
+            type: "error",
+            severity: "error",
+            taskId,
+            message: `Failed to process ${intent.kind} intent ${intent.id}: ${err instanceof Error ? err.message : String(err)}`,
+            links: [],
+          })
+          .catch(() => {
+            /* best-effort */
+          });
+        // Mark processed regardless so a poisoned intent cannot wedge the queue.
+        await this.store
+          .markIntentProcessed(teamId, intent.id)
+          .catch(() => {
+            /* best-effort */
+          });
+      }
+    }
+  }
+
+  /**
+   * Register an `fs.watch` on `intents/pending/` that schedules a debounced
+   * wake-up when a subprocess writes a new intent file. Silently falls back
+   * to the 20s poll if the watch can't be established.
+   */
+  private startIntentWatcher(teamId: string): void {
+    if (this.intentWatchers.has(teamId)) return;
+    const dir = path.join(this.store.getIntentsDir(teamId), "pending");
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const watcher = fs.watch(dir, { persistent: false }, () => {
+        this.scheduleWake(teamId);
+      });
+      watcher.on("error", () => {
+        try {
+          watcher.close();
+        } catch {
+          /* ignore */
+        }
+        this.intentWatchers.delete(teamId);
+      });
+      this.intentWatchers.set(teamId, watcher);
+    } catch {
+      // Directory may not exist or fs.watch is unsupported — poll covers it.
+    }
+  }
+
+  private stopIntentWatcher(teamId: string): void {
+    const watcher = this.intentWatchers.get(teamId);
+    if (!watcher) return;
+    try {
+      watcher.close();
+    } catch {
+      /* ignore */
+    }
+    this.intentWatchers.delete(teamId);
+  }
+
   private async runLeaderCycleInner(teamId: string): Promise<void> {
     const team = await this.store.loadTeam(teamId);
     if (!team) return;
@@ -1188,6 +1741,12 @@ export class LeaderRuntime {
     ) {
       return;
     }
+
+    // Execute any intents queued by subprocesses (LLM leader turn tool
+    // handlers, etc.) before running the rest of the cycle. Spawning a
+    // teammate here mutates task state, so this must precede dependency
+    // resolution and stall detection.
+    await this.drainPendingIntents(teamId);
 
     // Process any new guidance messages sent to the leader by the user.
     const newLeaderMail = await this.processLeaderMailbox(teamId);
@@ -1287,6 +1846,15 @@ export class LeaderRuntime {
     const tasksForStallCheck =
       readyTasks.length > 0 ? await this.taskManager.getTasks(teamId) : tasks;
     await this.detectStalledTasks(teamId, tasksForStallCheck);
+
+    // Nudge the widget whenever this cycle observed a meaningful change.
+    // Without this, the user's TUI only refreshes on session boundaries and
+    // team completion — tasks being created, promoted, spawned, or finished
+    // by subprocesses are invisible until something else triggers a refresh.
+    // `notifyStatusChange` already throttles bursty fires per team.
+    if (promoted.length > 0 || hasWorkToAssign || newLeaderMail) {
+      this.notifyStatusChange(teamId);
+    }
 
     const summary = await this.teamManager.getTeamSummary(teamId);
     const summaryText =
@@ -1476,8 +2044,9 @@ export class LeaderRuntime {
       teammateLines.join("\n"),
       "",
       "## Your Tools",
-      '- `team_query` (teamId): read tasks, signals, mailbox, teammate status. Always call with `action: "tasks"` early to see the current task board.',
-      "- `team_task_create`: author a new task with an owner, priority, and optional dependencies. Tasks with `dependsOn` start as `todo` and auto-promote to `ready` when dependencies complete.",
+      "- `team_query` (teamId): read tasks, signals, mailbox, teammate status. The user message already contains the current task board, signals, and mailbox snapshot — only call `team_query` if you need data NOT in the snapshot (e.g. deep signal history).",
+      "- `team_task_create_batch`: author MANY tasks in one call. Always prefer this when the task graph is empty or you need to add multiple tasks at once — each `team_task_create` is a separate LLM round-trip, so batching is dramatically faster.",
+      "- `team_task_create`: author a single task. Use only when adding one follow-up task mid-turn.",
       "- `team_spawn_teammate`: launch a teammate subprocess to execute a ready task. Only spawn when the task is `ready` and the teammate is not already running.",
       "- `team_message`: forward guidance or instructions to a specific teammate or to `leader` (the user has their own queue).",
       "- `team_handoff`: when you detect a peer-to-peer handoff need (e.g. backend produced an API contract the frontend needs), send the context through this tool.",
@@ -1488,10 +2057,10 @@ export class LeaderRuntime {
       "Most work breaks down into research → synthesis → implementation → verification, but skip any phase that doesn't fit. A pure research job needs no implementation; a small patch may not need a separate research pass.",
       "",
       "On each turn:",
-      "  1. Call `team_query` to inspect current state.",
-      "  2. If the task graph is empty, author it now: one `team_task_create` call per work item, with explicit `dependsOn` to declare the dependency DAG.",
+      "  1. Read the current-state snapshot in the user message (tasks, signals, mailbox are already included). Only call `team_query` if you need data beyond what is shown.",
+      "  2. If the task graph is empty, author it NOW in ONE `team_task_create_batch` call containing the whole DAG — use `tempId` to declare dependencies between tasks in the same batch. If the objective references a plan/spec file, use the objective document excerpt from the snapshot; if it is still ambiguous, create a first research task instead of ending the turn empty.",
       "  3. For every `ready` task whose owner is idle, call `team_spawn_teammate` to launch work in parallel. Do not serialise independent tasks.",
-      "  4. Drain the mailbox with `team_query` (action: signals or ask) — if a teammate reports a blocker, relay it or adjust the task graph.",
+      "  4. If a teammate reports a blocker via signals or mailbox, relay it or adjust the task graph.",
       "  5. Stop calling tools once everything is either `done` or awaiting a teammate you already spawned.",
       "",
       "## Constraints",
@@ -1508,13 +2077,16 @@ export class LeaderRuntime {
    * budget re-reading what we could have given it directly.
    */
   private async buildLeaderSnapshot(teamId: string): Promise<string> {
-    const [summary, board, signals, mailboxForLeader, contracts] =
+    const team = await this.store.loadTeam(teamId);
+    const objectiveDocCwd = team?.repoRoots[0] ?? process.cwd();
+    const [summary, board, signals, mailboxForLeader, contracts, objectiveDocs] =
       await Promise.all([
         this.teamManager.getTeamSummary(teamId),
         this.taskManager.getTaskBoard(teamId),
         this.signalManager.getContextSignals(teamId),
         this.mailboxManager.getMessagesFor(teamId, "leader"),
         this.store.loadMemory(teamId, "contracts"),
+        loadObjectiveDocSnippets(team?.objective ?? "", objectiveDocCwd),
       ]);
 
     const taskLines =
@@ -1541,10 +2113,18 @@ export class LeaderRuntime {
       `Team: ${summary.name} (${teamId})`,
       `Status: ${summary.status}`,
       `Progress: ${summary.progress.done}/${summary.progress.total} done`,
-      "",
-      "Tasks:",
-      ...taskLines,
     ];
+    if (objectiveDocs.length > 0 && board.tasks.length === 0) {
+      parts.push(
+        "",
+        "Objective documents referenced by the objective (already loaded for you — use these to create the initial task graph):",
+      );
+      for (const doc of objectiveDocs) {
+        parts.push(`- FILE: ${doc.filePath}`);
+        parts.push(doc.content);
+      }
+    }
+    parts.push("", "Tasks:", ...taskLines);
     if (summary.blockers.length > 0) {
       parts.push("", "Blockers:");
       for (const b of summary.blockers)
@@ -1590,6 +2170,25 @@ export class LeaderRuntime {
     this.llmTurnInFlight.add(teamId);
     try {
       await this.runLlmLeaderTurnInner(teamId);
+    } catch (err) {
+      // A turn can lose the race against `stopTeam` / `cleanup` and try to
+      // write into a team directory that has already been removed (ENOENT on
+      // rename). That's benign — the team is gone, there's nothing to persist.
+      // Re-throwing turns it into an unhandled rejection that crashes tests
+      // and masks unrelated errors.
+      if (this.activeLeaders.has(teamId)) {
+        await this.signalManager
+          .emit(teamId, {
+            source: "leader",
+            type: "error",
+            severity: "warning",
+            message: `LLM leader turn failed: ${err instanceof Error ? err.message : String(err)}`,
+            links: [],
+          })
+          .catch(() => {
+            /* best-effort — team dir may also be gone. */
+          });
+      }
     } finally {
       this.llmTurnInFlight.delete(teamId);
     }
@@ -1606,13 +2205,16 @@ export class LeaderRuntime {
       return;
     }
 
+    const hasTasks = (await this.taskManager.getTasks(teamId)).length > 0;
     const snapshot = await this.buildLeaderSnapshot(teamId);
     const systemPrompt = this.buildLlmLeaderPrompt(team);
     const userMessage = [
       "## Current state",
       snapshot,
       "",
-      "Decide the next actions by calling tools. Be parallel where possible — launch multiple spawn/create calls in a single turn.",
+      !hasTasks
+        ? "IMPORTANT: The task graph is empty. This turn must end with one or more `team_task_create` calls. If the objective references a plan/spec file, use the already-loaded objective document excerpt above. If details are still missing, create a first research task to inspect the plan and shape the graph — do not exit with zero tasks."
+        : "Decide the next actions by calling tools. Be parallel where possible — launch multiple spawn/create calls in a single turn.",
     ].join("\n");
 
     const tempPrompt = await writePromptToTempFile(
@@ -1627,6 +2229,29 @@ export class LeaderRuntime {
     // too deep and each turn is slow/expensive. Role key is "leader" so users
     // can override via `/team models role leader <tier>`.
     const resolved = resolveModel(modelConfig, "leader", "mid");
+    const turnStartedAt = new Date().toISOString();
+    const artifactStem = `${turnStartedAt.replace(/[:.]/g, "-")}-leader-turn`;
+    const promptArtifact = await this.store.saveLeaderDebugArtifact(
+      teamId,
+      `${artifactStem}-prompt.md`,
+      systemPrompt,
+    );
+    const invocationArtifact = await this.store.saveLeaderDebugArtifact(
+      teamId,
+      `${artifactStem}-invocation.json`,
+      `${JSON.stringify(
+        {
+          teamId,
+          cwd,
+          userMessage,
+          model: resolved?.model,
+          modelTier: resolved?.tier ?? "mid",
+          modelProvider: resolved?.provider,
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     const proc = spawnFn(
       tempPrompt.filePath,
@@ -1635,8 +2260,58 @@ export class LeaderRuntime {
       resolved?.model,
     );
 
+    const existingLeader = await this.store.loadLeaderProcess(teamId);
+    if (existingLeader) {
+      await this.store.saveLeaderProcess(teamId, {
+        ...existingLeader,
+        pid: proc.pid,
+        model: resolved?.model,
+        modelTier: resolved?.tier ?? "mid",
+        modelProvider: resolved?.provider,
+        promptArtifact,
+        invocationArtifact,
+      });
+    }
+
     try {
-      const { output, exitCode } = await collectPiOutput(proc);
+      const { output, exitCode, exitSignal, toolExecutions, stderr, rawEvents } =
+        await collectPiOutput(proc);
+      const stderrArtifact = stderr.trim()
+        ? await this.store.saveLeaderDebugArtifact(
+            teamId,
+            `${artifactStem}-stderr.log`,
+            stderr,
+          )
+        : undefined;
+      const eventsArtifact = rawEvents.trim()
+        ? await this.store.saveLeaderDebugArtifact(
+            teamId,
+            `${artifactStem}-events.ndjson`,
+            rawEvents,
+          )
+        : undefined;
+      const stderrTail = stderr.trim()
+        ? stderr.trim().split(/\r?\n/).slice(-5).join(" | ")
+        : undefined;
+      if (existingLeader) {
+        await this.store.saveLeaderProcess(teamId, {
+          ...existingLeader,
+          state: existingLeader.state,
+          pid: proc.pid,
+          model: resolved?.model,
+          modelTier: resolved?.tier ?? "mid",
+          modelProvider: resolved?.provider,
+          promptArtifact,
+          invocationArtifact,
+          stderrArtifact,
+          eventsArtifact,
+          exitCode,
+          exitSignal,
+          toolExecutions,
+          stderrTail,
+          terminationReason: exitCode === 0 ? "completed" : "failed",
+        });
+      }
       if (exitCode === 0 && output.trim()) {
         await this.signalManager.emit(teamId, {
           source: "leader",
@@ -1645,13 +2320,28 @@ export class LeaderRuntime {
           message: summarizeCompletionOutput(output, "Leader turn completed"),
           links: [],
         });
-      } else if (exitCode !== 0) {
+      } else if (exitCode === 0 && toolExecutions === 0) {
+        // Subprocess exited cleanly but produced no output / made no tool
+        // calls — a silent no-op. Surface it so the team does not appear
+        // stuck without explanation.
         await this.signalManager.emit(teamId, {
           source: "leader",
           type: "error",
           severity: "warning",
-          message: `LLM leader turn exited with code ${exitCode ?? "null"}`,
+          message:
+            "LLM leader turn produced no output and made no tool calls — task graph unchanged",
           links: [],
+        });
+      } else if (exitCode !== 0) {
+        const tail = stderr.trim().split(/\r?\n/).slice(-3).join(" | ");
+        await this.signalManager.emit(teamId, {
+          source: "leader",
+          type: "error",
+          severity: "warning",
+          message: tail
+            ? `LLM leader turn exited with code ${exitCode ?? "null"}: ${tail}`
+            : `LLM leader turn exited with code ${exitCode ?? "null"}`,
+          links: [stderrArtifact, eventsArtifact].filter(Boolean) as string[],
         });
       }
     } finally {
@@ -1816,6 +2506,14 @@ export class LeaderRuntime {
             teamId,
             task.owner,
           );
+          if (prevProcess) {
+            await this.store.saveTeammateProcess(teamId, {
+              ...prevProcess,
+              state: prevProcess.state === "completed" ? prevProcess.state : "failed",
+              completedAt: prevProcess.completedAt ?? new Date().toISOString(),
+              terminationReason: "stalled_process_missing",
+            });
+          }
           if (prevProcess?.output && prevProcess.output.trim()) {
             partial = prevProcess.output.trim().slice(0, 4000);
           }

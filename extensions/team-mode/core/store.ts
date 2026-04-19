@@ -33,6 +33,7 @@ import type {
   MailboxMessage,
   Signal,
   TaskRecord,
+  TeamIntent,
   TeamRecord,
   TeammateProcess,
 } from "./types.js";
@@ -267,6 +268,11 @@ export class TeamStore {
     return join(this.getTeamDir(teamId), "teammates", role);
   }
 
+  /** Absolute path to the intents directory for a team. */
+  getIntentsDir(teamId: string): string {
+    return join(this.getTeamDir(teamId), "intents");
+  }
+
   /**
    * Create the full directory tree for a team, including sub-directories for
    * each teammate role and the durable memory store.
@@ -279,6 +285,8 @@ export class TeamStore {
     // Top-level team directories
     await mkdir(join(teamDir, "memory"), { recursive: true });
     await mkdir(join(teamDir, "leader"), { recursive: true });
+    await mkdir(join(teamDir, "intents", "pending"), { recursive: true });
+    await mkdir(join(teamDir, "intents", "processed"), { recursive: true });
 
     // Per-teammate directories
     for (const role of roles) {
@@ -604,6 +612,31 @@ export class TeamStore {
     await writeJson(join(dir, "process.json"), process);
   }
 
+  /**
+   * Preserve the current `process.json` for a role under
+   * `teammates/{role}/history/process-{taskId}.json` before a new task
+   * overwrites it. A single role slot is reused across tasks (stall detection
+   * relies on that), so without archiving the previous task's final state is
+   * silently clobbered the moment the same role starts its next task.
+   *
+   * No-op when the file doesn't exist or refers to the same task already.
+   */
+  async archiveTeammateProcess(
+    teamId: string,
+    role: string,
+    newTaskId: string,
+  ): Promise<void> {
+    const existing = await this.loadTeammateProcess(teamId, role);
+    if (!existing) return;
+    if (existing.taskId === newTaskId) return;
+    const historyDir = join(this.getTeammateDir(teamId, role), "history");
+    await mkdir(historyDir, { recursive: true });
+    await writeJson(
+      join(historyDir, `process-${existing.taskId}.json`),
+      existing,
+    );
+  }
+
   /** Load teammate process state. Returns null if not found. */
   async loadTeammateProcess(
     teamId: string,
@@ -637,6 +670,19 @@ export class TeamStore {
     await writeFile(join(dir, filename), content, "utf8");
   }
 
+  /** Save teammate debug data to `teammates/{role}/debug/{filename}`. */
+  async saveTeammateDebugArtifact(
+    teamId: string,
+    role: string,
+    filename: string,
+    content: string,
+  ): Promise<string> {
+    const dir = join(this.getTeammateDir(teamId, role), "debug");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, filename), content, "utf8");
+    return `teammates/${role}/debug/${filename}`;
+  }
+
   // -------------------------------------------------------------------------
   // Leader process state
   // -------------------------------------------------------------------------
@@ -656,6 +702,103 @@ export class TeamStore {
     return readJson<LeaderProcess>(
       join(this.getTeamDir(teamId), "leader", "process.json"),
     );
+  }
+
+  /** Save leader debug data to `leader/debug/{filename}`. */
+  async saveLeaderDebugArtifact(
+    teamId: string,
+    filename: string,
+    content: string,
+  ): Promise<string> {
+    const dir = join(this.getTeamDir(teamId), "leader", "debug");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, filename), content, "utf8");
+    return `leader/debug/${filename}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Intent queue (subprocess → main-session handoff)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Atomically write a pending intent file. Creates `intents/pending` on
+   * demand so subprocesses running against freshly-created teams do not
+   * need to pre-provision the tree.
+   */
+  async writeIntent(teamId: string, intent: TeamIntent): Promise<void> {
+    const pendingDir = join(this.getIntentsDir(teamId), "pending");
+    await mkdir(pendingDir, { recursive: true });
+    const finalPath = join(pendingDir, `${intent.id}.json`);
+    const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(intent, null, 2), "utf8");
+      await rename(tmpPath, finalPath);
+    } catch (err) {
+      try {
+        await unlink(tmpPath);
+      } catch {
+        /* ignore stale .tmp */
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * List pending intents for a team, sorted by `createdAt` ascending.
+   * Malformed files are skipped rather than throwing so a single bad file
+   * cannot wedge the drain cycle.
+   */
+  async listPendingIntents(teamId: string): Promise<TeamIntent[]> {
+    const pendingDir = join(this.getIntentsDir(teamId), "pending");
+    let entries: string[];
+    try {
+      entries = await readdir(pendingDir);
+    } catch {
+      return [];
+    }
+
+    const intents: TeamIntent[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const filePath = join(pendingDir, entry);
+      try {
+        const raw = await readFile(filePath, "utf8");
+        const parsed = JSON.parse(raw) as TeamIntent;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.id === "string" &&
+          typeof parsed.createdAt === "string" &&
+          typeof parsed.kind === "string"
+        ) {
+          intents.push(parsed);
+        }
+      } catch {
+        // Skip malformed/partial files; the caller logs and moves on.
+      }
+    }
+
+    intents.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return intents;
+  }
+
+  /**
+   * Move `pending/<intentId>.json` to `processed/<intentId>.json`.
+   * Idempotent: a missing pending file is swallowed so the caller can mark
+   * an intent processed more than once without error.
+   */
+  async markIntentProcessed(teamId: string, intentId: string): Promise<void> {
+    const intentsDir = this.getIntentsDir(teamId);
+    const from = join(intentsDir, "pending", `${intentId}.json`);
+    const to = join(intentsDir, "processed", `${intentId}.json`);
+    await mkdir(join(intentsDir, "processed"), { recursive: true });
+    try {
+      await rename(from, to);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT") return;
+      throw err;
+    }
   }
 }
 
