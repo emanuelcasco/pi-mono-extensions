@@ -1,5 +1,32 @@
 # pi-mono-team-mode
 
+## 1.7.1
+
+### Patch Changes
+
+### Fixed: team-mode
+
+- Widget no longer mislabels blocked or approval-pending teams as "running smoothly" — blockers and pending approvals are now detected via team summaries.
+- Preserve in-flight work on re-emitted `session_start` events instead of tearing the runtime down and SIGTERM-ing live teammates.
+- Auto-relaunch leaders for `running` teams after a session reset; surface failures as both a team signal and a UI notification.
+- `createTeam` now defaults `repoRoots` to `[process.cwd()]` when the caller passes an empty array.
+- Archive `process.json` into `history/` before a new task reuses the same role slot, so the prior task's final state is no longer silently clobbered.
+
+### Enhanced: team-mode
+
+- Durable intent queue for subprocess handoff: `team_spawn_teammate` calls made from a teammate subprocess are written to disk and executed by the main session's `LeaderRuntime` instead of spawning orphaned grand-children.
+- New tool `team_task_create_batch` lets the leader emit the full initial task DAG in one call, removing per-task LLM round-trips during bootstrap.
+- `team_create` / `launchLeader` accept an `awaitBootstrap` option so the user sees the task graph before the tool returns; leader launch retries up to 3 times on transient failures.
+- Persist per-turn debug artifacts (prompt, invocation, stderr, raw event stream) for both leader and teammate subprocesses, exposed via `TeammateSummary.debugArtifacts`.
+- Track `exitCode`, `exitSignal`, `terminationReason`, `stderrTail`, `toolExecutions`, `model` and `modelProvider` on every `TeammateProcess` record.
+- Provider detection now consults pi's `settings.json` and `auth.json` in addition to env vars; default model IDs aligned with the provider/model scheme.
+- `collectPiOutput` supports `AbortSignal` cancellation.
+
+### Tests
+
+- New `intent-queue` and `model-config` suites; expanded coverage across `leader-runtime`, `team-manager`, `team-query-tool` and `formatters`.
+
+
 ## 1.7.0
 
 ### Minor Changes
@@ -117,7 +144,7 @@ Replaced the `grep` extension with a new security-focused `sentinel` extension f
 
   #### `multi-edit`
 
-  - **Broader unicode normalization**: `findActualString` now handles the full range of Unicode single-quote variants (`\u2018\u2019\u201A\u201B`) and double-quote variants (`\u201C\u201D\u201E\u201F`) when falling back from exact match — fixes more curly-quote mismatch cases
+  - **Broader unicode normalization**: `findActualString` now handles the full range of Unicode single-quote variants (`‘’‚‛`) and double-quote variants (`“”„‟`) when falling back from exact match — fixes more curly-quote mismatch cases
   - **Parallel write-access preflight**: `checkWriteAccess` calls are now issued concurrently via `Promise.all` instead of sequentially — faster batch preflight on large edit sets
   - **Removed redundant `editOrder` array**: `Map` insertion order is now relied upon directly, simplifying the grouping loop
 
