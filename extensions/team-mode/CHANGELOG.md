@@ -1,5 +1,14 @@
 # pi-mono-team-mode
 
+## 1.7.2
+
+### Patch Changes
+
+### Fixed: ask-user-question
+
+- Remove unused `StringEnum` import from `@mariozechner/pi-ai`.
+
+
 ## 1.7.1
 
 ### Patch Changes

@@ -21,7 +21,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +73,9 @@ const OptionSchema = Type.Object({
 
 const QuestionSchema = Type.Object({
 	id: Type.String({ description: "Unique identifier for this question" }),
-	type: StringEnum(["radio", "checkbox", "text"] as const, {
+	type: Type.Unsafe<"radio" | "checkbox" | "text">({
+		type: "string",
+		enum: ["radio", "checkbox", "text"],
 		description: "Question type: radio (single-select), checkbox (multi-select), or text (free input)",
 	}),
 	prompt: Type.String({ description: "The question text to display" }),
@@ -110,6 +111,24 @@ function normalize(questions: Question[]): NormalizedQuestion[] {
 		allowOther: q.type === "text" ? false : q.allowOther !== false,
 		required: q.required !== false,
 	}));
+}
+
+function wrapText(text: string, maxWidth: number): string[] {
+	const words = text.split(" ");
+	const lines: string[] = [];
+	let current = "";
+	for (const word of words) {
+		if (!current) {
+			current = word;
+		} else if (current.length + 1 + word.length <= maxWidth) {
+			current += ` ${word}`;
+		} else {
+			lines.push(current);
+			current = word;
+		}
+	}
+	if (current) lines.push(current);
+	return lines.length ? lines : [""];
 }
 
 function errorResult(msg: string): {
@@ -157,7 +176,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 			"Always include an 'Other' escape hatch (allowOther: true) unless the options are exhaustive.",
 			"Group related questions in a single call rather than making multiple separate calls.",
 		],
-		parameters: AskUserQuestionParams,
+		parameters: AskUserQuestionParams as any,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!ctx.hasUI) {
@@ -633,7 +652,11 @@ Use this tool when you need user input to proceed — for clarifying requirement
 								? theme.fg("dim", "[multi-select]")
 								: theme.fg("dim", "[text]");
 
-					add(` ${theme.fg("text", theme.bold(q.prompt))} ${typeTag}`);
+					const promptLines = wrapText(q.prompt, maxW - 2);
+					for (let i = 0; i < promptLines.length; i++) {
+						const isLast = i === promptLines.length - 1;
+						add(` ${theme.fg("text", theme.bold(promptLines[i]))}${isLast ? ` ${typeTag}` : ""}`);
+					}
 					if (q.required) {
 						add(` ${theme.fg("warning", "*required")}`);
 					}
