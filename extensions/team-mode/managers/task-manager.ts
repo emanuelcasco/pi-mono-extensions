@@ -1,317 +1,238 @@
-/**
- * Pi Teams — TaskManager
- *
- * All task lifecycle operations for a given team: creation, updates,
- * dependency resolution, filtering, and board aggregation.
- *
- * Every method operates on the data stored in `tasks.json` via `TeamStore`.
- * No other files are read or written here — signal emission is the caller's
- * responsibility if side-effects are needed.
- */
+// Pi Team-Mode — Task Manager
+//
+// TODO-list CRUD matching Claude Code's TaskCreate/TaskUpdate/TaskList/TaskGet
+// semantics. Coordinator assigns via TaskUpdate({ owner }); there is no
+// auto-claim. update() takes a filesystem lock + CAS version counter so
+// concurrent edits from teammate subprocesses don't clobber each other.
 
-import type { TaskBoard, TaskFilter, TaskRecord, TaskStatus } from "../core/types.js";
-import type { TeamStore } from "../core/store.js";
+import { spawn } from "node:child_process";
+import { mkdir, open, unlink } from "node:fs/promises";
+import * as path from "node:path";
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+import {
+	generateTaskId,
+	type TaskRecord,
+	type TaskStatus,
+	type TaskStore,
+} from "../core/tasks.js";
 
-/**
- * Determine the next `task-NNN` ID for a team by scanning existing task IDs
- * and incrementing the highest sequence number found.
- *
- * Falls back to `task-001` when the task list is empty.
- */
-function nextTaskId(tasks: TaskRecord[]): string {
-	if (tasks.length === 0) return "task-001";
+const HOOK_TIMEOUT_MS = 120_000;
+const LOCK_RETRY_DELAY_MS = 20;
+const LOCK_MAX_ATTEMPTS = 100;
+const LOCK_STALE_MS = 10_000;
 
-	const maxNum = tasks.reduce((max, task) => {
-		const match = task.id.match(/^task-(\d+)$/);
-		const num = match ? parseInt(match[1], 10) : 0;
-		return Math.max(max, num);
-	}, 0);
+export type TaskCreateOpts = {
+	subject: string;
+	description?: string;
+	activeForm?: string;
+	metadata?: Record<string, unknown>;
+	teamId?: string;
+};
 
-	return `task-${String(maxNum + 1).padStart(3, "0")}`;
-}
+export type TaskUpdateOpts = {
+	expectedVersion?: number;
+	status?: TaskStatus;
+	owner?: string | null;
+	subject?: string;
+	description?: string;
+	activeForm?: string;
+	result?: string;
+	addBlocks?: string[];
+	addBlockedBy?: string[];
+	metadata?: Record<string, unknown>;
+};
 
-/**
- * Apply a `TaskFilter` to a list of task records.
- * All non-undefined filter criteria are ANDed together.
- */
-function applyFilter(tasks: TaskRecord[], filter: TaskFilter): TaskRecord[] {
-	return tasks.filter((task) => {
-		if (filter.status !== undefined) {
-			const statuses = Array.isArray(filter.status)
-				? filter.status
-				: [filter.status];
-			if (!statuses.includes(task.status)) return false;
-		}
-		if (filter.owner !== undefined && task.owner !== filter.owner) return false;
-		if (filter.priority !== undefined && task.priority !== filter.priority)
-			return false;
-		if (filter.riskLevel !== undefined && task.riskLevel !== filter.riskLevel)
-			return false;
-		if (
-			filter.approvalRequired !== undefined &&
-			task.approvalRequired !== filter.approvalRequired
-		)
-			return false;
-		return true;
-	});
-}
-
-// ---------------------------------------------------------------------------
-// TaskManager
-// ---------------------------------------------------------------------------
+export type TaskManagerDeps = {
+	store: TaskStore;
+	getParentSessionId: () => string;
+	getTaskCompletedHook?: () => Promise<string | undefined> | string | undefined;
+	getCwd?: () => string;
+};
 
 export class TaskManager {
-	/**
-	 * Per-team write-serialization queues.
-	 *
-	 * Every mutating operation (createTask, updateTask, resolveDependencies)
-	 * chains onto this promise so that concurrent callers execute their
-	 * read-modify-write cycles one at a time per team.  Without this, two
-	 * concurrent `updateTask` calls could both read the same snapshot, apply
-	 * their own patch, and the second write would silently overwrite the
-	 * first's changes (lost-update anomaly).
-	 */
-	private readonly writeQueues = new Map<string, Promise<unknown>>();
+	constructor(private readonly deps: TaskManagerDeps) {}
 
-	constructor(private store: TeamStore) {}
-
-	/**
-	 * Enqueue a mutating operation for a team so that it runs serially
-	 * with respect to all other mutations on the same team.
-	 */
-	private enqueue<T>(teamId: string, fn: () => Promise<T>): Promise<T> {
-		const prev = this.writeQueues.get(teamId) ?? Promise.resolve();
-		const next = prev.then(fn, fn); // run even if the previous op failed
-		this.writeQueues.set(teamId, next);
-		// Clean up the queue entry once this operation settles so the Map
-		// does not grow without bound over the lifetime of the process.
-		void next.then(
-			() => { if (this.writeQueues.get(teamId) === next) this.writeQueues.delete(teamId); },
-			() => { if (this.writeQueues.get(teamId) === next) this.writeQueues.delete(teamId); },
-		);
-		return next;
+	async create(opts: TaskCreateOpts): Promise<TaskRecord> {
+		const parentSessionId = this.deps.getParentSessionId();
+		const now = new Date().toISOString();
+		const record: TaskRecord = {
+			id: generateTaskId(opts.subject),
+			subject: opts.subject,
+			description: opts.description,
+			activeForm: opts.activeForm,
+			status: "pending",
+			owner: null,
+			blockedBy: [],
+			blocks: [],
+			metadata: opts.metadata,
+			parentSessionId,
+			teamId: opts.teamId,
+			createdAt: now,
+			updatedAt: now,
+			version: 1,
+		};
+		await this.deps.store.save(record);
+		return record;
 	}
 
-	// -------------------------------------------------------------------------
-	// Core CRUD
-	// -------------------------------------------------------------------------
+	async update(taskId: string, opts: TaskUpdateOpts): Promise<TaskRecord> {
+		const parentSessionId = this.deps.getParentSessionId();
+		return withTaskLock(this.deps.store.dir(parentSessionId), taskId, async () => {
+			const current = await this.deps.store.load(parentSessionId, taskId);
+			if (!current) throw new Error(`unknown task: ${taskId}`);
+			if (opts.expectedVersion !== undefined && current.version !== opts.expectedVersion) {
+				throw new VersionConflictError(current.version, opts.expectedVersion);
+			}
 
-	/**
-	 * Create a new task for a team.
-	 *
-	 * Generates a `task-NNN` ID, applies sensible defaults for any omitted
-	 * fields, then appends the task to `tasks.json`.
-	 */
-	async createTask(
-		teamId: string,
-		taskData: Omit<TaskRecord, "id" | "teamId" | "createdAt" | "updatedAt">,
-	): Promise<TaskRecord> {
-		return this.enqueue(teamId, async () => {
-			const tasks = await this.store.loadTasks(teamId);
-			const now = new Date().toISOString();
-
-			// Build with explicit nullish-coalescing so there are no duplicate
-			// literal keys in the object literal (avoids TS2783).
-			const task: TaskRecord = {
-				// Fields with defaults
-				status: taskData.status ?? "todo",
-				priority: taskData.priority ?? "medium",
-				riskLevel: taskData.riskLevel ?? "low",
-				approvalRequired: taskData.approvalRequired ?? false,
-				dependsOn: taskData.dependsOn ?? [],
-				artifacts: taskData.artifacts ?? [],
-				blockers: taskData.blockers ?? [],
-				// Pass-through fields from caller
-				title: taskData.title,
-				description: taskData.description,
-				owner: taskData.owner,
-				branch: taskData.branch,
-				worktree: taskData.worktree,
-				// System-managed fields — always overridden here
-				id: nextTaskId(tasks),
-				teamId,
-				createdAt: now,
-				updatedAt: now,
-			};
-
-			await this.store.saveTasks(teamId, [...tasks, task]);
-			return task;
-		});
-	}
-
-	/**
-	 * Apply a partial update to a task.
-	 *
-	 * Immutable fields (`id`, `teamId`, `createdAt`) are always preserved.
-	 * `updatedAt` is refreshed automatically.
-	 *
-	 * @throws When the task ID is not found in the team's task list.
-	 */
-	async updateTask(
-		teamId: string,
-		taskId: string,
-		patch: Partial<TaskRecord>,
-	): Promise<TaskRecord> {
-		return this.enqueue(teamId, async () => {
-			const tasks = await this.store.loadTasks(teamId);
-			const index = tasks.findIndex((t) => t.id === taskId);
-
-			if (index === -1) throw new Error(`Task not found: ${taskId}`);
-
-			const existing = tasks[index];
-			const now = new Date().toISOString();
+			const nextStatus = opts.status ?? current.status;
+			const transitioningToCompleted =
+				current.status !== "completed" && nextStatus === "completed";
 
 			const updated: TaskRecord = {
-				...existing,
-				...patch,
-				// Protect immutable fields
-				id: existing.id,
-				teamId: existing.teamId,
-				createdAt: existing.createdAt,
-				updatedAt: now,
+				...current,
+				subject: opts.subject ?? current.subject,
+				description: opts.description ?? current.description,
+				activeForm: opts.activeForm ?? current.activeForm,
+				owner: opts.owner === undefined ? current.owner : opts.owner,
+				status: nextStatus,
+				result: opts.result ?? current.result,
+				blockedBy: opts.addBlockedBy
+					? Array.from(new Set([...current.blockedBy, ...opts.addBlockedBy]))
+					: current.blockedBy,
+				blocks: opts.addBlocks
+					? Array.from(new Set([...current.blocks, ...opts.addBlocks]))
+					: current.blocks,
+				metadata: opts.metadata
+					? { ...(current.metadata ?? {}), ...opts.metadata }
+					: current.metadata,
+				updatedAt: new Date().toISOString(),
+				version: current.version + 1,
 			};
 
-			// Build a new array — never mutate `tasks` in place, as the store
-			// cache may hand out the same array to concurrent readers.
-			const next = tasks.slice();
-			next[index] = updated;
-			await this.store.saveTasks(teamId, next);
+			if (transitioningToCompleted) {
+				const hook = await this.deps.getTaskCompletedHook?.();
+				if (hook && hook.trim()) {
+					const hookResult = await this.runHook(hook, updated);
+					updated.hookOutput = hookResult.output;
+					if (hookResult.exitCode !== 0) {
+						updated.status = "failed";
+						updated.result = `${updated.result ? updated.result + "\n\n" : ""}[TaskCompleted hook failed, exit ${hookResult.exitCode}] ${hook}`;
+					}
+				}
+			}
+
+			await this.deps.store.save(updated);
 			return updated;
 		});
 	}
 
-	// -------------------------------------------------------------------------
-	// Queries
-	// -------------------------------------------------------------------------
-
-	/**
-	 * Return all tasks for a team, optionally filtered.
-	 *
-	 * When no filter is provided the full list is returned as-is.
-	 */
-	async getTasks(teamId: string, filter?: TaskFilter): Promise<TaskRecord[]> {
-		const tasks = await this.store.loadTasks(teamId);
-		return filter ? applyFilter(tasks, filter) : tasks;
+	async get(taskId: string): Promise<TaskRecord | null> {
+		return this.deps.store.load(this.deps.getParentSessionId(), taskId);
 	}
 
-	/**
-	 * Return a single task by ID.
-	 *
-	 * Returns `null` when no task with that ID exists in the team.
-	 */
-	async getTask(teamId: string, taskId: string): Promise<TaskRecord | null> {
-		const tasks = await this.store.loadTasks(teamId);
-		return tasks.find((t) => t.id === taskId) ?? null;
+	async list(filter?: {
+		status?: TaskStatus;
+		owner?: string;
+		teamId?: string;
+	}): Promise<TaskRecord[]> {
+		const all = await this.deps.store.list(this.deps.getParentSessionId());
+		let result = all;
+		if (filter?.status) result = result.filter((t) => t.status === filter.status);
+		if (filter?.owner) result = result.filter((t) => t.owner === filter.owner);
+		if (filter?.teamId) result = result.filter((t) => t.teamId === filter.teamId);
+		return result;
 	}
 
-	/**
-	 * Return a board view: all tasks plus a summary of counts by status.
-	 */
-	async getTaskBoard(teamId: string): Promise<TaskBoard> {
-		const tasks = await this.store.loadTasks(teamId);
-
-		return {
-			teamId,
-			tasks,
-			summary: {
-				done: tasks.filter((t) => t.status === "done").length,
-				inProgress: tasks.filter((t) => t.status === "in_progress").length,
-				blocked: tasks.filter((t) => t.status === "blocked").length,
-				awaitingApproval: tasks.filter(
-					(t) => t.status === "awaiting_approval",
-				).length,
-				total: tasks.length,
-			},
-		};
+	async clear(): Promise<void> {
+		await this.deps.store.clear(this.deps.getParentSessionId());
 	}
 
-	/**
-	 * Return tasks whose status is `ready` (no unresolved dependencies and
-	 * not yet assigned to a teammate).
-	 */
-	async getReadyTasks(teamId: string): Promise<TaskRecord[]> {
-		return this.getTasks(teamId, { status: "ready" });
-	}
-
-	/**
-	 * Return tasks that are `blocked`, filtered to those that have at least
-	 * one recorded blocker reason.
-	 */
-	async getBlockedTasks(teamId: string): Promise<TaskRecord[]> {
-		const tasks = await this.store.loadTasks(teamId);
-		return tasks.filter(
-			(t) => t.status === "blocked" && t.blockers.length > 0,
-		);
-	}
-
-	/**
-	 * Return all non-cancelled tasks owned by a specific teammate role.
-	 */
-	async getTasksForOwner(teamId: string, owner: string): Promise<TaskRecord[]> {
-		const tasks = await this.store.loadTasks(teamId);
-		return tasks.filter(
-			(t) => t.owner === owner && t.status !== "cancelled",
-		);
-	}
-
-	// -------------------------------------------------------------------------
-	// Lifecycle helpers
-	// -------------------------------------------------------------------------
-
-	/**
-	 * Set the `owner` field on a task, leaving all other fields unchanged.
-	 */
-	async assignTask(
-		teamId: string,
-		taskId: string,
-		owner: string,
-	): Promise<TaskRecord> {
-		return this.updateTask(teamId, taskId, { owner });
-	}
-
-	/**
-	 * After one or more tasks reach `done`, scan all pending tasks and promote
-	 * any whose entire `dependsOn` list is now satisfied to `ready`.
-	 *
-	 * Only tasks with status `todo` or `blocked` are eligible for promotion.
-	 * Tasks without dependencies are not touched (they should already be `ready`
-	 * or `in_progress`).
-	 *
-	 * @returns The list of tasks that were promoted (possibly empty).
-	 */
-	async resolveDependencies(teamId: string): Promise<TaskRecord[]> {
-		return this.enqueue(teamId, async () => {
-			const tasks = await this.store.loadTasks(teamId);
-			const doneIds = new Set(
-				tasks.filter((t) => t.status === "done").map((t) => t.id),
-			);
-
-			const now = new Date().toISOString();
-			const promoted: TaskRecord[] = [];
-
-			for (const task of tasks) {
-				// Only promote tasks that are waiting on something
-				if (task.status !== "todo" && task.status !== "blocked") continue;
-				// Tasks with no declared dependencies are not managed here
-				if (task.dependsOn.length === 0) continue;
-				// Promote only when every listed dependency is complete
-				if (task.dependsOn.every((depId) => doneIds.has(depId))) {
-					promoted.push({ ...task, status: "ready" as TaskStatus, updatedAt: now });
-				}
-			}
-
-			if (promoted.length > 0) {
-				// Merge promoted records back into the full task list
-				const promotedById = new Map(promoted.map((t) => [t.id, t]));
-				const merged = tasks.map((t) => promotedById.get(t.id) ?? t);
-				await this.store.saveTasks(teamId, merged);
-			}
-
-			return promoted;
+	private async runHook(
+		hook: string,
+		task: TaskRecord,
+	): Promise<{ exitCode: number; output: string }> {
+		const cwd = this.deps.getCwd?.() ?? process.cwd();
+		return new Promise((resolve) => {
+			const proc = spawn("sh", ["-c", hook], {
+				cwd,
+				env: {
+					...process.env,
+					PI_TEAM_MATE_TASK_ID: task.id,
+					PI_TEAM_MATE_TASK_SUBJECT: task.subject,
+					PI_TEAM_MATE_TASK_OWNER: task.owner ?? "",
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let output = "";
+			const append = (chunk: Buffer) => {
+				if (output.length < 8192) output += chunk.toString("utf8");
+			};
+			proc.stdout.on("data", append);
+			proc.stderr.on("data", append);
+			const timer = setTimeout(() => {
+				proc.kill("SIGTERM");
+				output += `\n[hook timed out after ${HOOK_TIMEOUT_MS}ms]`;
+			}, HOOK_TIMEOUT_MS);
+			timer.unref();
+			proc.on("close", (code) => {
+				clearTimeout(timer);
+				resolve({ exitCode: code ?? 1, output: output.trim() });
+			});
+			proc.on("error", (err) => {
+				clearTimeout(timer);
+				resolve({ exitCode: 1, output: `[hook spawn error] ${err.message}` });
+			});
 		});
 	}
+}
+
+export class VersionConflictError extends Error {
+	constructor(public readonly actual: number, public readonly expected: number) {
+		super(`version conflict: expected ${expected}, got ${actual}`);
+		this.name = "VersionConflictError";
+	}
+}
+
+async function withTaskLock<T>(
+	taskDir: string,
+	taskId: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	await mkdir(taskDir, { recursive: true });
+	const lockPath = path.join(taskDir, `${taskId}.lock`);
+
+	for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+		try {
+			const handle = await open(lockPath, "wx");
+			await handle.writeFile(String(process.pid));
+			await handle.close();
+			try {
+				return await fn();
+			} finally {
+				await unlink(lockPath).catch(() => {});
+			}
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			if (await isStaleLock(lockPath)) {
+				await unlink(lockPath).catch(() => {});
+				continue;
+			}
+			await delay(LOCK_RETRY_DELAY_MS + Math.random() * LOCK_RETRY_DELAY_MS);
+		}
+	}
+	throw new Error(`could not acquire task lock after ${LOCK_MAX_ATTEMPTS} attempts: ${lockPath}`);
+}
+
+async function isStaleLock(lockPath: string): Promise<boolean> {
+	try {
+		const { stat } = await import("node:fs/promises");
+		const st = await stat(lockPath);
+		return Date.now() - st.mtimeMs > LOCK_STALE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((r) => setTimeout(r, ms));
 }

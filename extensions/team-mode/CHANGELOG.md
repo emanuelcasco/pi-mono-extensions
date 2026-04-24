@@ -1,5 +1,38 @@
 # pi-mono-team-mode
 
+## 2.0.0
+
+### Major Changes — Complete Rewrite
+
+### Enhanced: team-mode
+
+- **Complete rewrite**: replaced the old team-orchestration model (leader-driven runtime with state machines, approval flows, signal manager, mailbox manager, intent queue) with a **flat peer-agent model** mirroring Claude Code's team-mode semantics.
+- **New `agent` tool** — spawn an isolated pi subprocess worker. Returns immediately; completion arrives as a `<task-notification>` user-role message that wakes the coordinator event-driven (no polling, no leader subprocess).
+- **New `send_message` tool** — continue an existing worker with full prior context (reuses `pi --session`). Pass `to: "*"` for swarm-wide broadcast.
+- **New `task_stop` / `task_output` tools** — stop a running worker or read its current/last output.
+- **New `task_create / task_update / task_list / task_get` tools** — shared TODO list with CAS version counters and file-system locking for safe concurrent edits across teammate subprocesses.
+- **New `team_create / team_delete` tools** — lightweight namespaces grouping workers with shared isolation defaults.
+- **Coordinator mode** (`PI_TEAM_MATE_COORDINATOR=1`) — injects a coordinator system prompt via `before_agent_start` hook, teaching the parent LLM the delegation discipline (synthesize — don't delegate understanding).
+- **Event-driven worker wake** — worker completion pushes a user-role `<task-notification>` with `triggerTurn: true`, so the coordinator reacts immediately instead of polling.
+- **Worktree isolation** — `isolation: "worktree"` sandboxes edits in git worktrees; clean worktrees auto-removed, dirty ones retained with path/branch surfaced in tool results.
+- **Teammate specs** — drop `.pi/teammates/<role>.md` or `.claude/teammates/<role>.md` for role-based configuration (model tier, allowed tools, system prompt).
+- **Model config** — `model-config.json` with provider catalogs (anthropic/openai-codex), role→tier mappings, tier resolution, and optional `taskCompletedHook` for quality gates.
+- **Slash commands** — `/teammate list|status|stop`, `/team list|create|delete`, `/tasks list|show|clear`.
+- **Keyboard shortcut** — `Ctrl+Shift+T` shows the shared task list.
+- **Live status widget** — shows running/completed/failed/stopped teammates in the TUI status line.
+- **Persistent storage** — teammates, teams, tasks, and runtime indices stored under `~/.pi/agent/extensions/team-mode/` with atomic writes and in-memory caching.
+- **Comprehensive test suite** — 13 test files covering stores, managers, formatters, prompts, specs, model config, worktree, and tasks.
+
+### Removed
+
+- Removed `LeaderRuntime`, `ApprovalManager`, `MailboxManager`, `SignalManager`, `IntentQueue`, `WatchMode` — all replaced by the flat peer-agent model.
+- Removed `LeaderPhase` enum and `currentPhase` from team records.
+- Removed auto-spawn loops and deterministic task graph bootstrapping — the coordinator (LLM or human) drives all task creation and assignment via tool calls.
+
+### Documentation
+
+- Complete README rewrite documenting the new execution model, tool parity with Claude Code, and architecture.
+
 ## 1.7.2
 
 ### Patch Changes

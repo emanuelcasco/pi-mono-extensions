@@ -1,7 +1,7 @@
 {
   "name": "pi-mono-team-mode",
-  "version": "1.7.2",
-  "description": "Pi extension for orchestrating background multi-agent teams",
+  "version": "2.0.0",
+  "description": "Pi extension for flat peer-agent orchestration — named, addressable teammates with resumable context (mirrors Claude Code's team-mate model)",
   "type": "module",
   "keywords": [
     "pi-package",

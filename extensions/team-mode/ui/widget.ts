@@ -1,186 +1,54 @@
-/**
- * Pi Teams — TUI Widget
- *
- * Manages the compact single-line team status widget shown in the editor area.
- * Delegates to `ctx.ui.setWidget("team-mode", ...)` using the string-array form
- * (same pattern used by the loop extension).
- *
- * Display rules:
- *   - No teams → widget hidden (undefined)
- *   - 1 team   → "Team: {name} — {status} ({done}/{total} tasks) ⚠ {n} blocker(s)"
- *   - N teams  → "Teams: {n} active · {n} needs attention · {n} running smoothly"
- *
- * Theme color conventions:
- *   - Team name / label prefix → accent
- *   - Status (normal)          → muted
- *   - Needs attention / blocker→ warning
- *   - Done count               → success
- *   - Separators / counts      → dim
- */
+// Pi Team-Mode — Live Status Widget
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { TeamRecord, TeamSummary } from "../core/types.js";
 
-const WIDGET_ID = "team-mode";
+import type { TeammateRecord } from "../core/types.js";
+import { STATUS_ICONS } from "./formatters.js";
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+export const WIDGET_ID = "team-mode-status";
 
-/** True when the team has blockers, pending approvals, or has failed. */
-function needsAttention(team: TeamRecord, summary?: TeamSummary): boolean {
-	if (team.status === "failed") return true;
-	if (summary) {
-		return summary.blockers.length > 0 || summary.approvalsPending.length > 0;
-	}
-	// Without a summary, fall back to the team record status
-	return team.status === "paused";
-}
+const MAX_INLINE = 6;
 
-/**
- * Build a single-line string for one team.
- *
- * Example:  Team: billing-settings — running (4/7 tasks) ⚠ 1 blocker
- */
-function buildSingleTeamLine(
-	team: TeamRecord,
-	summary: TeamSummary | undefined,
-	theme: ExtensionContext["ui"]["theme"],
-): string {
-	// Prefix
-	const prefix = theme.fg("accent", "Team:");
+let lastRenderedLine: string | undefined;
+let lastRenderedHidden = false;
 
-	// Name + ID (show ID so users can reference the team in commands)
-	const name = theme.fg("accent", team.name);
-	const id = theme.fg("dim", `(${team.id})`);
-
-	// Status
-	const attention = needsAttention(team, summary);
-	const statusColor = attention ? "warning" : "muted";
-	const status = theme.fg(statusColor, team.status);
-
-	// Progress
-	let progressPart = "";
-	if (summary) {
-		const { done, total } = summary.progress;
-		progressPart =
-			" (" +
-			theme.fg("success", String(done)) +
-			theme.fg("dim", `/${total} tasks`) +
-			")";
-	}
-
-	// Blocker / attention flag
-	let attentionPart = "";
-	if (summary) {
-		const blockerCount = summary.blockers.length;
-		const approvalCount = summary.approvalsPending.length;
-		if (blockerCount > 0) {
-			attentionPart =
-				" " +
-				theme.fg("warning", `⚠ ${blockerCount} blocker${blockerCount !== 1 ? "s" : ""}`);
-		} else if (approvalCount > 0) {
-			attentionPart =
-				" " +
-				theme.fg("warning", `⏳ ${approvalCount} approval${approvalCount !== 1 ? "s" : ""} pending`);
-		}
-	} else if (team.status === "failed") {
-		attentionPart = " " + theme.fg("warning", "⚠ failed");
-	}
-
-	return `${prefix} ${name} ${id} — ${status}${progressPart}${attentionPart}`;
-}
-
-/**
- * Build a single-line string for multiple teams.
- *
- * Example:  Teams: 3 active · 1 needs attention · 2 running smoothly
- */
-function buildMultiTeamLine(
-	teams: TeamRecord[],
-	summaries: Map<string, TeamSummary> | undefined,
-	theme: ExtensionContext["ui"]["theme"],
-): string {
-	const activeTeams = teams.filter(
-		(t) => t.status === "running" || t.status === "initializing",
-	);
-	const attentionTeams = activeTeams.filter((t) =>
-		needsAttention(t, summaries?.get(t.id)),
-	);
-	const smoothTeams = activeTeams.filter(
-		(t) => !needsAttention(t, summaries?.get(t.id)),
-	);
-
-	// Prefix
-	const prefix = theme.fg("accent", "Teams:");
-	const sep = theme.fg("dim", " · ");
-
-	const parts: string[] = [];
-
-	parts.push(theme.fg("dim", `${activeTeams.length} active`));
-
-	if (attentionTeams.length > 0) {
-		parts.push(
-			theme.fg("warning", `${attentionTeams.length} needs attention`),
-		);
-	}
-
-	if (smoothTeams.length > 0) {
-		parts.push(
-			theme.fg("muted", `${smoothTeams.length} running smoothly`),
-		);
-	}
-
-	return `${prefix} ${parts.join(sep)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Update the team-mode widget with the current team state.
- *
- * - When `teams` is empty the widget is removed.
- * - When there is exactly one team a detailed single-team line is shown.
- * - When there are multiple teams a summary count line is shown.
- *
- * `summaries` is optional; richer information (progress, blockers) is only
- * shown when a `TeamSummary` is available for the team.
- */
-export function updateTeamWidget(
+export function updateTeamMateWidget(
 	ctx: ExtensionContext,
-	teams: TeamRecord[],
-	summaries?: Map<string, TeamSummary>,
+	teammates: TeammateRecord[],
 ): void {
-	if (!ctx.hasUI) return;
+	const active = teammates.filter((t) => t.status === "running");
+	const recent = teammates.filter((t) => t.status !== "running").slice(-3);
 
-	// No active teams → hide the widget
-	if (teams.length === 0) {
+	if (active.length === 0 && recent.length === 0) {
+		if (lastRenderedHidden) return;
 		ctx.ui.setWidget(WIDGET_ID, undefined);
+		lastRenderedHidden = true;
+		lastRenderedLine = undefined;
 		return;
 	}
 
-	const theme = ctx.ui.theme;
-	let line: string;
+	const summary = buildSummary(active.length, recent);
+	const chips = [...active, ...recent]
+		.slice(0, MAX_INLINE)
+		.map((t) => `${t.name} ${STATUS_ICONS[t.status] ?? "?"}`)
+		.join("  ");
+	const line = chips ? `${summary}  ·  ${chips}` : summary;
 
-	if (teams.length === 1) {
-		const team = teams[0]!;
-		line = buildSingleTeamLine(team, summaries?.get(team.id), theme);
-	} else {
-		line = buildMultiTeamLine(teams, summaries, theme);
-	}
-
+	if (line === lastRenderedLine && !lastRenderedHidden) return;
 	ctx.ui.setWidget(WIDGET_ID, [line]);
+	lastRenderedLine = line;
+	lastRenderedHidden = false;
 }
 
-/**
- * Remove the team-mode widget from the UI.
- *
- * Call this when all teams have been stopped or completed and no further
- * status needs to be shown.
- */
-export function clearTeamWidget(ctx: ExtensionContext): void {
-	if (!ctx.hasUI) return;
-	ctx.ui.setWidget(WIDGET_ID, undefined);
+function buildSummary(activeCount: number, recent: TeammateRecord[]): string {
+	const completed = recent.filter((t) => t.status === "completed").length;
+	const failed = recent.filter((t) => t.status === "failed").length;
+	const stopped = recent.filter((t) => t.status === "stopped").length;
+	const bits = [
+		activeCount > 0 ? `${activeCount} running` : "",
+		completed > 0 ? `${completed} completed` : "",
+		failed > 0 ? `${failed} failed` : "",
+		stopped > 0 ? `${stopped} stopped` : "",
+	].filter(Boolean);
+	return `team-mode: ${bits.join(", ") || "idle"}`;
 }

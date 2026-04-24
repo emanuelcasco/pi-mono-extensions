@@ -1,216 +1,116 @@
 /**
- * Pi Teams — Teammate Specs
+ * Pi Team-Mode — Teammate Spec Loader
  *
- * Teammate roles are resolved as **data**, not code. Each role has a
- * `TeammateSpec` that carries its system prompt and runtime flags
- * (worktree isolation, memory access). Specs come from three places, in
- * priority order:
- *
- *   1. Per-project `.claude/teammates/*.md` — frontmatter-based definitions
- *      checked into the repo. Discovered via `loadTeammateSpecs(cwd)`.
- *   2. Built-in specs — the seven roles that used to be hardcoded in
- *      `TEAMMATE_ROLE_PROMPTS`. Still exported for ecosystem compatibility.
- *   3. Generic fallback — an unknown role gets a minimal prompt so the team
- *      doesn't crash on an unrecognised name.
+ * Reads role specs from `.pi/teammates/<role>.md` or `.claude/teammates/<role>.md`
+ * (checked in that order). Frontmatter fields drive runtime behavior; the
+ * markdown body becomes the teammate's system prompt.
  */
 
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import * as path from "node:path";
 
-import { TEAMMATE_ROLE_PROMPTS } from "./types.js";
+import type { TeammateSpec } from "./types.js";
 
-/** Runtime description of a teammate role. */
-export interface TeammateSpec {
-  /** Role name (e.g. "backend"). Must be filesystem-safe. */
-  name: string;
-  /** Short human-readable description — surfaced in catalogs. */
-  description?: string;
-  /** System prompt injected into the teammate subprocess. */
-  systemPrompt: string;
-  /** When true, the teammate gets a dedicated git worktree for isolated writes. */
-  needsWorktree: boolean;
-  /** When true, `## Team Memory` guidance is appended to the prompt. */
-  hasMemory: boolean;
-  /** Optional per-role model tier override (takes precedence over the default). */
-  modelTier?: "cheap" | "mid" | "deep";
-  /** Absolute path to the source file, if the spec came from disk. */
-  sourcePath?: string;
+const SPEC_DIRS = [".pi/teammates", ".claude/teammates"] as const;
+
+/**
+ * Locate and parse a teammate spec by role name.
+ * Returns `null` if no matching spec file exists in either directory.
+ */
+export async function loadTeammateSpec(
+	cwd: string,
+	role: string,
+): Promise<TeammateSpec | null> {
+	for (const dir of SPEC_DIRS) {
+		const filePath = path.join(cwd, dir, `${role}.md`);
+		const spec = await tryRead(filePath, role);
+		if (spec) return spec;
+	}
+	return null;
+}
+
+/** List all available teammate specs in the current project. Exported for tests and future /teammate specs command. */
+export async function listTeammateSpecs(cwd: string): Promise<TeammateSpec[]> {
+	const specs: TeammateSpec[] = [];
+	const seen = new Set<string>();
+	for (const dir of SPEC_DIRS) {
+		const absDir = path.join(cwd, dir);
+		let entries: string[] = [];
+		try {
+			entries = await readdir(absDir);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
+		}
+		for (const entry of entries) {
+			if (!entry.endsWith(".md")) continue;
+			const role = entry.slice(0, -3);
+			if (seen.has(role)) continue;
+			const spec = await tryRead(path.join(absDir, entry), role);
+			if (spec) {
+				seen.add(role);
+				specs.push(spec);
+			}
+		}
+	}
+	return specs;
+}
+
+async function tryRead(filePath: string, role: string): Promise<TeammateSpec | null> {
+	let raw: string;
+	try {
+		raw = await readFile(filePath, "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
+	}
+	return parseSpec(raw, role, filePath);
 }
 
 /**
- * Built-in specs. Match the pre-file-based defaults so existing teams keep
- * working. New roles should prefer `.claude/teammates/*.md` files.
- */
-export const BUILT_IN_TEAMMATE_SPECS: Record<string, TeammateSpec> = {
-  researcher: {
-    name: "researcher",
-    description: "Investigates codebase, gathers information, explores constraints",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.researcher,
-    needsWorktree: false,
-    hasMemory: true,
-  },
-  planner: {
-    name: "planner",
-    description: "Creates detailed implementation plans from findings",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.planner,
-    needsWorktree: false,
-    hasMemory: true,
-  },
-  backend: {
-    name: "backend",
-    description: "Implements server-side code (APIs, services, database changes)",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.backend,
-    needsWorktree: true,
-    hasMemory: true,
-  },
-  frontend: {
-    name: "frontend",
-    description: "Implements user-facing code (components, pages, styles)",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.frontend,
-    needsWorktree: true,
-    hasMemory: true,
-  },
-  reviewer: {
-    name: "reviewer",
-    description: "Reviews code for correctness, security, and quality",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.reviewer,
-    needsWorktree: false,
-    hasMemory: false,
-  },
-  tester: {
-    name: "tester",
-    description: "Writes and runs tests (unit, integration, edge cases)",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.tester,
-    needsWorktree: true,
-    hasMemory: false,
-  },
-  docs: {
-    name: "docs",
-    description: "Writes and updates documentation",
-    systemPrompt: TEAMMATE_ROLE_PROMPTS.docs,
-    needsWorktree: true,
-    hasMemory: true,
-  },
-};
-
-/** Fallback spec used when no registered spec matches a role name. */
-export function genericSpec(role: string): TeammateSpec {
-  return {
-    name: role,
-    description: `${role} specialist (no registered spec)`,
-    systemPrompt: `You are a ${role} specialist. Complete the assigned task carefully and report results clearly.`,
-    needsWorktree: false,
-    hasMemory: false,
-  };
-}
-
-/**
- * Resolve a role to its effective spec.
+ * Parse a markdown file with YAML-ish frontmatter.
  *
- * @param role        Role name to resolve.
- * @param discovered  Optional registry of file-based specs (takes precedence).
+ * Frontmatter is delimited by `---` lines. Supports scalar values and simple
+ * comma-separated arrays (e.g. `tools: read, bash, grep`). We intentionally
+ * avoid a YAML dependency — the spec grammar is deliberately small.
  */
-export function resolveTeammateSpec(
-  role: string,
-  discovered?: Record<string, TeammateSpec>,
-): TeammateSpec {
-  if (discovered?.[role]) return discovered[role];
-  if (BUILT_IN_TEAMMATE_SPECS[role]) return BUILT_IN_TEAMMATE_SPECS[role];
-  return genericSpec(role);
+export function parseSpec(raw: string, fallbackRole: string, sourcePath: string): TeammateSpec {
+	const lines = raw.split(/\r?\n/);
+	let body = raw;
+	const fm: Record<string, string> = {};
+
+	if (lines[0]?.trim() === "---") {
+		const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+		if (end > 0) {
+			for (let i = 1; i < end; i++) {
+				const line = lines[i];
+				const match = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
+				if (match) {
+					fm[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, "");
+				}
+			}
+			body = lines.slice(end + 1).join("\n").trim();
+		}
+	}
+
+	const tools = fm.tools ? fm.tools.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+
+	return {
+		name: fm.name || fallbackRole,
+		description: fm.description,
+		needsWorktree: parseBool(fm.needsWorktree),
+		hasMemory: parseBool(fm.hasMemory),
+		modelTier: fm.modelTier,
+		tools,
+		systemPrompt: body,
+		sourcePath,
+	};
 }
 
-// ---------------------------------------------------------------------------
-// Frontmatter parser
-// ---------------------------------------------------------------------------
-
-const TRUTHY = new Set(["true", "yes", "1"]);
-const FALSY = new Set(["false", "no", "0"]);
-
-function parseBool(raw: string, fallback: boolean): boolean {
-  const value = raw.trim().toLowerCase();
-  if (TRUTHY.has(value)) return true;
-  if (FALSY.has(value)) return false;
-  return fallback;
-}
-
-function parseTier(raw: string): TeammateSpec["modelTier"] | undefined {
-  const value = raw.trim().toLowerCase();
-  if (value === "cheap" || value === "mid" || value === "deep") return value;
-  return undefined;
-}
-
-/**
- * Parse a single `*.md` file with YAML-ish frontmatter into a `TeammateSpec`.
- *
- * Returns `null` when the file has no frontmatter, no `name` field, or no
- * body — it's better to silently skip malformed specs than to crash the leader.
- *
- * Supported frontmatter keys:
- *   name          required — role identifier
- *   description   optional — human-readable summary
- *   needsWorktree optional — default false; accepts true/false/yes/no/1/0
- *   hasMemory     optional — default false; same accepted values
- *   modelTier     optional — one of "cheap" | "mid" | "deep"
- */
-export function parseTeammateSpecFile(
-  raw: string,
-  sourcePath?: string,
-): TeammateSpec | null {
-  const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
-  if (!match) return null;
-
-  const [, frontmatter, body] = match;
-  const fields: Record<string, string> = {};
-  for (const line of frontmatter.split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
-    if (kv) fields[kv[1]] = kv[2].trim();
-  }
-
-  const name = fields.name?.trim();
-  const systemPrompt = body.trim();
-  if (!name || !systemPrompt) return null;
-
-  return {
-    name,
-    description: fields.description || undefined,
-    systemPrompt,
-    needsWorktree: parseBool(fields.needsWorktree ?? "", false),
-    hasMemory: parseBool(fields.hasMemory ?? "", false),
-    modelTier: fields.modelTier ? parseTier(fields.modelTier) : undefined,
-    sourcePath,
-  };
-}
-
-/**
- * Scan `<cwd>/.claude/teammates/*.md` for frontmatter specs.
- *
- * Missing directory, read errors, and malformed files are silently ignored —
- * file-based specs are purely additive.
- */
-export async function loadTeammateSpecs(
-  cwd: string,
-): Promise<Record<string, TeammateSpec>> {
-  const dir = join(cwd, ".claude", "teammates");
-  const specs: Record<string, TeammateSpec> = {};
-
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return specs;
-  }
-
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
-    const path = join(dir, entry);
-    try {
-      const raw = await readFile(path, "utf8");
-      const spec = parseTeammateSpecFile(raw, path);
-      if (spec) specs[spec.name] = spec;
-    } catch {
-      // Malformed spec — skip.
-    }
-  }
-
-  return specs;
+function parseBool(value: string | undefined): boolean | undefined {
+	if (value === undefined) return undefined;
+	const v = value.toLowerCase();
+	if (v === "true" || v === "yes" || v === "1") return true;
+	if (v === "false" || v === "no" || v === "0") return false;
+	return undefined;
 }

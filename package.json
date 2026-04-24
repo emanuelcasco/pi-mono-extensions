@@ -1,6 +1,6 @@
 {
-  "name": "power-pi",
-  "version": "0.1.0",
+  "name": "pi-mono-extensions",
+  "version": "1.7.2",
   "private": true,
   "packageManager": "pnpm@10.2.1",
   "description": "Collection of pi-mono extensions",

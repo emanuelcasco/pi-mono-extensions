@@ -45,7 +45,7 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 - **[sentinel](#sentinel)** — content-aware security guards that scan reads for secrets and correlate session writes with later script execution
 - **[simplify](#simplify)** — review changed code for reuse, quality, and efficiency, then fix any issues found (`/simplify`)
 - **[status-line](#status-line)** — shows git branch and richer runtime stats in the footer
-- **[team-mode](#team-mode)** — background multi-agent team orchestration (`/team` commands)
+- **[team-mode](#team-mode)** — flat peer-agent orchestration (named workers with resumable context)
 
 ## ask-user-question
 
@@ -320,9 +320,9 @@ pi install npm:pi-mono-status-line
 
 ## team-mode
 
-The `team-mode` extension adds team-based orchestration: an LLM-driven control plane for running long-running multi-agent work in the background.
+The `team-mode` extension adds flat peer-agent orchestration: named, addressable workers spawned as isolated pi subprocesses with resumable context, mirroring Claude Code's team-mate model.
 
-A team has an LLM Leader (pi subprocess coordinator) that authors the task graph and assigns work via tool calls, Teammates spawned as isolated pi subprocesses, a durable task board with dependencies, a signal log, a mailbox for peer handoffs, optional approval gates, and a watch-mode widget that shows live updates below the editor.
+A coordinator (the parent LLM session, or human) spawns workers via the `agent` tool, receives `<task-notification>` push messages when they complete, and continues them via `send_message` with full prior context. Workers are event-driven — no polling, no persistent leader subprocess. A shared TODO board with CAS version counters coordinates multi-step DAGs.
 
 Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
 
