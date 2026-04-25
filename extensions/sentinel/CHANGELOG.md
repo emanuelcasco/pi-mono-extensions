@@ -1,5 +1,26 @@
 # pi-mono-sentinel
 
+## 1.8.0
+
+### Minor Changes
+
+### Added: permission-gate guard
+
+- New third guard `permission-gate` proactively intercepts raw `bash` commands and `write` / `edit` calls that perform out-of-scope or system-level operations — closing the gap left by `execution-tracker`, which only fires for files written earlier in the same session.
+- Bash risk classes: `remote-pipe-exec` (`curl|wget … | bash|sh|zsh`), `privilege-escalation` (`sudo`), `destructive-system-rm` (`rm -rf` on `/usr`, `/Library`, `/System`, `/opt`, `/etc`, `/var`, `/bin`, `/sbin`, `/private`, or `~`), `package-manager-install` (`brew install/upgrade/update/reinstall`), `persistence` (`crontab`, `systemctl enable`, `launchctl load`), `shell-config-write` (redirects/`tee` into `~/.zshrc`, `~/.bashrc`, etc.), `system-binary-install` (`cp`/`mv`/`install`/`ln` into `/usr/local/bin`).
+- Path categories for `write` / `edit`: `shell-config`, `system-directory`, `outside-project`. Path resolution handles `~` expansion and `cwd`-relative paths correctly.
+- Project-local `rm -rf` (e.g. `node_modules`, `dist`) is intentionally not flagged — only system/home roots.
+- Fail-safe behavior: when no UI is available, dangerous operations are blocked with a descriptive `reason`; when UI is present, the user gets a single combined `confirm()` showing all matched labels.
+
+### Tests
+
+- New `permissions` suite covering bash command classification, path resolution (`~` expansion, cwd-relative, absolute) and path category classification.
+
+### Documentation
+
+- Updated sentinel README with the new guard, risk-class table, path-category table and decision matrix.
+
+
 ## 1.7.2
 
 ### Patch Changes

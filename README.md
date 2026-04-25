@@ -7,6 +7,7 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
 - [Installation](#installation)
 - [Extensions](#extensions)
 - [ask-user-question](#ask-user-question)
+- [auto-fix](#auto-fix)
 - [btw](#btw)
 - [clear](#clear)
 - [context-guard](#context-guard)
@@ -36,6 +37,7 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 ## Extensions
 
 - **[ask-user-question](#ask-user-question)** — interactive forms for structured user input (`ask_user_question` tool)
+- **[auto-fix](#auto-fix)** — end-of-turn formatter/linter dispatcher (eslint, black, prettier, …)
 - **[btw](#btw)** — side-question command (`/btw`)
 - **[clear](#clear)** — fresh session command (`/clear`, `Ctrl+Shift+L`)
 - **[context-guard](#context-guard)** — keeps context window lean by auto-limiting `read`, deduplicating unchanged reads, and bounding raw `rg` output
@@ -57,6 +59,18 @@ Full details: [extensions/ask-user-question/README.md](extensions/ask-user-quest
 
 ```bash
 pi install npm:pi-mono-ask-user-question
+```
+
+## auto-fix
+
+The `auto-fix` extension runs language-appropriate fixers (eslint, black, prettier, …) on every file written during a turn, flushing once on `agent_end`. Fixes are silent; a single summary notification reports how many files were actually updated.
+
+Full details: [extensions/auto-fix/README.md](extensions/auto-fix/README.md).
+
+### Install
+
+```bash
+pi install npm:pi-mono-auto-fix
 ```
 
 ## btw

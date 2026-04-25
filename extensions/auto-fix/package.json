@@ -1,14 +1,11 @@
 {
-  "name": "pi-mono-sentinel",
-  "version": "1.8.0",
-  "description": "Pi extension that guards against content-based secret leaks and indirect script execution",
+  "name": "pi-mono-auto-fix",
+  "version": "0.1.0",
+  "description": "Pi extension that runs language-appropriate fixers (eslint, black, prettier, ...) on files touched during a turn",
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
-  "scripts": {
-    "test": "npx tsx --test '__tests__/**/*.test.ts'"
-  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
@@ -21,6 +18,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
-    "directory": "extensions/sentinel"
+    "directory": "extensions/auto-fix"
   }
 }
