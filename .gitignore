@@ -1,3 +1,6 @@
 node_modules
 .env
+.vscode
+specs/*
+DS_Store
 .pi
