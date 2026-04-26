@@ -136,8 +136,13 @@ async function runFixer(
     ? rule.command.replace("{files}", filesArg)
     : `${rule.command} ${filesArg}`;
 
+  // npx delegates to pnpm when package.json has "packageManager": "pnpm",
+  // but pnpm exec doesn't auto-install like npx does. Use a neutral cwd
+  // so npx resolves and auto-installs independently of the project's toolchain.
+  const spawnCwd = command.startsWith("npx ") ? "/tmp" : cwd;
+
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { cwd, shell: true });
+    const child = spawn(command, { cwd: spawnCwd, shell: true });
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.stderr?.on("data", (chunk) => {

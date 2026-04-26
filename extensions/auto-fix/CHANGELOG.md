@@ -6,6 +6,7 @@
 
 - **Auto-install dependencies**: Fixers now use `npx` (without `--no-install`) for eslint/prettier and `uvx` for ruff, auto-installing if missing — no manual install required.
 - **False failure reporting with eslint**: `eslint --fix` exits non-zero when it finds unfixable issues, even if it successfully fixed others in the same pass. Failure detection now checks mtime (file actually changed) instead of exit code, so successful fixes are no longer reported as failures.
+- **npx broken in pnpm monorepos**: `npx` delegates to pnpm when `package.json` declares `"packageManager": "pnpm"`, but `pnpm exec` doesn't auto-install like npx does. Fixers now use a neutral cwd (`/tmp`) for npx commands to bypass project-level toolchain interference.
 
 ### Changed
 
