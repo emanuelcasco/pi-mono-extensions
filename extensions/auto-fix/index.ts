@@ -20,7 +20,7 @@ import type {
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -125,6 +125,54 @@ function mtimeSafe(path: string): number {
   }
 }
 
+/**
+ * Walk up from `startDir` until a directory containing `node_modules/.bin/<tool>`
+ * is found. Returns `{ binPath, projectRoot }` or undefined.
+ */
+function findLocalBin(
+  startDir: string,
+  tool: string,
+): { binPath: string; projectRoot: string } | undefined {
+  let dir = startDir;
+  while (true) {
+    const binPath = `${dir}/node_modules/.bin/${tool}`;
+    if (existsSync(binPath)) return { binPath, projectRoot: dir };
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * If `command` starts with `npx <tool>`, attempt to resolve a project-local
+ * binary by walking up from the first file. On hit, rewrite the command to
+ * exec the local bin directly and return the project root as cwd. On miss,
+ * fall back to `/tmp` so npx can fetch the latest from the registry without
+ * being delegated through pnpm.
+ */
+function resolveSpawnTarget(
+  command: string,
+  files: string[],
+  cwd: string,
+): { command: string; spawnCwd: string } {
+  const npxMatch = command.match(/^npx\s+(\S+)/);
+  if (!npxMatch) return { command, spawnCwd: cwd };
+
+  const tool = npxMatch[1];
+  const firstFile = files[0];
+  if (firstFile) {
+    const local = findLocalBin(dirname(firstFile), tool);
+    if (local) {
+      return {
+        command: command.replace(/^npx\s+\S+/, shellQuote(local.binPath)),
+        spawnCwd: local.projectRoot,
+      };
+    }
+  }
+  // No local install — neutral cwd avoids pnpm delegating npx.
+  return { command, spawnCwd: "/tmp" };
+}
+
 async function runFixer(
   rule: FixerRule,
   files: string[],
@@ -132,14 +180,15 @@ async function runFixer(
   timeoutMs: number,
 ): Promise<{ ok: boolean; stderr: string }> {
   const filesArg = files.map(shellQuote).join(" ");
-  const command = rule.command.includes("{files}")
+  const rawCommand = rule.command.includes("{files}")
     ? rule.command.replace("{files}", filesArg)
     : `${rule.command} ${filesArg}`;
 
-  // npx delegates to pnpm when package.json has "packageManager": "pnpm",
-  // but pnpm exec doesn't auto-install like npx does. Use a neutral cwd
-  // so npx resolves and auto-installs independently of the project's toolchain.
-  const spawnCwd = command.startsWith("npx ") ? "/tmp" : cwd;
+  // Prefer the project's locally installed binary when available so we honor
+  // the pinned version + config (e.g. ESLint v8 + .eslintrc.js). Only fall
+  // back to neutral-cwd npx when no local install is found, which sidesteps
+  // pnpm's delegation of npx without auto-install.
+  const { command, spawnCwd } = resolveSpawnTarget(rawCommand, files, cwd);
 
   return new Promise((resolvePromise) => {
     const child = spawn(command, { cwd: spawnCwd, shell: true });

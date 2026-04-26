@@ -1,5 +1,11 @@
 # pi-mono-auto-fix
 
+## 0.2.2
+
+### Fixed
+
+- **eslint failing on every file in projects pinned to v8**: The `0.2.1` neutral-cwd fix made `npx eslint` resolve from `/tmp`, which auto-installs the latest ESLint (v10+) and ignores the project's pinned version and config. Projects on ESLint v8 with `.eslintrc.*` then failed with "ESLint couldn't find an eslint.config.(js|mjs|cjs) file." on every file. Auto-fix now walks up from each file to find a project-local `node_modules/.bin/<tool>` and execs it directly with the project root as cwd, falling back to neutral-cwd npx only when no local install exists.
+
 ## 0.2.0
 
 ### Fixed
