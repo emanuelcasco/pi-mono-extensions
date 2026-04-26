@@ -1,5 +1,16 @@
 # pi-mono-auto-fix
 
+## 0.2.0
+
+### Fixed
+
+- **Auto-install dependencies**: Fixers now use `npx` (without `--no-install`) for eslint/prettier and `uvx` for ruff, auto-installing if missing — no manual install required.
+- **False failure reporting with eslint**: `eslint --fix` exits non-zero when it finds unfixable issues, even if it successfully fixed others in the same pass. Failure detection now checks mtime (file actually changed) instead of exit code, so successful fixes are no longer reported as failures.
+
+### Changed
+
+- Python fixer swapped from `black` (global install required) to `uvx ruff check --fix && uvx ruff format` (auto-installs via PyPI, faster).
+
 ## 0.1.0
 
 ### Minor Changes

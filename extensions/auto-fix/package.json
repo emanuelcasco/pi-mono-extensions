@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-auto-fix",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension that runs language-appropriate fixers (eslint, black, prettier, ...) on files touched during a turn",
   "keywords": [
     "pi-package",
