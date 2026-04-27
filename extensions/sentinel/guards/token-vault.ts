@@ -299,6 +299,30 @@ function registerTokenCommand(pi: ExtensionAPI) {
 	});
 }
 
+// ─── System Prompt Injection ─────────────────────────────────────────────
+
+const TOKEN_VAULT_SYSTEM_PROMPT = `
+## Token Vault
+
+You have access to a secure token vault. When you need an API key, secret, or credential for any service (e.g., Linear API key, GitHub token, OpenAI key), you MUST:
+
+1. **Use \`list_tokens\`** to discover which tokens are already stored. Do this first if you're unsure what's available.
+2. **Use \`resolve_token\`** with the token name to make it available. After resolving, reference it in bash commands as \`$TOKEN_<name>\` (e.g., \`curl -H "Authorization: Bearer $TOKEN_linear"\`).
+3. **If a token is missing**, tell the user to set it via \`/token set <name>\` — then retry after they confirm. Do NOT use ask_user_question to collect API keys or tokens.
+4. **Never ask the user to paste API keys, tokens, or secrets into the conversation.** Direct them to \`/token set\` instead.
+
+This applies to ANY tool, skill, or workflow that requires authentication — always resolve tokens first.
+`.trim();
+
+function registerSystemPromptHook(pi: ExtensionAPI): void {
+	pi.on("before_agent_start", async (event) => {
+		const combined = event.systemPrompt
+			? `${event.systemPrompt}\n\n${TOKEN_VAULT_SYSTEM_PROMPT}`
+			: TOKEN_VAULT_SYSTEM_PROMPT;
+		return { systemPrompt: combined };
+	});
+}
+
 // ─── Register ──────────────────────────────────────────────────────────────
 
 export function registerTokenVault(pi: ExtensionAPI): void {
@@ -308,4 +332,5 @@ export function registerTokenVault(pi: ExtensionAPI): void {
 	createToolCallInterceptor(pi);
 	createResultSanitizer(pi);
 	registerTokenCommand(pi);
+	registerSystemPromptHook(pi);
 }

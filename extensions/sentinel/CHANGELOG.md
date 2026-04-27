@@ -1,5 +1,14 @@
 # pi-mono-sentinel
 
+## 1.9.2
+
+### Patch Changes
+
+### Enhanced: token vault
+
+- Inject a system-prompt reminder via `before_agent_start` so the LLM always knows to use `resolve_token`/`list_tokens` for API keys instead of `ask_user_question`.
+- Added `promptSnippet` and `promptGuidelines` to `resolve_token` and `list_tokens` tools for automatic discovery.
+
 ## 1.9.1
 
 ### Patch Changes
@@ -40,7 +49,6 @@
 
 - Updated sentinel README with the new guard, risk-class table, path-category table and decision matrix.
 
-
 ## 1.7.2
 
 ### Patch Changes
@@ -48,7 +56,6 @@
 ### Fixed: ask-user-question
 
 - Remove unused `StringEnum` import from `@mariozechner/pi-ai`.
-
 
 ## 1.7.1
 
@@ -75,7 +82,6 @@
 ### Tests
 
 - New `intent-queue` and `model-config` suites; expanded coverage across `leader-runtime`, `team-manager`, `team-query-tool` and `formatters`.
-
 
 ## 1.7.0
 
