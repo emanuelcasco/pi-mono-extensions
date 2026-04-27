@@ -144,6 +144,144 @@ function findLocalBin(
 }
 
 /**
+ * Walk up from `startDir` until a `package.json` is found.
+ */
+function findProjectRoot(startDir: string): string | undefined {
+  let dir = startDir;
+  while (true) {
+    if (existsSync(`${dir}/package.json`)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+const ESLINT_FLAT_CONFIG_FILES = [
+  "eslint.config.mjs",
+  "eslint.config.js",
+  "eslint.config.cjs",
+  "eslint.config.ts",
+  "eslint.config.mts",
+  "eslint.config.cts",
+];
+
+const ESLINT_LEGACY_CONFIG_FILES = [
+  ".eslintrc.cjs",
+  ".eslintrc.mjs",
+  ".eslintrc.js",
+  ".eslintrc.json",
+  ".eslintrc.yaml",
+  ".eslintrc.yml",
+  ".eslintrc",
+];
+
+function detectEslintConfigType(projectRoot: string): "flat" | "legacy" | "none" {
+  for (const f of ESLINT_FLAT_CONFIG_FILES) {
+    if (existsSync(`${projectRoot}/${f}`)) return "flat";
+  }
+  for (const f of ESLINT_LEGACY_CONFIG_FILES) {
+    if (existsSync(`${projectRoot}/${f}`)) return "legacy";
+  }
+  return "none";
+}
+
+function getEslintVersion(projectRoot: string): number | null {
+  const pkgPath = `${projectRoot}/node_modules/eslint/package.json`;
+  if (!existsSync(pkgPath)) return null;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+    const major = parseInt(pkg.version.split(".")[0], 10);
+    return isNaN(major) ? null : major;
+  } catch {
+    return null;
+  }
+}
+
+interface SpawnTarget {
+  command: string | null;
+  spawnCwd: string;
+  env?: Record<string, string>;
+}
+
+/**
+ * ESLint-specific resolver that avoids version / config mismatches.
+ *
+ * Logic:
+ *   1. Local ESLint installed?
+ *      a. v9+  + legacy config → use local + ESLINT_USE_FLAT_CONFIG=false
+ *      b. v8   + flat   config → skip (incompatible)
+ *      c. otherwise              → use local binary directly
+ *   2. No local ESLint?
+ *      a. legacy config → `npx --yes eslint@8`  (pin v8)
+ *      b. flat   config → `npx --yes eslint@9`  (pin v9+)
+ *      c. no config     → skip
+ */
+function resolveEslintCommand(
+  commandTemplate: string,
+  files: string[],
+  cwd: string,
+): SpawnTarget {
+  const firstFile = files[0];
+  const fileDir = firstFile ? dirname(firstFile) : cwd;
+  const projectRoot = findProjectRoot(fileDir) ?? cwd;
+
+  const local = findLocalBin(fileDir, "eslint");
+  const configType = detectEslintConfigType(projectRoot);
+  const filesArg = files.map(shellQuote).join(" ");
+
+  // Strip the binary invocation and {files} placeholder to keep only flags.
+  const extraArgs = commandTemplate
+    .replace(/^npx\s+/, "")
+    .replace(/^(?:[.\\/][\S]+[\\/])?eslint(?:\.exe)?\b\s*/, "")
+    .replace("{files}", "")
+    .trim();
+
+  // CASE 1: Local ESLint installed — honour project's pinned version.
+  if (local) {
+    const version = getEslintVersion(local.projectRoot);
+
+    // ESLint v9+ on a legacy-config project: force legacy mode so the v9
+    // binary can still read .eslintrc.* files.
+    if (version !== null && version >= 9 && configType === "legacy") {
+      return {
+        command: `${shellQuote(local.binPath)} ${extraArgs} ${filesArg}`.trim(),
+        spawnCwd: local.projectRoot,
+        env: { ESLINT_USE_FLAT_CONFIG: "false" },
+      };
+    }
+
+    // ESLint v8 on a flat-config project: incompatible — skip.
+    if (version !== null && version < 9 && configType === "flat") {
+      return { command: null, spawnCwd: local.projectRoot };
+    }
+
+    return {
+      command: `${shellQuote(local.binPath)} ${extraArgs} ${filesArg}`.trim(),
+      spawnCwd: local.projectRoot,
+    };
+  }
+
+  // CASE 2: No local ESLint — pin a version compatible with the project's
+  // config format so we never install latest v9 on a legacy-config repo.
+  if (configType === "legacy") {
+    return {
+      command: `npx --yes eslint@8 ${extraArgs} ${filesArg}`.trim(),
+      spawnCwd: projectRoot,
+    };
+  }
+
+  if (configType === "flat") {
+    return {
+      command: `npx --yes eslint@9 ${extraArgs} ${filesArg}`.trim(),
+      spawnCwd: projectRoot,
+    };
+  }
+
+  // CASE 3: No ESLint config found — skip to avoid injecting unwanted rules.
+  return { command: null, spawnCwd: projectRoot };
+}
+
+/**
  * If `command` starts with `npx <tool>`, attempt to resolve a project-local
  * binary by walking up from the first file. On hit, rewrite the command to
  * exec the local bin directly and return the project root as cwd. On miss,
@@ -154,7 +292,7 @@ function resolveSpawnTarget(
   command: string,
   files: string[],
   cwd: string,
-): { command: string; spawnCwd: string } {
+): SpawnTarget {
   const npxMatch = command.match(/^npx\s+(\S+)/);
   if (!npxMatch) return { command, spawnCwd: cwd };
 
@@ -180,18 +318,37 @@ async function runFixer(
   timeoutMs: number,
 ): Promise<{ ok: boolean; stderr: string }> {
   const filesArg = files.map(shellQuote).join(" ");
-  const rawCommand = rule.command.includes("{files}")
-    ? rule.command.replace("{files}", filesArg)
-    : `${rule.command} ${filesArg}`;
 
-  // Prefer the project's locally installed binary when available so we honor
-  // the pinned version + config (e.g. ESLint v8 + .eslintrc.js). Only fall
-  // back to neutral-cwd npx when no local install is found, which sidesteps
-  // pnpm's delegation of npx without auto-install.
-  const { command, spawnCwd } = resolveSpawnTarget(rawCommand, files, cwd);
+  let resolved: SpawnTarget;
+
+  if (rule.label === "eslint") {
+    // ESLint gets version-aware command resolution so we don't install a
+    // global v9 on a legacy v8-configured project (or vice-versa).
+    resolved = resolveEslintCommand(rule.command, files, cwd);
+  } else {
+    const rawCommand = rule.command.includes("{files}")
+      ? rule.command.replace("{files}", filesArg)
+      : `${rule.command} ${filesArg}`;
+    // Prefer the project's locally installed binary when available so we
+    // honor the pinned version + config. Only fall back to neutral-cwd npx
+    // when no local install is found, which sidesteps pnpm's delegation of
+    // npx without auto-install.
+    resolved = resolveSpawnTarget(rawCommand, files, cwd);
+  }
+
+  if (resolved.command === null) {
+    return {
+      ok: true,
+      stderr: `Skipped ${rule.label ?? rule.command}: no compatible target found.`,
+    };
+  }
 
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { cwd: spawnCwd, shell: true });
+    const child = spawn(resolved.command, {
+      cwd: resolved.spawnCwd,
+      shell: true,
+      env: { ...process.env, ...resolved.env },
+    });
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.stderr?.on("data", (chunk) => {
@@ -258,14 +415,6 @@ export default function (pi: ExtensionAPI): void {
     if (event.toolName !== "edit" && event.toolName !== "write") return;
     const rawPath = (event.input as { path?: string }).path;
     if (rawPath) collect(rawPath, ctx.cwd);
-  });
-
-  // Collector 2: any extension emitting the shared "file changed" bus
-  // (multi-edit emits this after each real write).
-  pi.events.on("context-guard:file-modified", (data: unknown) => {
-    const path = (data as { path?: string } | null)?.path;
-    if (!path) return;
-    collect(path, process.cwd());
   });
 
   // End-of-turn flush.

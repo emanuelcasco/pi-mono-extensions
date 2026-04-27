@@ -1,5 +1,28 @@
 # pi-mono-auto-fix
 
+## 0.3.0
+
+### Added
+
+- **ESLint version-aware dispatch with config detection**: Auto-fix now determines the project's ESLint version and config format before running.
+  - Walks from the file's directory up to `package.json` to find the project root.
+  - Detects flat (`eslint.config.*`) vs. legacy (`.eslintrc.*`) configs.
+  - Reads the installed ESLint major version from `node_modules/eslint/package.json`.
+    | Local ESLint | Config Format | Action |
+    | --- | --- | --- |
+    | v8 | Flat config | **Skip** — incompatible |
+    | v9+ | Legacy config | Use local + `ESLINT_USE_FLAT_CONFIG=false` |
+    | v8 | Legacy config | Use local binary directly |
+    | v9+ | Flat config | Use local binary directly |
+    | None | Legacy config | `npx --yes eslint@8` |
+    | None | Flat config | `npx --yes eslint@9` |
+    | None | No config | **Skip** — avoids injecting rules on projects that don't use ESLint |
+
+### Changed
+
+- `resolveSpawnTarget` now returns `{ command, spawnCwd, env? }` so fixers can pass environment overrides (e.g. `ESLINT_USE_FLAT_CONFIG`).
+- `runFixer` branches labelled `"eslint"` through the new `resolveEslintCommand` resolver.
+
 ## 0.2.2
 
 ### Fixed
