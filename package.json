@@ -3,7 +3,7 @@
   "version": "1.7.2",
   "private": true,
   "packageManager": "pnpm@10.2.1",
-  "description": "Collection of pi-mono extensions",
+  "description": "Collection of pi-mono extensions and skills",
   "keywords": [
     "pi-package",
     "monorepo"
@@ -17,6 +17,9 @@
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "scripts": {

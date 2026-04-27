@@ -23,7 +23,7 @@
 import { chmod, constants, readFile, writeFile } from "node:fs/promises";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 
 import {
 	createBashTool,
@@ -106,6 +106,12 @@ function matchesTokensFile(testPath: string): boolean {
 	return TOKENS_FILE_PATTERNS.some((p) => p.test(testPath));
 }
 
+const ResolveTokenParams = Type.Object({
+	name: Type.String({ description: "Token name (e.g., 'github', 'openai')" }),
+});
+
+const ListTokensParams = Type.Object({});
+
 // ─── resolve_token Tool ────────────────────────────────────────────────────
 
 const resolveTokenTool = defineTool({
@@ -115,13 +121,11 @@ const resolveTokenTool = defineTool({
 		"Resolve a stored token/secret by name. Returns a masked confirmation. " +
 		"The actual value is available as $TOKEN_name in bash commands and as an environment variable. " +
 		"Use this to authenticate API calls without exposing the secret.",
-	parameters: Type.Object({
-		name: Type.String({ description: "Token name (e.g., 'github', 'openai')" }),
-	}),
+	parameters: ResolveTokenParams as any,
 
-	async execute(_toolCallId, params) {
+	async execute(_toolCallId, params: { name: string }) {
 		const tokens = await loadTokens();
-		const name = (params as { name: string }).name;
+		const name = params.name;
 
 		if (!(name in tokens)) {
 			return {
@@ -150,14 +154,14 @@ const listTokensTool = defineTool({
 	name: "list_tokens",
 	label: "List Tokens",
 	description: "List stored token names (values are never shown).",
-	parameters: Type.Object({}),
+	parameters: ListTokensParams as any,
 
 	async execute() {
 		const names = Object.keys(await loadTokens());
 		if (names.length === 0) {
 			return {
 				content: [{ type: "text", text: "No tokens stored." }],
-				details: { tokenCount: 0 },
+				details: { tokenCount: 0, tokenNames: [] },
 			};
 		}
 		return {
@@ -174,7 +178,7 @@ function createToolCallInterceptor(pi: ExtensionAPI) {
 		// Block reads/writes to tokens.json
 		if (
 			(event.toolName === "read" || event.toolName === "write" || event.toolName === "edit") &&
-			matchesTokensFile(event.input.path as string || "")
+			matchesTokensFile((event.input.path as string) || "")
 		) {
 			return { block: true, reason: "Access to tokens.json is blocked. Use resolve_token tool instead." };
 		}
@@ -244,12 +248,12 @@ function registerTokenCommand(pi: ExtensionAPI) {
 				const name = parts[1];
 				if (!name) { ctx.ui.notify("Usage: /token set <name>", "warning"); return; }
 				const value = ctx.hasUI
-					? await ctx.ui.input(`Token value for '${name}':`, { password: true })
+					? await ctx.ui.input(`Token value for '${name}':`, "Paste token value")
 					: parts.slice(2).join(" ");
 				if (!value) return;
 				tokens[name] = value;
 				await saveTokens(tokens);
-				ctx.ui.notify(`Token '${name}' saved`, "success");
+				ctx.ui.notify(`Token '${name}' saved`, "info");
 			} else if (subcommand === "list") {
 				const names = Object.keys(tokens);
 				ctx.ui.notify(names.length ? `Tokens: ${names.join(", ")}` : "No tokens stored.", "info");
@@ -263,7 +267,10 @@ function registerTokenCommand(pi: ExtensionAPI) {
 				delete tokens[name];
 				await saveTokens(tokens);
 				resolvedTokens.delete(name);
-				ctx.ui.notify(`Token '${name}' deleted`, "success");
+				resolvedTokens.delete(name.toUpperCase());
+				resolvedTokens.delete(`TOKEN_${name}`);
+				resolvedTokens.delete(`TOKEN_${name.toUpperCase()}`);
+				ctx.ui.notify(`Token '${name}' deleted`, "info");
 			} else if (subcommand === "env") {
 				const name = parts[1];
 				if (!name || !(name in tokens)) { ctx.ui.notify(`Token '${name || ""}' not found`, "warning"); return; }
@@ -272,7 +279,7 @@ function registerTokenCommand(pi: ExtensionAPI) {
 				resolvedTokens.set(name.toUpperCase(), value);
 				resolvedTokens.set(`TOKEN_${name}`, value);
 				resolvedTokens.set(`TOKEN_${name.toUpperCase()}`, value);
-				ctx.ui.notify(`Token '${name}' exported as $TOKEN_${name}`, "success");
+				ctx.ui.notify(`Token '${name}' exported as $TOKEN_${name}`, "info");
 			} else {
 				ctx.ui.notify(`Unknown: ${subcommand}. Use: set, list, get, delete, env`, "warning");
 			}

@@ -23,6 +23,10 @@
 - `resolveSpawnTarget` now returns `{ command, spawnCwd, env? }` so fixers can pass environment overrides (e.g. `ESLINT_USE_FLAT_CONFIG`).
 - `runFixer` branches labelled `"eslint"` through the new `resolveEslintCommand` resolver.
 
+### Fixed
+
+- Tightened `spawn` invocation typing for the release package without changing runtime behavior.
+
 ## 0.2.2
 
 ### Fixed

@@ -1,5 +1,17 @@
 # pi-mono-sentinel
 
+## 1.9.0
+
+### Minor Changes
+
+### Added: token vault
+
+- Added secure local token storage at `~/.pi/agent/tokens.json` with owner-only file permissions.
+- New LLM-safe tools: `resolve_token({ name })` returns only a masked confirmation and `list_tokens({})` lists names without values.
+- Resolved tokens can be used in bash via `$TOKEN_name` placeholder substitution and injected environment variables without exposing secrets to the model transcript.
+- Direct `read` / `write` / `edit` access to `tokens.json` is blocked; bash and read results are sanitized if a stored token value appears.
+- New `/token set|list|get|delete|env` command for user-side token management.
+
 ## 1.8.0
 
 ### Minor Changes

@@ -117,11 +117,11 @@ curl -H "Authorization: Bearer $TOKEN_github" https://api.github.com/user
 
 | Command                | Description                                       |
 | ---------------------- | ------------------------------------------------- |
-| `/token set <name>`    | Set a token (prompts for value with hidden input) |
-| `/token list`          | List all token names                              |
-| `/token get <name>`    | Show a token value (terminal only)                |
-| `/token delete <name>` | Delete a token                                    |
-| `/token env <name>`    | Export token as env var for the session           |
+| `/token set <name>`    | Set a token (prompts for value in interactive mode) |
+| `/token list`          | List all token names                                |
+| `/token get <name>`    | Show a token value (terminal only)                  |
+| `/token delete <name>` | Delete a token                                      |
+| `/token env <name>`    | Export token as env var for the session             |
 
 ## Behavior
 

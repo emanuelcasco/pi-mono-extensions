@@ -1,11 +1,12 @@
 # pi-mono-extensions
 
-This repo is a pnpm workspace monorepo. Each extension under `extensions/` can be installed individually, or install the root to load all extensions at once.
+This repo is a pnpm workspace monorepo. Each extension under `extensions/` can be installed individually, or install the root to load all extensions and bundled skills at once.
 
 ## Table of Contents
 
 - [Installation](#installation)
 - [Extensions](#extensions)
+- [Skills](#skills)
 - [ask-user-question](#ask-user-question)
 - [auto-fix](#auto-fix)
 - [btw](#btw)
@@ -18,6 +19,7 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
 - [simplify](#simplify)
 - [status-line](#status-line)
 - [team-mode](#team-mode)
+- [gemma-video](#gemma-video)
 
 ## Installation
 
@@ -44,10 +46,14 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 - **[loop](#loop)** — run a prompt or slash command on a recurring interval (`/loop [interval] <prompt>`)
 - **[multi-edit](#multi-edit)** — enhanced `edit` tool with batch edits and patch support
 - **[review](#review)** — review a GitHub PR or GitLab MR URL and then inspect/submit it in a side pane (`/review <url>`, `/review-tui`)
-- **[sentinel](#sentinel)** — content-aware security guards that scan reads for secrets and correlate session writes with later script execution
+- **[sentinel](#sentinel)** — content-aware security guards plus a local token vault for LLM-safe credential injection
 - **[simplify](#simplify)** — review changed code for reuse, quality, and efficiency, then fix any issues found (`/simplify`)
 - **[status-line](#status-line)** — shows git branch and richer runtime stats in the footer
 - **[team-mode](#team-mode)** — flat peer-agent orchestration (named workers with resumable context)
+
+## Skills
+
+- **[gemma-video](#gemma-video)** — analyze screen recordings, bug reproductions, UI walkthroughs, and demo videos locally with Gemma.
 
 ## ask-user-question
 
@@ -273,7 +279,7 @@ pi install npm:pi-mono-review
 
 ## sentinel
 
-The `sentinel` extension adds content-aware security guards that intercept tool calls before they execute. It pre-scans files being read for secret patterns (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, PEM keys, high-entropy strings, etc.) and tracks files written during the session to block or confirm later indirect execution via `bash` of scripts containing dangerous patterns (`curl | bash`, `eval`, exfiltration, `rm -rf`, privilege escalation, persistence hooks).
+The `sentinel` extension adds content-aware security guards that intercept tool calls before they execute. It pre-scans files being read for secret patterns (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, PEM keys, high-entropy strings, etc.), tracks files written during the session to block or confirm later indirect execution via `bash`, and provides a local token vault so LLMs can use stored credentials via `$TOKEN_name` placeholders without seeing secret values.
 
 Full details: [extensions/sentinel/README.md](extensions/sentinel/README.md).
 
@@ -344,4 +350,16 @@ Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
 
 ```bash
 pi install npm:pi-mono-team-mode
+```
+
+## gemma-video
+
+The `gemma-video` skill analyzes video files locally using Gemma via a helper script with `uv` inline dependencies. Use it for screen recordings, bug reproductions, UI walkthroughs, demo videos, and visual regression analysis.
+
+Full details: [skills/gemma-video/SKILL.md](skills/gemma-video/SKILL.md).
+
+### Usage
+
+```bash
+uv run skills/gemma-video/analyze.py <video_path> "Describe the UI flow step by step"
 ```

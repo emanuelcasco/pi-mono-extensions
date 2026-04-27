@@ -336,7 +336,8 @@ async function runFixer(
     resolved = resolveSpawnTarget(rawCommand, files, cwd);
   }
 
-  if (resolved.command === null) {
+  const command = resolved.command;
+  if (command === null) {
     return {
       ok: true,
       stderr: `Skipped ${rule.label ?? rule.command}: no compatible target found.`,
@@ -344,21 +345,21 @@ async function runFixer(
   }
 
   return new Promise((resolvePromise) => {
-    const child = spawn(resolved.command, {
+    const child = spawn(command, [], {
       cwd: resolved.spawnCwd,
       shell: true,
       env: { ...process.env, ...resolved.env },
     });
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.stderr?.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
     child.on("error", () => {
       clearTimeout(timer);
       resolvePromise({ ok: false, stderr });
     });
-    child.on("close", (code) => {
+    child.on("close", (code: number | null) => {
       clearTimeout(timer);
       resolvePromise({ ok: code === 0, stderr });
     });
