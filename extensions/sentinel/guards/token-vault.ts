@@ -2,18 +2,19 @@
  * Token Vault — secure credential injection for sentinel.
  *
  * Stores tokens/secrets in ~/.pi/agent/tokens.json with 600 permissions.
- * Tokens are NEVER visible to the LLM. The guard handles injection,
- * substitution, and persistence silently — no UI noise.
+ * Tokens are NEVER exposed to the LLM in plain text. The guard handles
+ * injection, substitution, and persistence silently.
  *
  * LLM-accessible tools:
- *   resolve_token({ name })   — resolves a token, returns masked confirmation
  *   list_tokens({})           — lists token names (no values)
+ *   resolve_token({ name })   — resolves a token for use in bash as $TOKEN_name
+ *   set_token({ name, value })— stores a token (collected via ask_user_question)
  *
  * Placeholder substitution:
  *   $TOKEN_name in bash commands is replaced with the actual value at spawn time
  *
  * User command:
- *   /token set <name>   — set a token (prompts for value if interactive)
+ *   /token set <name>   — set a token (opens interactive input; no value on command line)
  *   /token list         — list token names
  *   /token get <name>   — show token value (only on your terminal)
  *   /token delete <name>— delete a token
@@ -125,8 +126,8 @@ const resolveTokenTool = defineTool({
 	promptGuidelines: [
 		"Use resolve_token BEFORE any bash command that needs an API key, token, or secret — never hardcode credentials.",
 		"After resolving, reference the token in bash as $TOKEN_<name> (e.g., curl -H 'Authorization: Bearer $TOKEN_github').",
-		"If you need to discover available tokens first, use list_tokens.",
-		"Never ask the user to paste tokens into the conversation — they manage tokens via /token.",
+		"If the token is not found, use ask_user_question to ask the user for the value, then set_token to save it, then resolve_token again to activate.",
+		"Use list_tokens first if you're unsure which names are available.",
 	],
 	parameters: ResolveTokenParams as any,
 
@@ -136,7 +137,7 @@ const resolveTokenTool = defineTool({
 
 		if (!(name in tokens)) {
 			return {
-				content: [{ type: "text", text: `Token '${name}' not found.` }],
+				content: [{ type: "text", text: `Token '${name}' not found. Use set_token to store it, or ask the user to provide it via ask_user_question and then call set_token.` }],
 				details: { resolved: false, tokenName: name },
 				isError: true,
 			};
@@ -179,6 +180,60 @@ const listTokensTool = defineTool({
 		return {
 			content: [{ type: "text", text: `Tokens: ${names.join(", ")}` }],
 			details: { tokenCount: names.length, tokenNames: names },
+		};
+	},
+});
+
+// ─── set_token Tool ────────────────────────────────────────────────────────
+
+const SetTokenParams = Type.Object({
+	name: Type.String({ description: "Token name (e.g., 'linear', 'github', 'openai')" }),
+	value: Type.String({ description: "The token/secret value to store securely" }),
+});
+
+const setTokenTool = defineTool({
+	name: "set_token",
+	label: "Set Token",
+	description:
+		"Store a token/secret securely. Typically called after using ask_user_question to collect " +
+		"the value from the user. The value is written to an owner-only file and never shown in plain text " +
+		"by other tools. After setting, call resolve_token to activate it for bash commands.",
+	promptSnippet: "Store a token/secret collected from the user via ask_user_question",
+	promptGuidelines: [
+		"Use set_token AFTER collecting the token value from the user via ask_user_question (with a text question, type text).",
+		"Then call resolve_token to activate the token for use in bash as $TOKEN_<name>.",
+		"Never ask the user to run /token set — use ask_user_question + set_token instead so the flow stays automated.",
+	],
+	parameters: SetTokenParams as any,
+
+	async execute(_toolCallId: string, params: any, _signal: any, _onUpdate: any, _ctx: any) {
+		const { name, value } = params;
+		if (!name || !value) {
+			return {
+				content: [{ type: "text", text: "Both 'name' and 'value' are required." }],
+				isError: true,
+				details: {},
+			};
+		}
+		const tokens = await loadTokens();
+		const existed = name in tokens;
+		tokens[name] = value;
+		await saveTokens(tokens);
+
+		// Also resolve so it's immediately usable in bash
+		resolvedTokens.set(name, value);
+		resolvedTokens.set(name.toUpperCase(), value);
+		resolvedTokens.set(`TOKEN_${name}`, value);
+		resolvedTokens.set(`TOKEN_${name.toUpperCase()}`, value);
+
+		return {
+			content: [{
+				type: "text",
+				text: existed
+					? `✓ Token '${name}' updated (${maskToken(value)}).`
+					: `✓ Token '${name}' saved (${maskToken(value)}). Use $TOKEN_${name} in bash commands.`,
+			}],
+			details: {},
 		};
 	},
 });
@@ -302,16 +357,15 @@ function registerTokenCommand(pi: ExtensionAPI) {
 // ─── System Prompt Injection ─────────────────────────────────────────────
 
 const TOKEN_VAULT_SYSTEM_PROMPT = `
-## Token Vault
+## Token Vault — Credential Management
 
-You have access to a secure token vault. When you need an API key, secret, or credential for any service (e.g., Linear API key, GitHub token, OpenAI key), you MUST:
+When you need an API key, token, or secret for ANY service (e.g., Linear, GitHub, OpenAI), follow this flow:
 
-1. **Use \`list_tokens\`** to discover which tokens are already stored. Do this first if you're unsure what's available.
-2. **Use \`resolve_token\`** with the token name to make it available. After resolving, reference it in bash commands as \`$TOKEN_<name>\` (e.g., \`curl -H "Authorization: Bearer $TOKEN_linear"\`).
-3. **If a token is missing**, tell the user to set it via \`/token set <name>\` — then retry after they confirm. Do NOT use ask_user_question to collect API keys or tokens.
-4. **Never ask the user to paste API keys, tokens, or secrets into the conversation.** Direct them to \`/token set\` instead.
-
-This applies to ANY tool, skill, or workflow that requires authentication — always resolve tokens first.
+1. **Check if the token exists**: call \`list_tokens\` to see what's stored, or \`resolve_token("linear")\` for a specific one.
+2. **If found**: the token is now active — use \`$TOKEN_<name>\` in bash commands (e.g., \`curl -H "Authorization: Bearer $TOKEN_linear" ...\`).
+3. **If NOT found**: use \`ask_user_question\` with a single text question asking for the key (e.g., "What is your Linear API key?"), then call \`set_token("linear", <value>)\` with the user's response, and finally \`resolve_token("linear")\` to activate it.
+4. **Never ask the user to run a slash command like \`/token set\`** — use ask_user_question + set_token so the flow stays automated.
+5. **Never paste API keys or tokens directly into bash commands** — always use resolve_token + $TOKEN_<name> substitution.
 `.trim();
 
 function registerSystemPromptHook(pi: ExtensionAPI): void {
@@ -328,6 +382,7 @@ function registerSystemPromptHook(pi: ExtensionAPI): void {
 export function registerTokenVault(pi: ExtensionAPI): void {
 	pi.registerTool(resolveTokenTool);
 	pi.registerTool(listTokensTool);
+	pi.registerTool(setTokenTool);
 	overrideBashTool(pi);
 	createToolCallInterceptor(pi);
 	createResultSanitizer(pi);

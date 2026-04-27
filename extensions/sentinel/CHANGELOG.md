@@ -1,5 +1,15 @@
 # pi-mono-sentinel
 
+## 1.9.3
+
+### Minor Changes
+
+### Added: set_token tool
+
+- New `set_token({ name, value })` tool so the LLM can programmatically save a token after collecting it via `ask_user_question`. Completes the full automated flow: ask_user_question → set_token → resolve_token → `$TOKEN_name` in bash.
+- Updated `resolve_token` "not found" error to suggest `set_token` instead of `/token set`.
+- Rewrote system prompt injection to guide the LLM through `ask_user_question` → `set_token` → `resolve_token` flow, removing the old instruction to tell users to run `/token set`.
+
 ## 1.9.2
 
 ### Patch Changes
