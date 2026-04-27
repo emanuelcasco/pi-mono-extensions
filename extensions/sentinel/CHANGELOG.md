@@ -1,5 +1,13 @@
 # pi-mono-sentinel
 
+## 1.9.1
+
+### Patch Changes
+
+### Enhanced: token vault
+
+- Added `promptSnippet` and `promptGuidelines` to `resolve_token` and `list_tokens` tools so the LLM automatically discovers and proactively uses them for authentication without user prompting.
+
 ## 1.9.0
 
 ### Minor Changes

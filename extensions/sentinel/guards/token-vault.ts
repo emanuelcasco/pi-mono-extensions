@@ -121,6 +121,13 @@ const resolveTokenTool = defineTool({
 		"Resolve a stored token/secret by name. Returns a masked confirmation. " +
 		"The actual value is available as $TOKEN_name in bash commands and as an environment variable. " +
 		"Use this to authenticate API calls without exposing the secret.",
+	promptSnippet: "Resolve a stored token/secret by name for use in bash as $TOKEN_name",
+	promptGuidelines: [
+		"Use resolve_token BEFORE any bash command that needs an API key, token, or secret — never hardcode credentials.",
+		"After resolving, reference the token in bash as $TOKEN_<name> (e.g., curl -H 'Authorization: Bearer $TOKEN_github').",
+		"If you need to discover available tokens first, use list_tokens.",
+		"Never ask the user to paste tokens into the conversation — they manage tokens via /token.",
+	],
 	parameters: ResolveTokenParams as any,
 
 	async execute(_toolCallId, params: { name: string }) {
@@ -154,6 +161,11 @@ const listTokensTool = defineTool({
 	name: "list_tokens",
 	label: "List Tokens",
 	description: "List stored token names (values are never shown).",
+	promptSnippet: "List available stored token/secret names",
+	promptGuidelines: [
+		"Use list_tokens to discover what tokens are available before trying resolve_token with a guessed name.",
+		"Useful when the user mentions API keys, credentials, or needs authentication and you don't know the token name.",
+	],
 	parameters: ListTokensParams as any,
 
 	async execute() {
