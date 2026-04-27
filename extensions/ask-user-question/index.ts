@@ -559,27 +559,69 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 					// Tab bar (multi-question)
 					if (isMulti) {
-						const tabs: string[] = [];
-						for (let i = 0; i < questions.length; i++) {
-							const isActive = i === currentTab;
-							const answered = isAnswered(questions[i]);
-							const lbl = questions[i].label;
-							const icon = answered ? theme.fg("success", SYM.check) : theme.fg("dim", SYM.dot);
-							const text = ` ${icon} ${lbl} `;
-							tabs.push(
-								isActive ? theme.bg("selectedBg", theme.fg("text", text)) : theme.fg(answered ? "success" : "muted", text),
-							);
+						const dividerVisible = visibleWidth("│");
+						const tabCount = totalTabs;
+
+						// Determine each tab's state
+						interface TabState {
+							isActive: boolean;
+							answered: boolean;
+							label: string;
 						}
-						// Submit tab
-						const isSubmitTab = currentTab === questions.length;
-						const canSubmit = allRequired();
-						const submitText = ` ${SYM.submit} Submit `;
-						tabs.push(
-							isSubmitTab
-								? theme.bg("selectedBg", theme.fg("text", submitText))
-								: theme.fg(canSubmit ? "success" : "dim", submitText),
-						);
-						add(` ${tabs.join(theme.fg("dim", "│"))}`);
+						const tabStates: TabState[] = [];
+						for (let i = 0; i < questions.length; i++) {
+							tabStates.push({
+								isActive: i === currentTab,
+								answered: isAnswered(questions[i]),
+								label: `Q${i + 1}`,
+							});
+						}
+						tabStates.push({
+							isActive: currentTab === questions.length,
+							answered: allRequired(),
+							label: "Submit",
+						});
+
+						// Prefix widths: "▸ " = 2, "✓ " = 2
+						const prefixWidths = tabStates.map((s) => {
+							let w = 0;
+							if (s.isActive) w += visibleWidth(`${SYM.pointer} `);
+							if (s.answered) w += visibleWidth(`${SYM.check} `);
+							return w;
+						});
+
+						const totalDividers = tabCount - 1;
+						const dividerSpace = totalDividers * dividerVisible;
+						const paddingSpace = tabCount * 2; // " " around each tab
+						const prefixSpace = prefixWidths.reduce((a, b) => a + b, 0);
+						const availableForLabels = maxW - dividerSpace - paddingSpace - prefixSpace;
+						const minLabelPerTab = 6;
+						let maxLabelLen =
+							availableForLabels > tabCount * minLabelPerTab
+								? Math.floor(availableForLabels / tabCount)
+								: minLabelPerTab;
+						if (maxLabelLen < minLabelPerTab) maxLabelLen = minLabelPerTab;
+
+						const tabs: string[] = [];
+						for (let i = 0; i < tabStates.length; i++) {
+							const s = tabStates[i];
+							const rawParts: string[] = [];
+							if (s.isActive) rawParts.push(SYM.pointer);
+							if (s.answered) rawParts.push(SYM.check);
+							const prefix = rawParts.join(" ") + (rawParts.length > 0 ? " " : "");
+							const label = truncateToWidth(s.label, Math.max(1, maxLabelLen));
+							const rawText = prefix + label;
+							let styledText;
+							if (s.isActive) {
+								styledText = theme.fg("accent", theme.bold(rawText));
+							} else {
+								const color = s.answered ? "success" : "muted";
+								styledText = theme.fg(color, rawText);
+							}
+							tabs.push(` ${styledText} `);
+						}
+
+						add(theme.fg("dim", ` ${tabs.join(theme.fg("dim", "│"))}`));
 						lines.push("");
 					}
 
@@ -672,9 +714,18 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const bullet = isSelected ? theme.fg("accent", SYM.radioOn) : theme.fg("dim", SYM.radioOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
 							const color = isCursor ? "accent" : isSelected ? "text" : "muted";
-							add(` ${pointer} ${bullet} ${theme.fg(color, opt.label)}`);
+							const prefix = ` ${pointer} ${bullet} `;
+							const prefixWidth = visibleWidth(prefix);
+							const labelLines = wrapText(opt.label, Math.max(1, maxW - prefixWidth));
+							for (let li = 0; li < labelLines.length; li++) {
+								const linePrefix = li === 0 ? prefix : " ".repeat(prefixWidth);
+								add(`${linePrefix}${theme.fg(color, labelLines[li])}`);
+							}
 							if (opt.description) {
-								add(`      ${theme.fg("dim", opt.description)}`);
+								const descLines = wrapText(opt.description, Math.max(1, maxW - 6));
+								for (const dl of descLines) {
+									add(`      ${theme.fg("dim", dl)}`);
+								}
 							}
 						}
 						if (q.allowOther) {
@@ -683,7 +734,14 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const bullet = isSelected ? theme.fg("accent", SYM.radioOn) : theme.fg("dim", SYM.radioOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
 							const label = isSelected ? `Other: ${selected.label}` : "Other...";
-							add(` ${pointer} ${bullet} ${theme.fg(isCursor ? "accent" : "muted", label)}`);
+							const prefix = ` ${pointer} ${bullet} `;
+							const prefixWidth = visibleWidth(prefix);
+							const labelLines = wrapText(label, Math.max(1, maxW - prefixWidth));
+							const color = isCursor ? "accent" : "muted";
+							for (let li = 0; li < labelLines.length; li++) {
+								const linePrefix = li === 0 ? prefix : " ".repeat(prefixWidth);
+								add(`${linePrefix}${theme.fg(color, labelLines[li])}`);
+							}
 
 							if (otherMode) {
 								lines.push("");
@@ -705,9 +763,18 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const box = isChecked ? theme.fg("accent", SYM.checkOn) : theme.fg("dim", SYM.checkOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
 							const color = isCursor ? "accent" : isChecked ? "text" : "muted";
-							add(` ${pointer} ${box} ${theme.fg(color, opt.label)}`);
+							const prefix = ` ${pointer} ${box} `;
+							const prefixWidth = visibleWidth(prefix);
+							const labelLines = wrapText(opt.label, Math.max(1, maxW - prefixWidth));
+							for (let li = 0; li < labelLines.length; li++) {
+								const linePrefix = li === 0 ? prefix : " ".repeat(prefixWidth);
+								add(`${linePrefix}${theme.fg(color, labelLines[li])}`);
+							}
 							if (opt.description) {
-								add(`      ${theme.fg("dim", opt.description)}`);
+								const descLines = wrapText(opt.description, Math.max(1, maxW - 6));
+								for (const dl of descLines) {
+									add(`      ${theme.fg("dim", dl)}`);
+								}
 							}
 						}
 						if (q.allowOther) {
@@ -716,14 +783,13 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const box = custom ? theme.fg("accent", SYM.checkOn) : theme.fg("dim", SYM.checkOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
 							const label = custom ? `Other: ${custom}` : "Other...";
-							add(` ${pointer} ${box} ${theme.fg(isCursor ? "accent" : "muted", label)}`);
-
-							if (otherMode) {
-								lines.push("");
-								add(` ${theme.fg("muted", "  Your answer:")}`);
-								for (const line of editor.render(maxW - 6)) {
-									add(`   ${line}`);
-								}
+							const prefix = ` ${pointer} ${box} `;
+							const prefixWidth = visibleWidth(prefix);
+							const labelLines = wrapText(label, Math.max(1, maxW - prefixWidth));
+							const color = isCursor ? "accent" : "muted";
+							for (let li = 0; li < labelLines.length; li++) {
+								const linePrefix = li === 0 ? prefix : " ".repeat(prefixWidth);
+								add(`${linePrefix}${theme.fg(color, labelLines[li])}`);
 							}
 						}
 					}
