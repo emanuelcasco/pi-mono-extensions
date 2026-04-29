@@ -1,5 +1,16 @@
 # pi-mono-sentinel
 
+## 1.10.0
+
+### Major Changes
+
+### Removed: token vault
+
+- Removed the `token-vault` guard (introduced in 1.9.0) — the feature did not work as expected.
+- Deleted `guards/token-vault.ts` and its registration in `index.ts`.
+- Removed `resolve_token`, `list_tokens`, `set_token` tools.
+- Removed `/token` command, bash token placeholder substitution, result sanitizer, and system prompt injection.
+
 ## 1.9.3
 
 ### Minor Changes

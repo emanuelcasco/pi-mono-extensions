@@ -4,6 +4,8 @@ import type { TeamMateStore } from "../core/store.js";
 import { generateTeammateId } from "../core/store.js";
 import {
 	type IsolationMode,
+	type LiveTeammateMetrics,
+	type LiveTeammateSnapshot,
 	type SpawnOpts,
 	type TeammateRecord,
 	type TeammateRunResult,
@@ -14,6 +16,7 @@ import { runPi, type PiRun, type PiRunResult } from "../runtime/subprocess.js";
 import { cleanupWorktree, createWorktree, type WorktreeHandle } from "../runtime/worktree.js";
 import { loadTeammateSpec } from "../core/teammate-specs.js";
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from "../core/prompts.js";
+import type { PiStreamEvent } from "../runtime/pi-stream-parser.js";
 import {
 	isModelTier,
 	loadModelConfig,
@@ -33,6 +36,8 @@ type LiveRun = {
 export type TeammateEndMetrics = {
 	toolUses?: number;
 	durationMs?: number;
+	metrics?: LiveTeammateMetrics;
+	transcriptPath?: string;
 };
 
 export type AgentManagerDeps = {
@@ -55,8 +60,47 @@ export type ModelPick = {
 
 export class AgentManager {
 	private readonly liveRuns = new Map<string, LiveRun>();
+	private readonly metrics = new Map<string, LiveTeammateMetrics>();
+	private readonly descriptions = new Map<string, string>();
+	private readonly subscribers = new Set<() => void>();
+	private queuedCount = 0;
+	private notifyTimer: NodeJS.Timeout | undefined;
 
 	constructor(private readonly deps: AgentManagerDeps) {}
+
+	subscribeAll(cb: () => void): () => void {
+		this.subscribers.add(cb);
+		return () => {
+			this.subscribers.delete(cb);
+		};
+	}
+
+	setQueuedCount(count: number): void {
+		const next = Math.max(0, Math.floor(count));
+		if (next === this.queuedCount) return;
+		this.queuedCount = next;
+		this.scheduleNotify();
+	}
+
+	getQueuedCount(): number {
+		return this.queuedCount;
+	}
+
+	getLiveSnapshots(): LiveTeammateSnapshot[] {
+		return [...this.liveRuns.values()]
+			.map((live): LiveTeammateSnapshot | null => {
+				const metrics = this.metrics.get(live.record.id);
+				if (!metrics) return null;
+				return {
+					record: live.record,
+					metrics,
+					description: this.descriptions.get(live.record.id),
+					transcriptPath: this.deps.store.teammateSessionFile(live.record.id),
+				};
+			})
+			.filter((snap): snap is LiveTeammateSnapshot => snap !== null)
+			.sort((a, b) => a.metrics.startedAt - b.metrics.startedAt);
+	}
 
 	/**
 	 * Spawn a new teammate. Returns immediately with a stub result when
@@ -119,7 +163,10 @@ export class AgentManager {
 		await this.deps.store.setNameIndex(parentSessionId, nameIndex);
 
 		const initialMessage = buildInitialMessage(opts, spec?.description);
-		const run = runPi(this.buildRunOptions(record, initialMessage, spec ?? undefined));
+		const run = runPi({
+			...this.buildRunOptions(record, initialMessage, spec ?? undefined),
+			onEvent: (event) => this.applyEvent(record, event),
+		});
 
 		return this.track(
 			record,
@@ -148,7 +195,10 @@ export class AgentManager {
 			? await loadTeammateSpec(record.cwd, record.subagentType)
 			: null;
 
-		const run = runPi(this.buildRunOptions(record, message, spec ?? undefined));
+		const run = runPi({
+			...this.buildRunOptions(record, message, spec ?? undefined),
+			onEvent: (event) => this.applyEvent(record, event),
+		});
 
 		// Worktree cleanup only runs at the first spawn. Resume turns pass undefined.
 		return this.track(
@@ -165,9 +215,15 @@ export class AgentManager {
 		const record = await this.resolveTeammate(nameOrId);
 		const live = this.liveRuns.get(record.id);
 		if (live) live.run.abort();
+		const metrics = this.metrics.get(record.id);
+		if (metrics) {
+			metrics.exitReason = "stopped";
+			metrics.finishedAt = Date.now();
+		}
 		record.status = "stopped";
 		record.updatedAt = new Date().toISOString();
 		await this.deps.store.saveTeammate(record);
+		this.scheduleNotify();
 	}
 
 	/** Read the latest output of a teammate (used by the task_output tool). */
@@ -198,6 +254,9 @@ export class AgentManager {
 	async cleanup(): Promise<void> {
 		const entries = [...this.liveRuns.values()];
 		this.liveRuns.clear();
+		this.metrics.clear();
+		this.descriptions.clear();
+		this.queuedCount = 0;
 		const now = new Date().toISOString();
 		await Promise.all(
 			entries.map((live) => {
@@ -207,6 +266,7 @@ export class AgentManager {
 				return this.deps.store.saveTeammate(live.record).catch(() => {});
 			}),
 		);
+		this.scheduleNotify();
 	}
 
 	// --- internals ---
@@ -291,7 +351,15 @@ export class AgentManager {
 		description: string,
 	): Promise<TeammateRunResult> {
 		const startedAt = Date.now();
+		this.metrics.set(record.id, {
+			turns: 0,
+			toolUses: 0,
+			tokens: 0,
+			startedAt,
+		});
+		this.descriptions.set(record.id, description);
 		this.liveRuns.set(record.id, { run, record, worktree, description, startedAt });
+		this.scheduleNotify();
 
 		const finalize = async (): Promise<TeammateRunResult> => {
 			let runResult: PiRunResult | null = null;
@@ -302,6 +370,11 @@ export class AgentManager {
 				runError = err as Error;
 			}
 			this.liveRuns.delete(record.id);
+
+			const metric = this.metrics.get(record.id);
+			if (metric) {
+				metric.finishedAt = Date.now();
+			}
 
 			const status: TeammateStatus = deriveStatus(runResult, runError, record.status);
 			const stderrTail = runResult?.stderr?.trim();
@@ -329,9 +402,24 @@ export class AgentManager {
 				lastExitCode: runResult?.exitCode ?? undefined,
 			};
 			await this.deps.store.saveTeammate(updated);
+
+			const baseMetric = this.metrics.get(record.id);
+			const finalMetrics = baseMetric
+				? {
+					...baseMetric,
+					exitReason: mapExitReason(status),
+				  }
+				: undefined;
+			const transcriptPath = this.deps.store.teammateSessionFile(updated.id);
 			this.deps.onTeammateEnd?.(updated, {
+				toolUses: finalMetrics?.toolUses,
 				durationMs: Date.now() - startedAt,
+				metrics: finalMetrics,
+				transcriptPath,
 			});
+			this.metrics.delete(record.id);
+			this.descriptions.delete(record.id);
+			this.scheduleNotify();
 
 			return {
 				teammateId: updated.id,
@@ -340,6 +428,8 @@ export class AgentManager {
 				status,
 				result: finalMessage,
 				exitCode: runResult?.exitCode ?? null,
+				metrics: finalMetrics,
+				transcriptPath,
 				provider: record.provider,
 				model: record.model,
 				modelRationale,
@@ -363,11 +453,68 @@ export class AgentManager {
 				`Agent spawned. task_id=${record.id}. ` +
 				`You will receive a <task-notification> when it finishes.`,
 			exitCode: null,
+			metrics: this.metrics.get(record.id),
+			transcriptPath: this.deps.store.teammateSessionFile(record.id),
 			provider: record.provider,
 			model: record.model,
 			modelRationale,
 			background: true,
 		};
+	}
+
+	private applyEvent(record: TeammateRecord, event: PiStreamEvent): void {
+		const metrics = this.metrics.get(record.id);
+		if (!metrics) return;
+
+		switch (event.type) {
+			case "assistant_delta": {
+				if (!metrics.activityHint) {
+					metrics.activityHint = "thinking…";
+				}
+				break;
+			}
+			case "assistant_message": {
+				metrics.turns += 1;
+				const usageTotal = event.usage?.totalTokens;
+				if (typeof usageTotal === "number" && Number.isFinite(usageTotal) && usageTotal > 0) {
+					metrics.tokens += usageTotal;
+				}
+				metrics.currentTool = undefined;
+				metrics.currentToolStartedAt = undefined;
+				metrics.activityHint = "responding…";
+				break;
+			}
+			case "tool_start": {
+				metrics.toolUses += 1;
+				metrics.currentTool = event.toolName;
+				metrics.currentToolStartedAt = Date.now();
+				metrics.activityHint = describeToolActivity(event.toolName, event.argsPreview);
+				break;
+			}
+			case "tool_end": {
+				metrics.activityHint = event.isError ? "tool error…" : "processing result…";
+				if (metrics.currentTool === event.toolName || !event.toolName) {
+					metrics.currentTool = undefined;
+					metrics.currentToolStartedAt = undefined;
+				}
+				break;
+			}
+			case "turn_end": {
+				metrics.activityHint = "waiting…";
+				break;
+			}
+		}
+
+		this.scheduleNotify();
+	}
+
+	private scheduleNotify(): void {
+		if (this.notifyTimer) return;
+		this.notifyTimer = setTimeout(() => {
+			this.notifyTimer = undefined;
+			for (const cb of this.subscribers) cb();
+		}, 80);
+		this.notifyTimer.unref();
 	}
 }
 
@@ -415,5 +562,25 @@ function deriveStatus(
 	if (error || !result) return "failed";
 	if (result.exitSignal) return previous === "stopped" ? "stopped" : "failed";
 	return result.exitCode === 0 ? "completed" : "failed";
+}
+
+function mapExitReason(status: TeammateStatus): LiveTeammateMetrics["exitReason"] {
+	if (status === "completed") return "completed";
+	if (status === "stopped") return "stopped";
+	if (status === "running") return "wrapped_up";
+	if (status === "pending") return "aborted";
+	return "failed";
+}
+
+function describeToolActivity(toolName: string, argsPreview: string | undefined): string {
+	const tool = toolName.toLowerCase();
+	if (tool === "read") return "reading files…";
+	if (tool === "edit" || tool === "write") return "editing files…";
+	if (tool === "bash") return "running commands…";
+	if (tool === "grep" || tool === "glob") return "searching…";
+	if (argsPreview && argsPreview.length > 0) {
+		return `${toolName}: ${argsPreview.slice(0, 80)}${argsPreview.length > 80 ? "…" : ""}`;
+	}
+	return `${toolName}…`;
 }
 

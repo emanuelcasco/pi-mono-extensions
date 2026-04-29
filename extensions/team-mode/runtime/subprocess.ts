@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { writeFile, mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { PiStreamParser, type PiStreamEvent } from "./pi-stream-parser.js";
 
 const STDERR_BUDGET = 8 * 1024;
 const KILL_GRACE_MS = 3_000;
@@ -25,6 +26,7 @@ export type PiRunOptions = {
 	parentSessionId?: string;
 	/** Propagated to the subprocess as its task-owner identity. */
 	teammateName?: string;
+	onEvent?: (event: PiStreamEvent) => void;
 	signal?: AbortSignal;
 };
 
@@ -79,7 +81,7 @@ export function runPi(opts: PiRunOptions): PiRun {
 		controller.signal.addEventListener("abort", onAbort, { once: true });
 
 		try {
-			return await collect(proc);
+			return await collect(proc, opts.onEvent);
 		} finally {
 			controller.signal.removeEventListener("abort", onAbort);
 		}
@@ -116,33 +118,26 @@ async function writeSystemPrompt(body: string): Promise<string> {
 	return file;
 }
 
-function collect(proc: ChildProcess): Promise<PiRunResult> {
-	let stdoutBuffer = "";
+function collect(proc: ChildProcess, onEvent?: (event: PiStreamEvent) => void): Promise<PiRunResult> {
+	const parser = new PiStreamParser();
 	let stderr = "";
 	let finalMessage = "";
 	const deltaBuffer: string[] = [];
 
-	proc.stdout?.on("data", (chunk: Buffer) => {
-		stdoutBuffer += chunk.toString("utf8");
-		const lines = stdoutBuffer.split("\n");
-		stdoutBuffer = lines.pop() ?? "";
-		for (const line of lines) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			let event: Record<string, unknown>;
-			try {
-				event = JSON.parse(trimmed);
-			} catch {
-				continue;
-			}
-			if (event.type === "text_delta" && typeof event.text === "string") {
+	const emit = (events: PiStreamEvent[]) => {
+		for (const event of events) {
+			onEvent?.(event);
+			if (event.type === "assistant_delta") {
 				deltaBuffer.push(event.text);
 			}
-			if (event.type === "message_end") {
-				const message = extractFinalText(event);
-				if (message) finalMessage = message;
+			if (event.type === "assistant_message" && event.text) {
+				finalMessage = event.text;
 			}
 		}
+	};
+
+	proc.stdout?.on("data", (chunk: Buffer) => {
+		emit(parser.push(chunk.toString("utf8")));
 	});
 
 	proc.stderr?.on("data", (chunk: Buffer) => {
@@ -152,6 +147,7 @@ function collect(proc: ChildProcess): Promise<PiRunResult> {
 
 	return new Promise((resolve) => {
 		proc.on("close", (code, signal) => {
+			emit(parser.flush());
 			if (!finalMessage && deltaBuffer.length > 0) {
 				finalMessage = deltaBuffer.join("");
 			}
@@ -162,22 +158,6 @@ function collect(proc: ChildProcess): Promise<PiRunResult> {
 			resolve({ finalMessage, exitCode: null, exitSignal: null, stderr });
 		});
 	});
-}
-
-function extractFinalText(event: Record<string, unknown>): string | undefined {
-	const msg = event.message;
-	if (msg && typeof msg === "object") {
-		const content = (msg as { content?: unknown }).content;
-		if (Array.isArray(content)) {
-			const text = content
-				.map((b) => (typeof b === "object" && b !== null && (b as { text?: string }).text) || "")
-				.filter(Boolean)
-				.join("\n");
-			if (text) return text;
-		}
-	}
-	if (typeof event.text === "string") return event.text as string;
-	return undefined;
 }
 
 function terminate(proc: ChildProcess): void {

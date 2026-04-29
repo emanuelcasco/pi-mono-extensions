@@ -16,11 +16,6 @@
  *    Intercepts raw bash commands and write/edit calls that perform
  *    system-level operations (sudo, curl|bash, brew install, writes to
  *    shell configs / system directories, rm -rf on system paths).
- *
- * 4. **token-vault** (credential injection):
- *    Stores tokens in ~/.pi/agent/tokens.json (600 perms). Provides
- *    resolve_token/list_tokens tools for the LLM, $TOKEN_name placeholder
- *    substitution in bash, and env-var injection. No UI noise.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -29,7 +24,6 @@ import { SentinelSession } from "./session.js";
 import { registerOutputScanner } from "./guards/output-scanner.js";
 import { registerExecutionTracker } from "./guards/execution-tracker.js";
 import { registerPermissionGate } from "./guards/permission-gate.js";
-import { registerTokenVault } from "./guards/token-vault.js";
 
 export default function (pi: ExtensionAPI): void {
 	const session = new SentinelSession();
@@ -46,7 +40,4 @@ export default function (pi: ExtensionAPI): void {
 
 	// Gap 4: proactive permission gate for bash + out-of-scope writes
 	registerPermissionGate(pi);
-
-	// Token vault: secure credential storage and injection
-	registerTokenVault(pi);
 }
