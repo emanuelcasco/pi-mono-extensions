@@ -19,6 +19,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 
+import type { SentinelSession } from "../session.js";
 import {
 	BASH_RISK_DESCRIPTIONS,
 	PATH_CATEGORY_DESCRIPTIONS,
@@ -75,7 +76,7 @@ function registerBashGate(pi: ExtensionAPI): void {
 // Write / edit gating
 // ---------------------------------------------------------------------------
 
-function registerPathGate(pi: ExtensionAPI): void {
+function registerPathGate(pi: ExtensionAPI, session: SentinelSession): void {
 	const handler = async (
 		rawPath: string | undefined,
 		toolName: "write" | "edit",
@@ -87,25 +88,47 @@ function registerPathGate(pi: ExtensionAPI): void {
 		const category = classifyPath(absolute, ctx.cwd);
 		if (!category) return;
 
-		const message = [
-			`${toolName === "write" ? "Write" : "Edit"} targets a ${PATH_CATEGORY_DESCRIPTIONS[category]}:`,
-			`  Path: ${absolute}`,
-			"",
+		// Skip the dialog entirely if this path was previously whitelisted
+		if (session.isWhitelisted(absolute)) {
+			return;
+		}
+
+		const contextLine =
 			category === "shell-config"
 				? "This is a persistent user shell configuration change."
 				: category === "system-directory"
 					? "This modifies a system directory and may affect other applications."
-					: "This path is outside the current project root.",
-			"",
-			"Allow this write?",
+					: "This path is outside the current project root.";
+
+		const title = [
+			`[sentinel] Permission gate — ${toolName}`,
+			`Path: ${absolute}`,
+			`Category: ${PATH_CATEGORY_DESCRIPTIONS[category]}`,
+			contextLine,
 		].join("\n");
 
 		if (ctx.hasUI) {
-			const allowed = await ctx.ui.confirm(
-				`[sentinel] Permission gate — ${toolName}`,
-				message,
-			);
-			if (allowed) return;
+			const choice = await ctx.ui.select(title, [
+				"Allow once",
+				"Always allow this path",
+				"Deny",
+			]);
+
+			if (choice === "Allow once") {
+				return;
+			}
+
+			if (choice === "Always allow this path") {
+				session.addToWhitelist(absolute);
+				return;
+			}
+
+			// choice === "Deny" or undefined (user cancelled)
+			return {
+				block: true,
+				reason:
+					`[sentinel] Blocked ${toolName} to ${PATH_CATEGORY_DESCRIPTIONS[category]}: ${absolute}`,
+			};
 		}
 
 		return {
@@ -117,11 +140,19 @@ function registerPathGate(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!isToolCallEventType("write", event)) return;
+		const rawPath = event.input.path;
+		if (rawPath?.startsWith("~")) {
+			event.input.path = resolveTargetPath(rawPath, ctx.cwd);
+		}
 		return handler(event.input.path, "write", ctx);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!isToolCallEventType("edit", event)) return;
+		const rawPath = event.input.path;
+		if (rawPath?.startsWith("~")) {
+			event.input.path = resolveTargetPath(rawPath, ctx.cwd);
+		}
 		return handler(event.input.path, "edit", ctx);
 	});
 }
@@ -130,7 +161,10 @@ function registerPathGate(pi: ExtensionAPI): void {
 // Public registration
 // ---------------------------------------------------------------------------
 
-export function registerPermissionGate(pi: ExtensionAPI): void {
+export function registerPermissionGate(
+	pi: ExtensionAPI,
+	session: SentinelSession,
+): void {
 	registerBashGate(pi);
-	registerPathGate(pi);
+	registerPathGate(pi, session);
 }

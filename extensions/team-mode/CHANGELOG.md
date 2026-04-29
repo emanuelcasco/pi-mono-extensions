@@ -1,5 +1,21 @@
 # pi-mono-team-mode
 
+## 2.1.0
+
+### Minor Changes
+
+### Enhanced: team-mode
+
+- Added `delegate` tool with:
+  - `tasks[]` foreground parallel mode (bounded concurrency + aggregated outputs)
+  - `chain[]` sequential mode with `{task}` / `{previous}` / `{chain_dir}` templating
+  - inner chain `parallel` fan-out/fan-in steps, plus per-step `output` / `reads`
+- Added live pi stdout event parsing and in-memory teammate metrics (turns, tools, tokens, activity).
+- Replaced one-line status summary with a multi-line **● Agents** widget showing active/queued teammates and live counters.
+- Added styled `task-notification` message renderer for completion/failure boxes with metrics + transcript path.
+- Updated coordinator prompt guidance to include task-board + `delegate` fan-out workflow.
+- Added tests for parser, parallel helpers, delegation manager, widget rendering, and notification renderer.
+
 ## 2.0.0
 
 ### Major Changes — Complete Rewrite

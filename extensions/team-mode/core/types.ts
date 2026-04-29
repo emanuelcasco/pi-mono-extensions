@@ -13,6 +13,13 @@ export type TeammateStatus =
 	| "failed"
 	| "stopped";
 
+export type TeammateExitReason =
+	| "completed"
+	| "stopped"
+	| "failed"
+	| "wrapped_up"
+	| "aborted";
+
 export type IsolationMode = "none" | "worktree";
 
 /** Persistent record for a single named teammate. */
@@ -81,6 +88,26 @@ export type SpawnOpts = {
 	cwd?: string;
 };
 
+export type LiveTeammateMetrics = {
+	turns: number;
+	maxTurns?: number;
+	toolUses: number;
+	tokens: number;
+	currentTool?: string;
+	currentToolStartedAt?: number;
+	activityHint?: string;
+	startedAt: number;
+	finishedAt?: number;
+	exitReason?: TeammateExitReason;
+};
+
+export type LiveTeammateSnapshot = {
+	record: TeammateRecord;
+	metrics: LiveTeammateMetrics;
+	description?: string;
+	transcriptPath: string;
+};
+
 /** Outcome of a spawn or send_message operation. */
 export type TeammateRunResult = {
 	teammateId: string;
@@ -91,6 +118,8 @@ export type TeammateRunResult = {
 	/** Final text message from the teammate, or a stub if background. */
 	result: string;
 	exitCode: number | null;
+	metrics?: LiveTeammateMetrics;
+	transcriptPath?: string;
 	provider?: string;
 	model?: string;
 	modelRationale?: string;

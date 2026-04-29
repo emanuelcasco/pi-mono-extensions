@@ -5,7 +5,7 @@
  * No theme or tui imports here so they're trivial to unit test.
  */
 
-import type { TeamRecord, TeammateRecord } from "../core/types.js";
+import type { LiveTeammateSnapshot, TeamRecord, TeammateRecord } from "../core/types.js";
 import type { TaskRecord } from "../core/tasks.js";
 
 export const STATUS_ICONS: Record<string, string> = {
@@ -115,4 +115,35 @@ export function formatTeammateStatus(t: TeammateRecord): string {
 		t.lastResult ? `Last result:\n${t.lastResult}` : "",
 	].filter(Boolean);
 	return out.join("\n");
+}
+
+export function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms < 0) return "0.0s";
+	if (ms < 1000) return `${ms.toFixed(0)}ms`;
+	return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export function formatTokenCount(tokens: number): string {
+	if (!Number.isFinite(tokens) || tokens <= 0) return "0";
+	if (tokens < 1000) return `${Math.round(tokens)}`;
+	return `${(tokens / 1000).toFixed(1)}k`;
+}
+
+export function summarizeResult(text: string, max = 120): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	if (flat.length <= max) return flat;
+	return `${flat.slice(0, max)}…`;
+}
+
+export function formatMetricChip(snapshot: LiveTeammateSnapshot): string {
+	const elapsed = (snapshot.metrics.finishedAt ?? Date.now()) - snapshot.metrics.startedAt;
+	const turns = snapshot.metrics.maxTurns
+		? `⟳ ${snapshot.metrics.turns}≤${snapshot.metrics.maxTurns}`
+		: `⟳ ${snapshot.metrics.turns}`;
+	return [
+		turns,
+		`${snapshot.metrics.toolUses} tool uses`,
+		`${formatTokenCount(snapshot.metrics.tokens)} tok`,
+		formatDuration(elapsed),
+	].join(" · ");
 }

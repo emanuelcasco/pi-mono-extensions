@@ -28,7 +28,8 @@ import {
 	isCoordinatorMode,
 } from "./core/prompts.js";
 import type { TeammateRunResult, TeammateStatus } from "./core/types.js";
-import { AgentManager } from "./managers/agent-manager.js";
+import { AgentManager, type TeammateEndMetrics } from "./managers/agent-manager.js";
+import { DelegationManager, type DelegationResult } from "./managers/delegation-manager.js";
 import { TeamManager } from "./managers/team-manager.js";
 import { TaskManager, VersionConflictError } from "./managers/task-manager.js";
 import {
@@ -39,10 +40,12 @@ import {
 	formatTeammateList,
 	formatTeammateStatus,
 } from "./ui/formatters.js";
-import { updateTeamMateWidget } from "./ui/widget.js";
+import { renderTaskNotification, type TaskNotificationDetails } from "./ui/notification-box.js";
+import { startTeamMateWidget } from "./ui/widget.js";
 
 type ParentManagers = {
 	agents: AgentManager;
+	delegations: DelegationManager;
 	teams: TeamManager;
 	tasks: TaskManager;
 };
@@ -50,6 +53,7 @@ type ParentManagers = {
 let parentManagers: ParentManagers | undefined;
 let subprocessTasks: TaskManager | undefined;
 let parentPi: ExtensionAPI | undefined;
+let disposeWidget: (() => void) | undefined;
 
 function isSubprocess(): boolean {
 	return process.env.PI_TEAM_MATE_SUBPROCESS === "1";
@@ -75,18 +79,18 @@ async function initParent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Pare
 		getParentSessionId: () => ctx.sessionManager.getSessionId(),
 		getDefaultCwd: () => ctx.cwd,
 		onTeammateEnd: (record, metrics) => {
-			void refreshWidget(ctx);
-			void pushTaskNotification(record, metrics.durationMs);
+			void pushTaskNotification(record, metrics);
 		},
 	});
 	const teams = new TeamManager(store, agents, () => ctx.sessionManager.getSessionId());
+	const delegations = new DelegationManager(agents);
 	const tasks = new TaskManager({
 		store: taskStore,
 		getParentSessionId: () => ctx.sessionManager.getSessionId(),
 		getTaskCompletedHook: async () => (await loadModelConfig()).taskCompletedHook,
 		getCwd: () => ctx.cwd,
 	});
-	parentManagers = { agents, teams, tasks };
+	parentManagers = { agents, delegations, teams, tasks };
 	return parentManagers;
 }
 
@@ -101,10 +105,8 @@ function initSubprocess(): TaskManager {
 	return subprocessTasks;
 }
 
-async function refreshWidget(ctx: ExtensionContext): Promise<void> {
-	if (!parentManagers) return;
-	const list = await parentManagers.agents.list();
-	updateTeamMateWidget(ctx, list);
+async function refreshWidget(_ctx: ExtensionContext): Promise<void> {
+	// Widget is now event-driven via startTeamMateWidget + AgentManager subscriptions.
 }
 
 const STATUS_TO_CC: Record<TeammateStatus, "completed" | "failed" | "killed"> = {
@@ -127,28 +129,34 @@ async function pushTaskNotification(
 		lastResult?: string;
 		lastExitCode?: number;
 	},
-	durationMs: number | undefined,
+	metrics: TeammateEndMetrics,
 ): Promise<void> {
 	if (!parentPi) return;
 	const ccStatus = STATUS_TO_CC[record.status] ?? "failed";
+	const summary = `Agent "${record.name}" ${ccStatus}`;
 	const xml = formatTaskNotification({
 		taskId: record.id,
 		status: ccStatus,
-		summary: `Agent "${record.name}" ${ccStatus}`,
+		summary,
 		result: record.lastResult,
-		durationMs,
+		toolUses: metrics.toolUses,
+		durationMs: metrics.durationMs,
 	});
 	try {
+		const details: TaskNotificationDetails = {
+			taskId: record.id,
+			status: ccStatus,
+			durationMs: metrics.durationMs,
+			metrics: metrics.metrics,
+			transcriptPath: metrics.transcriptPath,
+			summary,
+		};
 		parentPi.sendMessage(
 			{
 				customType: "task-notification",
 				content: xml,
 				display: true,
-				details: {
-					taskId: record.id,
-					status: ccStatus,
-					durationMs,
-				},
+				details,
 			},
 			{ triggerTurn: true },
 		);
@@ -178,6 +186,39 @@ const AgentParams = Type.Object({
 	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"cheap\"/\"mid\"/\"deep\")." })),
 	isolation: Type.Optional(IsolationSchema),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Return immediately; worker keeps running. Completion arrives as <task-notification>." })),
+});
+
+const DelegateTaskParams = Type.Object({
+	description: Type.String({ description: "Short (3–5 word) task label." }),
+	prompt: Type.String({ description: "Self-contained task brief. Workers don't see the coordinator's conversation." }),
+	name: Type.Optional(Type.String({ description: "Unique teammate name. Pass as `to` in send_message to continue." })),
+	team_name: Type.Optional(Type.String({ description: "Team id from team_create (optional grouping)." })),
+	subagent_type: Type.Optional(Type.String({ description: "Role spec — .pi/teammates/<role>.md or .claude/teammates/<role>.md." })),
+	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"cheap\"/\"mid\"/\"deep\")." })),
+	isolation: Type.Optional(IsolationSchema),
+	count: Type.Optional(Type.Number()),
+	output: Type.Optional(Type.Union([Type.String(), Type.Boolean()])),
+	reads: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Boolean()])),
+});
+
+const DelegateChainParallelStepParams = Type.Object({
+	parallel: Type.Array(DelegateTaskParams, { minItems: 1, description: "Array of task objects, each with description + prompt." }),
+	concurrency: Type.Optional(Type.Number()),
+	failFast: Type.Optional(Type.Boolean()),
+	isolation: Type.Optional(IsolationSchema),
+});
+
+const DelegateChainStepParams = Type.Union([
+	DelegateTaskParams,
+	DelegateChainParallelStepParams,
+]);
+
+const DelegateParams = Type.Object({
+	task: Type.Optional(Type.String()),
+	tasks: Type.Optional(Type.Array(DelegateTaskParams)),
+	chain: Type.Optional(Type.Array(DelegateChainStepParams)),
+	concurrency: Type.Optional(Type.Number()),
+	isolation: Type.Optional(IsolationSchema),
 });
 
 const SendMessageParams = Type.Object({
@@ -242,7 +283,9 @@ export function activate(pi: ExtensionAPI): void {
 export default activate;
 
 function activateParent(pi: ExtensionAPI): void {
+	pi.registerMessageRenderer("task-notification", renderTaskNotification);
 	registerAgentTools(pi);
+	registerDelegateTools(pi);
 	registerTeamTools(pi);
 	registerTaskTools(pi);
 	registerCommands(pi);
@@ -351,6 +394,88 @@ function registerAgentTools(pi: ExtensionAPI): void {
 			};
 		},
 	});
+}
+
+function registerDelegateTools(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "delegate",
+		label: "Delegate Group",
+		description:
+			"Run a foreground delegation group.\n\nTwo mutually exclusive modes:\n- tasks[] — bounded parallel fan-out. Each item MUST have `description` and `prompt` fields.\n- chain[] — sequential workflow steps. Each step MUST be an object with `description` and `prompt` fields. To fan out workers inside a chain step, add a `parallel` array: { description, prompt, parallel: [{ description, prompt }, ...] }.\n\nTemplate substitutions available in prompt strings: {task}, {previous}, {chain_dir}.",
+		parameters: DelegateParams,
+		async execute(_toolCallId, params) {
+			const { delegations } = getParentManagers();
+			const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0;
+			const hasChain = Array.isArray(params.chain) && params.chain.length > 0;
+			if (hasTasks === hasChain) {
+				throw new Error("delegate requires exactly one mode: either tasks[] or chain[]");
+			}
+
+			if (hasTasks) {
+				const result = await delegations.runParallel({
+					tasks: (params.tasks ?? []).map(mapDelegateTask),
+					concurrency: params.concurrency,
+					isolation: params.isolation,
+				});
+				return {
+					content: [{ type: "text", text: formatDelegateResult(result) }],
+					details: result,
+				};
+			}
+
+			const chainSteps = (params.chain ?? []).map((step) => {
+				if ("parallel" in step) {
+					return {
+						parallel: step.parallel.map(mapDelegateTask),
+						concurrency: step.concurrency,
+						failFast: step.failFast,
+						isolation: step.isolation,
+					};
+				}
+				return mapDelegateTask(step);
+			});
+			const usesTaskTemplate = JSON.stringify(chainSteps).includes("{task}");
+			if (usesTaskTemplate && !(params.task && params.task.trim())) {
+				throw new Error("delegate chain mode requires top-level task when {task} is used");
+			}
+			const result = await delegations.runChain({
+				task: params.task ?? "",
+				chain: chainSteps,
+				concurrency: params.concurrency,
+				isolation: params.isolation,
+			});
+			return {
+				content: [{ type: "text", text: formatDelegateResult(result) }],
+				details: result,
+			};
+		},
+	});
+}
+
+function mapDelegateTask(task: {
+	description: string;
+	prompt: string;
+	name?: string;
+	team_name?: string;
+	subagent_type?: string;
+	model?: string;
+	isolation?: "none" | "worktree";
+	count?: number;
+	output?: string | boolean;
+	reads?: string[] | boolean;
+}) {
+	return {
+		description: task.description,
+		prompt: task.prompt,
+		name: task.name,
+		teamId: task.team_name,
+		subagentType: task.subagent_type,
+		model: task.model,
+		isolation: task.isolation,
+		count: task.count,
+		output: task.output === true ? undefined : task.output,
+		reads: task.reads === true ? undefined : task.reads,
+	};
 }
 
 function registerTeamTools(pi: ExtensionAPI): void {
@@ -622,14 +747,18 @@ function registerCoordinatorPromptHook(pi: ExtensionAPI): void {
 
 function registerLifecycle(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
+		disposeWidget?.();
+		disposeWidget = undefined;
 		if (event.reason !== "startup" && parentManagers) {
 			await parentManagers.agents.cleanup();
 		}
-		await initParent(pi, ctx);
-		await refreshWidget(ctx);
+		const managers = await initParent(pi, ctx);
+		disposeWidget = startTeamMateWidget(ctx, managers.agents);
 	});
 
 	pi.on("session_shutdown", async () => {
+		disposeWidget?.();
+		disposeWidget = undefined;
 		if (parentManagers) await parentManagers.agents.cleanup();
 	});
 }
@@ -655,4 +784,14 @@ function formatSpawnResult(result: TeammateRunResult): string {
 		lines.push("", result.result);
 	}
 	return lines.join("\n");
+}
+
+function formatDelegateResult(result: DelegationResult): string {
+	if (result.mode === "parallel") return result.output;
+	return [
+		`Chain completed: ${result.steps} step(s)`,
+		`chain_dir: ${result.chainDir ?? "(none)"}`,
+		"",
+		result.output,
+	].join("\n");
 }

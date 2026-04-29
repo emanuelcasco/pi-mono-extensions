@@ -7,7 +7,7 @@ It addresses cross-cutting security gaps that pure command-based guardrails miss
 - **Content-in-location** — a file the agent is about to read contains secrets
 - **Indirect execution** — a file the agent wrote earlier in the session is later executed via `bash`
 - **Out-of-scope operations** — a raw `bash` command performs a system-level action (sudo, `curl | bash`, `brew install`, `rm -rf /Library/...`) or a `write`/`edit` targets a file outside the project root (shell config, system directory)
-- **Credential injection** — the LLM needs to use stored secrets (API keys, tokens) without ever seeing their values
+- **Credential safety** — the LLM never hardcodes API keys or secrets in tool calls
 
 ## Guards
 
@@ -74,61 +74,11 @@ No risk classes matched     → proceed
 
 When multiple risk classes match a single command, all matched labels are surfaced in one combined confirmation dialog instead of stacking prompts.
 
-### 4. token-vault — secure credential storage and injection
-
-Stores tokens/secrets in `~/.pi/agent/tokens.json` (file permissions 600).
-Operates silently — no startup notifications, no status bar messages.
-Token values are **never exposed** to the LLM context.
-
-**LLM-accessible tools:**
-
-| Tool                      | Description                                                                                                                                                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resolve_token({ name })` | Resolves a stored token. Returns a masked confirmation (e.g. `✓ Token 'github' resolved (ghp_****abcd)`). The actual value is injected into subsequent `bash` calls via `$TOKEN_name` placeholder substitution and as an environment variable. |
-| `list_tokens({})`         | Lists all stored token names (values are never shown).                                                                                                                                                                                         |
-
-**Placeholder substitution — `$TOKEN_name`:**
-Any `$TOKEN_name` pattern in a bash command is replaced with the actual token value before the command executes. The LLM only sees the placeholder — never the secret.
-
-```
-$TOKEN_github ──► ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-The resolved token is also available as an environment variable (`TOKEN_NAME`) in spawned bash processes.
-
-**LLM usage example:**
-
-```
-resolve_token({ name: "github" })
-→ ✓ Token 'github' resolved (ghp_****abcd).
-
-curl -H "Authorization: Bearer $TOKEN_github" https://api.github.com/user
-→ The actual token is substituted before bash executes.
-```
-
-**Security measures:**
-
-- `tokens.json` is stored with `chmod 600` (owner read/write only)
-- Direct `read`/`write`/`edit` access to `tokens.json` is blocked by the guard — use `resolve_token` instead
-- Tool results are scanned for accidental token value leaks and redacted to `[TOKEN_name]`
-- The `/token` command never echoes values in the LLM context
-
-**User management — `/token` command:**
-
-| Command                | Description                                       |
-| ---------------------- | ------------------------------------------------- |
-| `/token set <name>`    | Set a token (prompts for value in interactive mode) |
-| `/token list`          | List all token names                                |
-| `/token get <name>`    | Show a token value (terminal only)                  |
-| `/token delete <name>` | Delete a token                                      |
-| `/token env <name>`    | Export token as env var for the session             |
-
 ## Behavior
 
 - **No UI available** — guards fail safe by blocking with a clear `reason`.
 - **UI available** — the user sees a `confirm()` dialog with the matched labels, line numbers, and snippets, and can allow or deny.
-- **Token vault** operates silently with no startup notifications or status messages.
-- Session state (scan cache, write registry) is cleared on `session_start`. Token vault state persists across sessions.
+- Session state (scan cache, write registry) is cleared on `session_start`.
 
 ## Install
 

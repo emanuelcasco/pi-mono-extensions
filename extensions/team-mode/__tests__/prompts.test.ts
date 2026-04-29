@@ -24,9 +24,10 @@ describe("getCoordinatorSystemPrompt", () => {
 		assert.match(prompt, /coordinator/i);
 		assert.match(prompt, /Your Role/);
 	});
-	test("references the 5 core tools", () => {
+	test("references coordinator tools", () => {
 		for (const name of [
 			"agent",
+			"delegate",
 			"send_message",
 			"task_stop",
 			"task_create",

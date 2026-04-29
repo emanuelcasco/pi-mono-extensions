@@ -21,6 +21,10 @@ import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import type { SentinelSession } from "../session.js";
 import type { ScanMatch } from "../types.js";
 import {
+	expandPaths,
+	extractReadTargets,
+} from "../patterns/read-targets.js";
+import {
 	isBinaryContent,
 	MAX_SCAN_BYTES,
 	scanForSecrets,
@@ -41,24 +45,6 @@ function formatConfirmMessage(matches: ScanMatch[]): string {
 		"",
 		"Allow this read?",
 	].join("\n");
-}
-
-/**
- * Extract file paths from bash commands that read file content.
- * Targets: cat, head, tail, less, more.
- */
-function extractReadTargets(command: string): string[] {
-	const pattern = /\b(?:cat|head|tail|less|more)\s+([^\s|;&]+)/g;
-	const paths: string[] = [];
-	let match: RegExpExecArray | null;
-	while ((match = pattern.exec(command)) !== null) {
-		const target = match[1];
-		// Skip flags (start with -)
-		if (!target.startsWith("-")) {
-			paths.push(target);
-		}
-	}
-	return paths;
 }
 
 /**
@@ -159,13 +145,15 @@ export function registerOutputScanner(
 		const targets = extractReadTargets(command);
 		if (targets.length === 0) return;
 
-		// Scan all targeted files
+		// Scan all targeted files (with glob expansion)
 		const allMatches: Array<{ path: string; matches: ScanMatch[] }> = [];
 		for (const target of targets) {
-			const absolutePath = resolve(ctx.cwd, target);
-			const matches = await scanFile(absolutePath, session);
-			if (matches.length > 0) {
-				allMatches.push({ path: target, matches });
+			const absolutePaths = await expandPaths(ctx.cwd, target);
+			for (const absolutePath of absolutePaths) {
+				const matches = await scanFile(absolutePath, session);
+				if (matches.length > 0) {
+					allMatches.push({ path: target, matches });
+				}
 			}
 		}
 

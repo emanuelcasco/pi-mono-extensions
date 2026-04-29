@@ -11,6 +11,8 @@ Everything below mirrors `claude-code/src/` behavior (`coordinator/coordinatorMo
 | Claude Code | team-mode |
 |---|---|
 | `Agent({ description, prompt, name?, team_name?, subagent_type?, isolation?, run_in_background? })` | `agent(...)` — same schema |
+| `subagent({ tasks })`-style fan-out | `delegate({ tasks: [...] })` |
+| `subagent({ chain })`-style sequencing | `delegate({ task, chain: [...] })` |
 | `SendMessage({ to, message })` | `send_message(...)` |
 | `TaskStop({ task_id })` | `task_stop(...)` |
 | `TaskOutput({ task_id })` | `task_output(...)` |
@@ -123,6 +125,15 @@ When a task transitions to `completed`, the hook runs in the task's cwd. Non-zer
 - Each task is its own file under `tasks/<parent-session-id>/<task-id>.json`.
 - `task_update` takes an exclusive filesystem lock (`<task-id>.lock` via `open(..., "wx")`) and bumps a CAS `version` counter.
 - Stale locks (>10 s) are reclaimed automatically — safe across teammate subprocesses.
+
+## Delegate groups + live progress
+
+- `delegate({ tasks: [...] })` runs bounded parallel workers and returns aggregated output blocks.
+- `delegate({ task, chain: [...] })` runs sequential chains with `{task}`, `{previous}`, `{chain_dir}` substitution and optional inner `parallel` fan-out.
+- Per-step `output` and `reads` let chain steps exchange large artifacts through files in `{chain_dir}`.
+- Parallel caps: `PI_TEAM_MATE_MAX_PARALLEL` (default `8`) and `PI_TEAM_MATE_PARALLEL_CONCURRENCY` (default `4`).
+- Live TUI widget now renders a multi-line **● Agents** panel (spinner, turns/tool-uses/tokens/elapsed, activity hint, queued tail).
+- `<task-notification>` messages are rendered as styled completion boxes (status glyph, counters, duration, transcript path).
 
 ## Slash commands & keybinding
 
