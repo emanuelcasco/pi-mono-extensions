@@ -113,16 +113,31 @@ export function registerOutputScanner(
 			rawPath.startsWith("@") ? rawPath.slice(1) : rawPath,
 		);
 
+		// Skip the dialog entirely if this file was previously allowed.
+		if (session.isReadWhitelisted(absolutePath)) {
+			return;
+		}
+
 		const matches = await scanFile(absolutePath, session);
 		if (matches.length === 0) return;
 
 		// Secrets found — escalate
 		if (ctx.hasUI) {
-			const allowed = await ctx.ui.confirm(
-				"[sentinel] Secret detected",
-				formatConfirmMessage(matches),
+			const choice = await ctx.ui.select(
+				`[sentinel] Secret detected\n\n${formatConfirmMessage(matches)}`,
+				[
+					"Allow once",
+					"Always allow this file",
+					"Deny",
+				],
 			);
-			if (allowed) return; // User approved — let the read proceed
+
+			if (choice === "Allow once") return; // User approved — let the read proceed
+
+			if (choice === "Always allow this file") {
+				session.addToReadWhitelist(absolutePath);
+				return;
+			}
 		}
 
 		// No UI or user denied — block
@@ -146,13 +161,19 @@ export function registerOutputScanner(
 		if (targets.length === 0) return;
 
 		// Scan all targeted files (with glob expansion)
-		const allMatches: Array<{ path: string; matches: ScanMatch[] }> = [];
+		const allMatches: Array<{
+			path: string;
+			absolutePath: string;
+			matches: ScanMatch[];
+		}> = [];
 		for (const target of targets) {
 			const absolutePaths = await expandPaths(ctx.cwd, target);
 			for (const absolutePath of absolutePaths) {
+				if (session.isReadWhitelisted(absolutePath)) continue;
+
 				const matches = await scanFile(absolutePath, session);
 				if (matches.length > 0) {
-					allMatches.push({ path: target, matches });
+					allMatches.push({ path: target, absolutePath, matches });
 				}
 			}
 		}
@@ -169,11 +190,23 @@ export function registerOutputScanner(
 			.join("\n");
 
 		if (ctx.hasUI) {
-			const allowed = await ctx.ui.confirm(
-				"[sentinel] Secret detected in bash target",
-				`Command reads file(s) that may contain secrets:\n${message}\n\nAllow execution?`,
+			const choice = await ctx.ui.select(
+				`[sentinel] Secret detected in bash target\n\nCommand reads file(s) that may contain secrets:\n${message}\n\nAllow execution?`,
+				[
+					"Allow once",
+					"Always allow these files",
+					"Deny",
+				],
 			);
-			if (allowed) return;
+
+			if (choice === "Allow once") return;
+
+			if (choice === "Always allow these files") {
+				for (const { absolutePath } of allMatches) {
+					session.addToReadWhitelist(absolutePath);
+				}
+				return;
+			}
 		}
 
 		const totalMatches = allMatches.reduce(

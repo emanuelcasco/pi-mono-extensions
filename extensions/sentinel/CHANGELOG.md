@@ -1,5 +1,14 @@
 # pi-mono-sentinel
 
+## 1.10.1
+
+### Patch Changes
+
+### Enhanced: output-scanner whitelist
+
+- Secret-detection prompts for `read` now offer `Allow once`, `Always allow this file`, and `Deny` instead of only yes/no.
+- Bash file-read prompts can remember all flagged target files, so safe documentation/example-key files stop prompting repeatedly.
+
 ## 1.10.0
 
 ### Major Changes

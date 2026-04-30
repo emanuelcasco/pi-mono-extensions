@@ -1,5 +1,10 @@
 import type { ScanResult, WriteEntry } from "./types.js";
-import { loadWhitelist, saveWhitelist } from "./whitelist.js";
+import {
+	loadReadWhitelist,
+	loadWhitelist,
+	saveReadWhitelist,
+	saveWhitelist,
+} from "./whitelist.js";
 
 /**
  * Session-scoped state for Sentinel guards.
@@ -20,6 +25,9 @@ export class SentinelSession {
 
 	/** Persistent whitelist of paths the user chose to remember. */
 	private whitelist = loadWhitelist();
+
+	/** Persistent whitelist of read paths that are safe despite secret matches. */
+	private readWhitelist = loadReadWhitelist();
 
 	/** Clear all session state (called on session_start). */
 	reset(): void {
@@ -74,5 +82,14 @@ export class SentinelSession {
 	addToWhitelist(absolutePath: string): void {
 		this.whitelist.add(absolutePath);
 		saveWhitelist(this.whitelist);
+	}
+
+	isReadWhitelisted(absolutePath: string): boolean {
+		return this.readWhitelist.has(absolutePath);
+	}
+
+	addToReadWhitelist(absolutePath: string): void {
+		this.readWhitelist.add(absolutePath);
+		saveReadWhitelist(this.readWhitelist);
 	}
 }

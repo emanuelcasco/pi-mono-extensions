@@ -28,23 +28,57 @@ function getWhitelistPath(): string {
 }
 
 export function loadWhitelist(): Set<string> {
+	return loadWhitelistKey("paths");
+}
+
+export function saveWhitelist(paths: Iterable<string>): void {
+	saveWhitelistKey("paths", paths);
+}
+
+export function loadReadWhitelist(): Set<string> {
+	return loadWhitelistKey("readPaths");
+}
+
+export function saveReadWhitelist(paths: Iterable<string>): void {
+	saveWhitelistKey("readPaths", paths);
+}
+
+function loadWhitelistKey(key: "paths" | "readPaths"): Set<string> {
 	const filePath = getWhitelistPath();
 	if (!existsSync(filePath)) {
 		return new Set();
 	}
 	try {
 		const raw = readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as { paths?: string[] };
-		return new Set(Array.isArray(parsed.paths) ? parsed.paths : []);
+		const parsed = JSON.parse(raw) as {
+			paths?: string[];
+			readPaths?: string[];
+		};
+		const values = parsed[key];
+		return new Set(Array.isArray(values) ? values : []);
 	} catch {
 		return new Set();
 	}
 }
 
-export function saveWhitelist(paths: Iterable<string>): void {
+function saveWhitelistKey(
+	key: "paths" | "readPaths",
+	paths: Iterable<string>,
+): void {
 	const filePath = getWhitelistPath();
-	const data = { paths: [...paths] };
 	try {
+		let data: { paths?: string[]; readPaths?: string[] } = {};
+		if (existsSync(filePath)) {
+			try {
+				data = JSON.parse(readFileSync(filePath, "utf-8")) as {
+					paths?: string[];
+					readPaths?: string[];
+				};
+			} catch {
+				data = {};
+			}
+		}
+		data[key] = [...paths];
 		writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
 	} catch {
 		// silently fail if we can't write; the user still gets their operation

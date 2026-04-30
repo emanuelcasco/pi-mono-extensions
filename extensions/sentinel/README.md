@@ -24,7 +24,7 @@ Detected patterns include:
 - Generic `secret/password/token/api_key = "..."` assignments
 - High-entropy strings above a Shannon-entropy threshold
 
-Scan results are cached per file by `mtime` and invalidated via `context-guard:file-modified` events.
+Scan results are cached per file by `mtime` and invalidated via `context-guard:file-modified` events. If a detected secret is safe for the current file (for example, documentation containing fake/example keys), the confirmation dialog offers **Allow once**, **Always allow this file**, or **Deny**. Remembered files are stored in Sentinel's persistent whitelist.
 
 ### 2. execution-tracker — write/execute correlation
 
@@ -77,7 +77,7 @@ When multiple risk classes match a single command, all matched labels are surfac
 ## Behavior
 
 - **No UI available** — guards fail safe by blocking with a clear `reason`.
-- **UI available** — the user sees a `confirm()` dialog with the matched labels, line numbers, and snippets, and can allow or deny.
+- **UI available** — the user sees a dialog with the matched labels, line numbers, and snippets, and can allow once, remember the file/path when supported, or deny.
 - Session state (scan cache, write registry) is cleared on `session_start`.
 
 ## Install

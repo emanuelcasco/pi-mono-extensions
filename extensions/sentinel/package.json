@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-sentinel",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "Pi extension that guards against content-based secret leaks and indirect script execution",
   "keywords": [
     "pi-package",
