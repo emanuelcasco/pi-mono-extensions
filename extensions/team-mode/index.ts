@@ -169,6 +169,14 @@ async function pushTaskNotification(
 // --- schemas ---
 
 const IsolationSchema = Type.Union([Type.Literal("none"), Type.Literal("worktree")]);
+const ThinkingLevelSchema = Type.Union([
+	Type.Literal("off"),
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("xhigh"),
+]);
 const TaskStatusSchema = Type.Union([
 	Type.Literal("pending"),
 	Type.Literal("in_progress"),
@@ -183,7 +191,9 @@ const AgentParams = Type.Object({
 	name: Type.Optional(Type.String({ description: "Unique teammate name. Pass as `to` in send_message to continue." })),
 	team_name: Type.Optional(Type.String({ description: "Team id from team_create (optional grouping)." })),
 	subagent_type: Type.Optional(Type.String({ description: "Role spec — .pi/teammates/<role>.md or .claude/teammates/<role>.md." })),
-	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"cheap\"/\"mid\"/\"deep\")." })),
+	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"xs\"/\"sm\"/\"md\"/\"lg\"/\"xl\", legacy \"cheap\"/\"mid\"/\"deep\")." })),
+	thinking: Type.Optional(ThinkingLevelSchema),
+	thinking_level: Type.Optional(ThinkingLevelSchema),
 	isolation: Type.Optional(IsolationSchema),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Return immediately; worker keeps running. Completion arrives as <task-notification>." })),
 });
@@ -194,7 +204,9 @@ const DelegateTaskParams = Type.Object({
 	name: Type.Optional(Type.String({ description: "Unique teammate name. Pass as `to` in send_message to continue." })),
 	team_name: Type.Optional(Type.String({ description: "Team id from team_create (optional grouping)." })),
 	subagent_type: Type.Optional(Type.String({ description: "Role spec — .pi/teammates/<role>.md or .claude/teammates/<role>.md." })),
-	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"cheap\"/\"mid\"/\"deep\")." })),
+	model: Type.Optional(Type.String({ description: "Override: full spec (\"openai-codex/gpt-5.4\") or tier (\"xs\"/\"sm\"/\"md\"/\"lg\"/\"xl\", legacy \"cheap\"/\"mid\"/\"deep\")." })),
+	thinking: Type.Optional(ThinkingLevelSchema),
+	thinking_level: Type.Optional(ThinkingLevelSchema),
 	isolation: Type.Optional(IsolationSchema),
 	count: Type.Optional(Type.Number()),
 	output: Type.Optional(Type.Union([Type.String(), Type.Boolean()])),
@@ -324,6 +336,7 @@ function registerAgentTools(pi: ExtensionAPI): void {
 				teamId: params.team_name,
 				subagentType: params.subagent_type,
 				model: params.model,
+				thinkingLevel: params.thinking ?? params.thinking_level,
 				isolation: params.isolation,
 				background: params.run_in_background,
 			});
@@ -459,6 +472,8 @@ function mapDelegateTask(task: {
 	team_name?: string;
 	subagent_type?: string;
 	model?: string;
+	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	isolation?: "none" | "worktree";
 	count?: number;
 	output?: string | boolean;
@@ -471,6 +486,7 @@ function mapDelegateTask(task: {
 		teamId: task.team_name,
 		subagentType: task.subagent_type,
 		model: task.model,
+		thinkingLevel: task.thinking ?? task.thinking_level,
 		isolation: task.isolation,
 		count: task.count,
 		output: task.output === true ? undefined : task.output,
@@ -773,7 +789,7 @@ function formatSpawnResult(result: TeammateRunResult): string {
 	const lines = [
 		`task_id: ${result.teammateId}`,
 		`Worker: ${result.name} (status=${result.status}, exit=${result.exitCode ?? "n/a"})`,
-		`Model: ${modelStr}${result.modelRationale ? `  — ${result.modelRationale}` : ""}`,
+		`Model: ${modelStr}${result.thinkingLevel ? ` (thinking=${result.thinkingLevel})` : ""}${result.modelRationale ? `  — ${result.modelRationale}` : ""}`,
 	];
 	if (result.worktree) {
 		lines.push(`Worktree retained: ${result.worktree.path} (branch ${result.worktree.branch})`);

@@ -8,23 +8,23 @@ A faithful port of **Claude Code's team-mode mode** to the pi coding agent. Name
 
 Everything below mirrors `claude-code/src/` behavior (`coordinator/coordinatorMode.ts`, `tools/AgentTool`, `tools/SendMessageTool`, `tools/Task*Tool`, `utils/swarm/teammatePromptAddendum.ts`).
 
-| Claude Code | team-mode |
-|---|---|
-| `Agent({ description, prompt, name?, team_name?, subagent_type?, isolation?, run_in_background? })` | `agent(...)` — same schema |
-| `subagent({ tasks })`-style fan-out | `delegate({ tasks: [...] })` |
-| `subagent({ chain })`-style sequencing | `delegate({ task, chain: [...] })` |
-| `SendMessage({ to, message })` | `send_message(...)` |
-| `TaskStop({ task_id })` | `task_stop(...)` |
-| `TaskOutput({ task_id })` | `task_output(...)` |
-| `TaskCreate({ subject, description, activeForm?, metadata? })` | `task_create(...)` |
-| `TaskUpdate({ task_id, status?, owner?, addBlocks?, addBlockedBy?, ... })` | `task_update(...)` |
-| `TaskGet({ task_id })` | `task_get(...)` |
-| `TaskList({ status?, owner? })` | `task_list(...)` |
-| `TeamCreate / TeamDelete` | `team_create / team_delete` |
-| `<task-notification>` XML wakes coordinator | Emitted via `pi.sendMessage({ triggerTurn: true })` on teammate end |
-| Coordinator system prompt (`CLAUDE_CODE_COORDINATOR_MODE=1`) | `PI_TEAM_MATE_COORDINATOR=1` |
-| Teammate prompt addendum (`TEAMMATE_SYSTEM_PROMPT_ADDENDUM`) | Prepended to every teammate's system prompt |
-| Task ids namespaced `agent-*` | Same namespace; `task_stop` and `send_message` accept it |
+| Claude Code                                                                                         | team-mode                                                           |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `Agent({ description, prompt, name?, team_name?, subagent_type?, isolation?, run_in_background? })` | `agent(...)` — same schema                                          |
+| `subagent({ tasks })`-style fan-out                                                                 | `delegate({ tasks: [...] })`                                        |
+| `subagent({ chain })`-style sequencing                                                              | `delegate({ task, chain: [...] })`                                  |
+| `SendMessage({ to, message })`                                                                      | `send_message(...)`                                                 |
+| `TaskStop({ task_id })`                                                                             | `task_stop(...)`                                                    |
+| `TaskOutput({ task_id })`                                                                           | `task_output(...)`                                                  |
+| `TaskCreate({ subject, description, activeForm?, metadata? })`                                      | `task_create(...)`                                                  |
+| `TaskUpdate({ task_id, status?, owner?, addBlocks?, addBlockedBy?, ... })`                          | `task_update(...)`                                                  |
+| `TaskGet({ task_id })`                                                                              | `task_get(...)`                                                     |
+| `TaskList({ status?, owner? })`                                                                     | `task_list(...)`                                                    |
+| `TeamCreate / TeamDelete`                                                                           | `team_create / team_delete`                                         |
+| `<task-notification>` XML wakes coordinator                                                         | Emitted via `pi.sendMessage({ triggerTurn: true })` on teammate end |
+| Coordinator system prompt (`CLAUDE_CODE_COORDINATOR_MODE=1`)                                        | `PI_TEAM_MATE_COORDINATOR=1`                                        |
+| Teammate prompt addendum (`TEAMMATE_SYSTEM_PROMPT_ADDENDUM`)                                        | Prepended to every teammate's system prompt                         |
+| Task ids namespaced `agent-*`                                                                       | Same namespace; `task_stop` and `send_message` accept it            |
 
 ## The execution model
 
@@ -89,12 +89,73 @@ Drop a markdown file into `.pi/teammates/<role>.md` (or `.claude/teammates/<role
 name: reviewer
 description: reviews diffs for bugs and style violations
 modelTier: deep
+thinkingLevel: high
 tools: read, bash, grep
 ---
+
 You are a careful code reviewer. ...
 ```
 
-Frontmatter fields: `name`, `description`, `needsWorktree`, `hasMemory`, `modelTier`, `tools` (comma-separated). The body becomes the teammate's system prompt. The Claude Code teammate addendum (`send_message` instructions) is prepended automatically.
+Frontmatter fields: `name`, `description`, `needsWorktree`, `hasMemory`, `modelTier`, `thinkingLevel`, `tools` (comma-separated). The body becomes the teammate's system prompt. The Claude Code teammate addendum (`send_message` instructions) is prepended automatically.
+
+## Model and thinking selection
+
+`agent(...)` and each `delegate` task accept both `model` and `thinking` (`thinking_level` is accepted as an alias):
+
+```ts
+agent({
+  description: "review diff",
+  prompt: "Review the current branch",
+  subagent_type: "reviewer",
+  model: "deep",
+  thinking: "high",
+});
+```
+
+Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Team-mode passes the selected level to the teammate subprocess as `pi --thinking <level>`. Token budgets remain pi's responsibility via `~/.pi/agent/settings.json` `thinkingBudgets`.
+
+`model-config.json` can define compact role/tier defaults:
+
+```jsonc
+{
+  "defaultTier": "md",
+  "tiers": {
+    "sm": {
+      "name": "Small",
+      "thinkingLevel": "low",
+      "description": "Simple tasks, deterministic outputs. Use for formatting, rewriting, classification",
+    },
+    "md": {
+      "name": "Medium",
+      "thinkingLevel": "medium",
+      "description": "Handles moderate complexity. Use for workflows, APIs, structured tasks",
+    },
+    "lg": {
+      "name": "Large",
+      "thinkingLevel": "high",
+      "description": "Strong reasoning, multi-step tasks. Use for reasoning, planning, debugging, decision support",
+    },
+    "xl": {
+      "name": "Deep",
+      "thinkingLevel": "xhigh",
+      "description": "Near-frontier capability, complex domains. Complex planning, abstraction, ambiguous problems",
+    },
+  },
+  "roles": {
+    "researcher": "sm",
+    "docs": "xs",
+    "backend": "md",
+    "frontend": "md",
+    "tester": "md",
+    "planner": "lg",
+    "reviewer": "md",
+  },
+}
+```
+
+Built-in provider catalogs map `xs`/`sm` to small models, `md` to default models, and `lg`/`xl` to large models. You can still override `providers` if you want exact model IDs per tier. Legacy `roleTiers`, `tierThinkingLevels`, and `roleThinkingLevels` remain supported.
+
+Thinking resolution order is: explicit tool `thinking`, teammate spec `thinkingLevel`, `roles`/`roleTiers` tier metadata (`tiers[tier].thinkingLevel`), a legacy `:<thinking>` model suffix such as `gpt-5.4:high`, legacy `tierThinkingLevels`, then `defaultThinkingLevel`. If none applies, pi inherits its normal default.
 
 ## Storage
 

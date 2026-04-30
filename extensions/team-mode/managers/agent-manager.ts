@@ -7,6 +7,7 @@ import {
 	type LiveTeammateMetrics,
 	type LiveTeammateSnapshot,
 	type SpawnOpts,
+	type ThinkingLevel,
 	type TeammateRecord,
 	type TeammateRunResult,
 	type TeammateStatus,
@@ -21,6 +22,7 @@ import {
 	isModelTier,
 	loadModelConfig,
 	resolveModel,
+	splitThinkingSuffix,
 	type ModelTier,
 	type ResolvedModel,
 } from "../core/model-config.js";
@@ -55,6 +57,7 @@ export type AgentManagerDeps = {
 export type ModelPick = {
 	provider?: string;
 	model?: string;
+	thinkingLevel?: ThinkingLevel;
 	rationale: string;
 };
 
@@ -139,6 +142,7 @@ export class AgentManager {
 			: null;
 
 		const pick = await this.resolveModel(opts.model ?? spec?.modelTier, opts.subagentType);
+		const thinkingLevel = opts.thinkingLevel ?? spec?.thinkingLevel ?? pick.thinkingLevel;
 
 		const now = new Date().toISOString();
 		const record: TeammateRecord = {
@@ -148,6 +152,7 @@ export class AgentManager {
 			subagentType: opts.subagentType,
 			model: pick.model,
 			provider: pick.provider,
+			thinkingLevel,
 			isolation,
 			cwd,
 			worktreeBranch: worktree?.branch,
@@ -283,26 +288,34 @@ export class AgentManager {
 		role: string | undefined,
 	): Promise<ModelPick> {
 		const trimmed = override?.trim();
+		const config = await loadModelConfig();
+		const tierOverride = tierFromOverride(trimmed, config);
+		if (tierOverride) {
+			const resolved = resolveModel(config, role ?? "", tierOverride);
+			if (resolved) return packResolved(resolved);
+		}
 
 		// Explicit fully-qualified override bypasses model-config entirely.
-		if (trimmed && !isModelTier(trimmed) && !(trimmed.toLowerCase() in TIER_ALIASES)) {
+		if (trimmed) {
 			const slash = trimmed.indexOf("/");
 			if (slash >= 0) {
+				const split = splitThinkingSuffix(trimmed.slice(slash + 1));
 				return {
 					provider: trimmed.slice(0, slash),
-					model: trimmed.slice(slash + 1),
+					model: split.model,
+					thinkingLevel: split.thinkingLevel,
 					rationale: "explicit spawn_agent.model override",
 				};
 			}
+			const split = splitThinkingSuffix(trimmed);
 			return {
-				model: trimmed,
+				model: split.model,
+				thinkingLevel: split.thinkingLevel,
 				rationale: "explicit spawn_agent.model override (bare id)",
 			};
 		}
 
-		const tierOverride = tierFromOverride(trimmed);
-		const config = await loadModelConfig();
-		const resolved = resolveModel(config, role ?? "", tierOverride);
+		const resolved = resolveModel(config, role ?? "");
 		if (resolved) return packResolved(resolved);
 
 		return { rationale: "no model-config catalog entry — letting pi use its own defaults" };
@@ -335,6 +348,7 @@ export class AgentManager {
 			sessionPath: this.deps.store.teammateSessionFile(record.id),
 			provider: record.provider,
 			model: record.model,
+			thinkingLevel: record.thinkingLevel,
 			tools: spec?.tools,
 			systemPromptBody,
 			parentSessionId: record.parentSessionId,
@@ -432,6 +446,7 @@ export class AgentManager {
 				transcriptPath,
 				provider: record.provider,
 				model: record.model,
+				thinkingLevel: record.thinkingLevel,
 				modelRationale,
 				worktree: worktreeInfo,
 				durationMs: Date.now() - startedAt,
@@ -457,6 +472,7 @@ export class AgentManager {
 			transcriptPath: this.deps.store.teammateSessionFile(record.id),
 			provider: record.provider,
 			model: record.model,
+			thinkingLevel: record.thinkingLevel,
 			modelRationale,
 			background: true,
 		};
@@ -533,10 +549,11 @@ const TIER_ALIASES: Record<string, ModelTier> = {
 	high: "deep",
 };
 
-function tierFromOverride(value: string | undefined): ModelTier | undefined {
+function tierFromOverride(value: string | undefined, config: Awaited<ReturnType<typeof loadModelConfig>>): ModelTier | undefined {
 	if (!value) return undefined;
 	const v = value.toLowerCase();
 	if (isModelTier(v)) return v;
+	if (config.tiers[v] || Object.values(config.roles).includes(v) || Object.values(config.roleTiers).includes(v)) return v;
 	return TIER_ALIASES[v];
 }
 
@@ -544,6 +561,7 @@ function packResolved(r: ResolvedModel): ModelPick {
 	return {
 		provider: r.provider,
 		model: r.model,
+		thinkingLevel: r.thinkingLevel,
 		rationale: `model-config: ${r.rationale}`,
 	};
 }

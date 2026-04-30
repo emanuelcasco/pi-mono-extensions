@@ -22,6 +22,8 @@ export type TeammateExitReason =
 
 export type IsolationMode = "none" | "worktree";
 
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 /** Persistent record for a single named teammate. */
 export type TeammateRecord = {
 	/** Stable id, used as pi session id. */
@@ -36,6 +38,8 @@ export type TeammateRecord = {
 	model?: string;
 	/** Provider passed to pi via `--provider`. */
 	provider?: string;
+	/** Thinking level passed to pi via `--thinking`. */
+	thinkingLevel?: ThinkingLevel;
 	/** Isolation strategy at spawn time. */
 	isolation: IsolationMode;
 	/** Working directory the teammate operates in. */
@@ -82,6 +86,7 @@ export type SpawnOpts = {
 	teamId?: string;
 	subagentType?: string;
 	model?: string;
+	thinkingLevel?: ThinkingLevel;
 	isolation?: IsolationMode;
 	background?: boolean;
 	/** Override cwd (defaults to ctx.cwd or team's worktreeBase). */
@@ -122,6 +127,7 @@ export type TeammateRunResult = {
 	transcriptPath?: string;
 	provider?: string;
 	model?: string;
+	thinkingLevel?: ThinkingLevel;
 	modelRationale?: string;
 	worktree?: {
 		path: string;
@@ -138,6 +144,8 @@ export type TeammateSpec = {
 	needsWorktree?: boolean;
 	hasMemory?: boolean;
 	modelTier?: string;
+	/** Default thinking level for this role. */
+	thinkingLevel?: ThinkingLevel;
 	/** Allowed tool names (forwarded via pi --tools). */
 	tools?: string[];
 	/** Markdown body becomes the teammate's system prompt. */

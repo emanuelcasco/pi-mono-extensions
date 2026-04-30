@@ -7,6 +7,7 @@ type SpawnCall = {
 	description: string;
 	prompt: string;
 	name?: string;
+	thinkingLevel?: string;
 };
 
 function makeFakeAgents() {
@@ -41,7 +42,7 @@ describe("DelegationManager", () => {
 		const fake = makeFakeAgents();
 		const manager = new DelegationManager(fake as never);
 		const result = await manager.runParallel({
-			tasks: [{ description: "scan", prompt: "P", name: "worker", count: 2 }],
+			tasks: [{ description: "scan", prompt: "P", name: "worker", count: 2, thinkingLevel: "low" }],
 			concurrency: 2,
 		});
 		assert.equal(result.mode, "parallel");
@@ -49,6 +50,7 @@ describe("DelegationManager", () => {
 		assert.equal(fake.calls.length, 2);
 		assert.equal(fake.calls[0]?.name, "worker-1");
 		assert.equal(fake.calls[1]?.name, "worker-2");
+		assert.equal(fake.calls[0]?.thinkingLevel, "low");
 		assert.match(result.output, /Parallel Task 1/);
 	});
 

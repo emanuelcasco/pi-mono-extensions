@@ -104,7 +104,7 @@ export function formatTeammateStatus(t: TeammateRecord): string {
 	const out = [
 		`Teammate: ${t.name} (${t.id})`,
 		`Status: ${t.status}`,
-		`Model: ${modelStr}`,
+		`Model: ${modelStr}${t.thinkingLevel ? ` (thinking=${t.thinkingLevel})` : ""}`,
 		t.subagentType ? `Role: ${t.subagentType}` : "",
 		t.teamId ? `Team: ${t.teamId}` : "",
 		`Isolation: ${t.isolation}${t.worktreeBranch ? ` (branch=${t.worktreeBranch})` : ""}`,

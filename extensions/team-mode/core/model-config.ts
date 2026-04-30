@@ -11,35 +11,42 @@
  * Schema (all fields optional; defaults are merged in):
  *
  *   {
+ *     "defaultTier": "md",
+ *     "tiers": {
+ *       "sm": { "name": "Small",  "thinkingLevel": "low",    "description": "Simple tasks" },
+ *       "md": { "name": "Medium", "thinkingLevel": "medium", "description": "Moderate complexity" },
+ *       "lg": { "name": "Large",  "thinkingLevel": "high",   "description": "Strong reasoning" },
+ *       "xl": { "name": "Deep",   "thinkingLevel": "xhigh",  "description": "Complex domains" }
+ *     },
+ *     "roles": {
+ *       "researcher": "sm",
+ *       "docs":       "xs",
+ *       "backend":    "md",
+ *       "frontend":   "md",
+ *       "tester":     "md",
+ *       "planner":    "lg",
+ *       "reviewer":   "md"
+ *     },
  *     "provider": "openai-codex" | "anthropic" | "auto",
  *     "providers": {
- *       "openai-codex": {
- *         "cheap": "openai-codex/gpt-5.4-mini",
- *         "mid":   "openai-codex/gpt-5.4",
- *         "deep":  "openai-codex/gpt-5.4:high"
- *       },
- *       "anthropic": {
- *         "cheap": "anthropic/claude-haiku-4-5",
- *         "mid":   "anthropic/claude-sonnet-4-6",
- *         "deep":  "anthropic/claude-opus-4-7:high"
- *       }
- *     },
- *     "roleTiers": {
- *       "researcher": "cheap",
- *       "docs":       "cheap",
- *       "backend":    "mid",
- *       "frontend":   "mid",
- *       "tester":     "mid",
- *       "planner":    "deep",
- *       "reviewer":   "deep"
- *     },
- *     "defaultTier": "mid"
+ *       "openai-codex": { "sm": "openai-codex/gpt-5.4-mini", "md": "openai-codex/gpt-5.4" },
+ *       "anthropic":   { "sm": "anthropic/claude-haiku-4-5",  "md": "anthropic/claude-sonnet-4-6" }
+ *     }
  *   }
  *
  * Resolution order inside `resolveModel`:
- *   1. tierOverride (from caller's `model` param if it's "cheap"/"mid"/"deep")
- *   2. roleTiers[role]
+ *   1. tierOverride (from caller's `model` param if it matches a configured tier)
+ *   2. roles[role] / legacy roleTiers[role]
  *   3. defaultTier
+ *
+ * Thinking-level resolution:
+ *   1. caller/spec explicit override (applied by AgentManager)
+ *   2. legacy roleThinkingLevels[role]
+ *   3. tiers[selectedTier].thinkingLevel
+ *   4. `:<thinking>` suffix in the selected catalog model (back compat)
+ *   5. legacy tierThinkingLevels[selectedTier]
+ *   6. defaultThinkingLevel
+ *   6. unset — let pi inherit its own defaultThinkingLevel
  *
  * Provider resolution:
  *   1. config.provider when not "auto"
@@ -54,13 +61,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { getStorageRoot } from "./store.js";
+import type { ThinkingLevel } from "./types.js";
 
-export type ModelTier = "cheap" | "mid" | "deep";
+export type ModelTier = string;
 
-export type ProviderCatalog = {
-	cheap: string;
-	mid: string;
-	deep: string;
+export type ProviderCatalog = Record<string, string>;
+
+export type TierConfig = {
+	name?: string;
+	thinkingLevel?: ThinkingLevel;
+	description?: string;
 };
 
 export type ModelConfig = {
@@ -68,10 +78,20 @@ export type ModelConfig = {
 	provider: string;
 	/** Per-provider tier → fully-qualified model id. */
 	providers: Record<string, ProviderCatalog>;
-	/** Role (subagent_type) → default tier. */
+	/** Tier metadata keyed by tier id (for example xs/sm/md/lg/xl). */
+	tiers: Record<string, TierConfig>;
+	/** Role (subagent_type) → default tier. Preferred spelling. */
+	roles: Record<string, ModelTier>;
+	/** Role (subagent_type) → default tier. Legacy spelling; merged into roles. */
 	roleTiers: Record<string, ModelTier>;
 	/** Fallback tier for roles not in roleTiers. */
 	defaultTier: ModelTier;
+	/** Fallback thinking level when no role/tier/model-specific thinking is configured. Undefined = inherit pi default. */
+	defaultThinkingLevel?: ThinkingLevel;
+	/** Per-tier thinking defaults. Legacy spelling; merged into tiers[tier].thinkingLevel. */
+	tierThinkingLevels?: Record<string, ThinkingLevel>;
+	/** Role (subagent_type) → default thinking level. */
+	roleThinkingLevels?: Record<string, ThinkingLevel>;
 	/** Shell command run after a task transitions to completed. Non-zero exit reverts the task to failed. */
 	taskCompletedHook?: string;
 };
@@ -83,6 +103,8 @@ export type ResolvedModel = {
 	provider: string;
 	/** Tier that was selected. */
 	tier: ModelTier;
+	/** Thinking level selected from role/tier/default config or model suffix. */
+	thinkingLevel?: ThinkingLevel;
 	/** One-line explanation of the resolution path. */
 	rationale: string;
 };
@@ -91,15 +113,64 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	provider: "auto",
 	providers: {
 		anthropic: {
+			xs: "anthropic/claude-haiku-4-5",
+			sm: "anthropic/claude-haiku-4-5",
+			md: "anthropic/claude-sonnet-4-6",
+			lg: "anthropic/claude-opus-4-7",
+			xl: "anthropic/claude-opus-4-7",
 			cheap: "anthropic/claude-haiku-4-5",
 			mid: "anthropic/claude-sonnet-4-6",
-			deep: "anthropic/claude-opus-4-7:high",
+			deep: "anthropic/claude-opus-4-7",
 		},
 		"openai-codex": {
+			xs: "openai-codex/gpt-5.4-mini",
+			sm: "openai-codex/gpt-5.4-mini",
+			md: "openai-codex/gpt-5.4",
+			lg: "openai-codex/gpt-5.4",
+			xl: "openai-codex/gpt-5.4",
 			cheap: "openai-codex/gpt-5.4-mini",
 			mid: "openai-codex/gpt-5.4",
-			deep: "openai-codex/gpt-5.4:high",
+			deep: "openai-codex/gpt-5.4",
 		},
+	},
+	tiers: {
+		xs: {
+			name: "Extra Small",
+			thinkingLevel: "minimal",
+			description: "Very small tasks, simple rewrites, classification, and mechanical edits.",
+		},
+		sm: {
+			name: "Small",
+			thinkingLevel: "low",
+			description: "Simple tasks, deterministic outputs. Use for formatting, rewriting, classification.",
+		},
+		md: {
+			name: "Medium",
+			thinkingLevel: "medium",
+			description: "Handles moderate complexity. Use for workflows, APIs, structured tasks.",
+		},
+		lg: {
+			name: "Large",
+			thinkingLevel: "high",
+			description: "Strong reasoning, multi-step tasks. Use for reasoning, planning, debugging, decision support.",
+		},
+		xl: {
+			name: "Deep",
+			thinkingLevel: "xhigh",
+			description: "Near-frontier capability for complex domains, planning, abstraction, and ambiguous problems.",
+		},
+		cheap: { name: "Cheap", thinkingLevel: "minimal" },
+		mid: { name: "Mid", thinkingLevel: "medium" },
+		deep: { name: "Deep", thinkingLevel: "high" },
+	},
+	roles: {
+		researcher: "sm",
+		docs: "xs",
+		backend: "md",
+		frontend: "md",
+		tester: "md",
+		planner: "lg",
+		reviewer: "md",
 	},
 	roleTiers: {
 		researcher: "cheap",
@@ -110,7 +181,12 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 		planner: "deep",
 		reviewer: "deep",
 	},
-	defaultTier: "mid",
+	defaultTier: "md",
+	tierThinkingLevels: {
+		cheap: "minimal",
+		mid: "medium",
+		deep: "high",
+	},
 };
 
 const CONFIG_FILENAME = "model-config.json";
@@ -119,6 +195,17 @@ const AUTH_FILENAME = "auth.json";
 
 export function isModelTier(value: string): value is ModelTier {
 	return value === "cheap" || value === "mid" || value === "deep";
+}
+
+export function isThinkingLevel(value: string): value is ThinkingLevel {
+	return (
+		value === "off" ||
+		value === "minimal" ||
+		value === "low" ||
+		value === "medium" ||
+		value === "high" ||
+		value === "xhigh"
+	);
 }
 
 /** Path to the model-config file for team-mode. */
@@ -185,17 +272,25 @@ export function resolveModel(
 	const catalog = config.providers[provider];
 	if (!catalog) return null;
 
-	const tier = tierOverride ?? config.roleTiers[role] ?? config.defaultTier;
+	const tier = tierOverride ?? config.roles[role] ?? config.roleTiers[role] ?? config.defaultTier;
 	const fqn = catalog[tier];
 	if (!fqn) return null;
 
 	const { provider: splitProvider, id } = splitFqn(fqn);
+	const { model, thinkingLevel: suffixThinkingLevel } = splitThinkingSuffix(id);
+	const thinkingLevel =
+		config.roleThinkingLevels?.[role] ??
+		config.tiers[tier]?.thinkingLevel ??
+		suffixThinkingLevel ??
+		config.tierThinkingLevels?.[tier] ??
+		config.defaultThinkingLevel;
 	const rationale = buildRationale(role, tier, tierOverride, provider, config);
 
 	return {
 		provider: splitProvider ?? provider,
-		model: id,
+		model,
 		tier,
+		thinkingLevel,
 		rationale,
 	};
 }
@@ -241,21 +336,52 @@ export function detectProvider(explicit?: string): string {
 // ---------------------------------------------------------------------------
 
 function mergeWithDefaults(partial: Partial<ModelConfig>): ModelConfig {
+	const mergedTiers = mergeTiers(partial.tiers, partial.tierThinkingLevels);
+	const mergedRoles = {
+		...DEFAULT_MODEL_CONFIG.roles,
+		...(partial.roles ?? {}),
+		...(partial.roleTiers ?? {}),
+	};
 	const base: ModelConfig = {
 		provider: partial.provider ?? DEFAULT_MODEL_CONFIG.provider,
 		providers: {
 			...DEFAULT_MODEL_CONFIG.providers,
 			...(partial.providers ?? {}),
 		},
+		tiers: mergedTiers,
+		roles: mergedRoles,
 		roleTiers: {
 			...DEFAULT_MODEL_CONFIG.roleTiers,
 			...(partial.roleTiers ?? {}),
 		},
 		defaultTier: partial.defaultTier ?? DEFAULT_MODEL_CONFIG.defaultTier,
+		defaultThinkingLevel: partial.defaultThinkingLevel ?? DEFAULT_MODEL_CONFIG.defaultThinkingLevel,
+		tierThinkingLevels: {
+			...(DEFAULT_MODEL_CONFIG.tierThinkingLevels ?? {}),
+			...(partial.tierThinkingLevels ?? {}),
+		},
+		roleThinkingLevels: {
+			...(DEFAULT_MODEL_CONFIG.roleThinkingLevels ?? {}),
+			...(partial.roleThinkingLevels ?? {}),
+		},
 	};
 	if (partial.taskCompletedHook !== undefined) {
 		base.taskCompletedHook = partial.taskCompletedHook;
 	}
+
+function mergeTiers(
+	tiers: Partial<ModelConfig>["tiers"],
+	tierThinkingLevels: Partial<ModelConfig>["tierThinkingLevels"],
+): Record<string, TierConfig> {
+	const merged: Record<string, TierConfig> = { ...DEFAULT_MODEL_CONFIG.tiers };
+	for (const [tier, config] of Object.entries(tiers ?? {})) {
+		merged[tier] = { ...(merged[tier] ?? {}), ...config };
+	}
+	for (const [tier, thinkingLevel] of Object.entries(tierThinkingLevels ?? {})) {
+		merged[tier] = { ...(merged[tier] ?? {}), thinkingLevel };
+	}
+	return merged;
+}
 	return base;
 }
 
@@ -281,6 +407,14 @@ function splitFqn(fqn: string): { provider?: string; id: string } {
 	return { provider: fqn.slice(0, idx), id: fqn.slice(idx + 1) };
 }
 
+export function splitThinkingSuffix(model: string): { model: string; thinkingLevel?: ThinkingLevel } {
+	const idx = model.lastIndexOf(":");
+	if (idx < 0) return { model };
+	const suffix = model.slice(idx + 1);
+	if (!isThinkingLevel(suffix)) return { model };
+	return { model: model.slice(0, idx), thinkingLevel: suffix };
+}
+
 function buildRationale(
 	role: string,
 	tier: ModelTier,
@@ -291,7 +425,7 @@ function buildRationale(
 	if (tierOverride) {
 		return `tier override "${tier}" on provider "${provider}"`;
 	}
-	if (role && config.roleTiers[role]) {
+	if (role && (config.roles[role] || config.roleTiers[role])) {
 		return `role "${role}" → tier "${tier}" on provider "${provider}"`;
 	}
 	return `default tier "${tier}" on provider "${provider}"`;

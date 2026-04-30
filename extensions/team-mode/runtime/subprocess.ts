@@ -6,6 +6,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { PiStreamParser, type PiStreamEvent } from "./pi-stream-parser.js";
+import type { ThinkingLevel } from "../core/types.js";
 
 const STDERR_BUDGET = 8 * 1024;
 const KILL_GRACE_MS = 3_000;
@@ -19,6 +20,8 @@ export type PiRunOptions = {
 	provider?: string;
 	/** Bare model id — maps to `--model`. */
 	model?: string;
+	/** Thinking level — maps to `--thinking`. */
+	thinkingLevel?: ThinkingLevel;
 	tools?: string[];
 	/** Raw markdown to append to the system prompt. Written to a content-hashed temp file. */
 	systemPromptBody?: string;
@@ -96,6 +99,7 @@ async function buildArgs(opts: PiRunOptions): Promise<string[]> {
 	const args = ["--mode", "json", "-p", "--session", opts.sessionPath];
 	if (opts.provider) args.push("--provider", opts.provider);
 	if (opts.model) args.push("--model", opts.model);
+	if (opts.thinkingLevel) args.push("--thinking", opts.thinkingLevel);
 	if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
 
 	if (opts.systemPromptBody && opts.systemPromptBody.trim().length > 0) {

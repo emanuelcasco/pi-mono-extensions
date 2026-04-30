@@ -1,5 +1,11 @@
 # pi-mono-team-mode
 
+## 2.2.0
+
+### Minor Changes
+
+- Add explicit thinking-level support for team-mode workers, including `agent`/`delegate` parameters, teammate spec frontmatter, compact `model-config.json` tiers/roles defaults, persisted records, and subprocess `--thinking` propagation.
+
 ## 2.1.0
 
 ### Minor Changes
@@ -57,7 +63,6 @@
 
 - Remove unused `StringEnum` import from `@mariozechner/pi-ai`.
 
-
 ## 1.7.1
 
 ### Patch Changes
@@ -83,7 +88,6 @@
 ### Tests
 
 - New `intent-queue` and `model-config` suites; expanded coverage across `leader-runtime`, `team-manager`, `team-query-tool` and `formatters`.
-
 
 ## 1.7.0
 

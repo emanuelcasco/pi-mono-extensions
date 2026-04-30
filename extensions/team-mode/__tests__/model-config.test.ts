@@ -54,6 +54,23 @@ const USER_CONFIG: ModelConfig = {
 			deep: "openai-codex/gpt-5.4:high",
 		},
 	},
+	tiers: {
+		...DEFAULT_MODEL_CONFIG.tiers,
+		cheap: { name: "Cheap", thinkingLevel: "minimal" },
+		mid: { name: "Mid", thinkingLevel: "medium" },
+		deep: { name: "Deep", thinkingLevel: "high" },
+	},
+	roles: {
+		...DEFAULT_MODEL_CONFIG.roles,
+		researcher: "cheap",
+		docs: "cheap",
+		backend: "mid",
+		frontend: "mid",
+		tester: "mid",
+		planner: "deep",
+		reviewer: "deep",
+		leader: "mid",
+	},
 	roleTiers: {
 		researcher: "cheap",
 		docs: "cheap",
@@ -65,6 +82,14 @@ const USER_CONFIG: ModelConfig = {
 		leader: "mid",
 	},
 	defaultTier: "mid",
+	defaultThinkingLevel: undefined,
+	tierThinkingLevels: {
+		...(DEFAULT_MODEL_CONFIG.tierThinkingLevels ?? {}),
+		cheap: "minimal",
+		mid: "medium",
+		deep: "high",
+	},
+	roleThinkingLevels: {},
 };
 
 describe("isModelTier", () => {
@@ -121,6 +146,40 @@ describe("loadModelConfig / saveModelConfig", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("accepts compact tiers/roles config", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "team-mode-cfg-"));
+		try {
+			await writeFile(
+				modelConfigPath(dir),
+				JSON.stringify({
+					provider: "openai-codex",
+					defaultTier: "md",
+					tiers: {
+						sm: { name: "Small", thinkingLevel: "low" },
+						md: { name: "Medium", thinkingLevel: "medium" },
+						lg: { name: "Large", thinkingLevel: "high" },
+					},
+					roles: {
+						researcher: "sm",
+						backend: "md",
+						planner: "lg",
+					},
+				}),
+				"utf8",
+			);
+			const loaded = await loadModelConfig(dir);
+			assert.equal(loaded.roles.researcher, "sm");
+			assert.equal(loaded.tiers.sm?.thinkingLevel, "low");
+			const resolved = resolveModel(loaded, "planner");
+			assert.ok(resolved);
+			assert.equal(resolved.tier, "lg");
+			assert.equal(resolved.model, "gpt-5.4");
+			assert.equal(resolved.thinkingLevel, "high");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("resolveModel — user's real config", () => {
@@ -140,11 +199,25 @@ describe("resolveModel — user's real config", () => {
 		assert.equal(resolved.tier, "mid");
 	});
 
-	test("reviewer → openai-codex/gpt-5.4:high (deep)", () => {
+	test("reviewer → openai-codex/gpt-5.4 with high thinking (deep)", () => {
 		const resolved = resolveModel(USER_CONFIG, "reviewer");
 		assert.ok(resolved);
-		assert.equal(resolved.model, "gpt-5.4:high");
+		assert.equal(resolved.model, "gpt-5.4");
 		assert.equal(resolved.tier, "deep");
+		assert.equal(resolved.thinkingLevel, "high");
+	});
+
+	test("roleThinkingLevels overrides tier defaults", () => {
+		const resolved = resolveModel(
+			{
+				...USER_CONFIG,
+				roleThinkingLevels: { reviewer: "xhigh" },
+			},
+			"reviewer",
+		);
+		assert.ok(resolved);
+		assert.equal(resolved.model, "gpt-5.4");
+		assert.equal(resolved.thinkingLevel, "xhigh");
 	});
 
 	test("unknown role falls back to defaultTier (mid)", () => {

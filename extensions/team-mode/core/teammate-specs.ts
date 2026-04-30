@@ -10,6 +10,7 @@ import { readFile, readdir } from "node:fs/promises";
 import * as path from "node:path";
 
 import type { TeammateSpec } from "./types.js";
+import { isThinkingLevel } from "./model-config.js";
 
 const SPEC_DIRS = [".pi/teammates", ".claude/teammates"] as const;
 
@@ -101,10 +102,17 @@ export function parseSpec(raw: string, fallbackRole: string, sourcePath: string)
 		needsWorktree: parseBool(fm.needsWorktree),
 		hasMemory: parseBool(fm.hasMemory),
 		modelTier: fm.modelTier,
+		thinkingLevel: parseThinkingLevel(fm.thinkingLevel ?? fm.thinking),
 		tools,
 		systemPrompt: body,
 		sourcePath,
 	};
+}
+
+function parseThinkingLevel(value: string | undefined): TeammateSpec["thinkingLevel"] {
+	if (value === undefined) return undefined;
+	const v = value.toLowerCase();
+	return isThinkingLevel(v) ? v : undefined;
 }
 
 function parseBool(value: string | undefined): boolean | undefined {

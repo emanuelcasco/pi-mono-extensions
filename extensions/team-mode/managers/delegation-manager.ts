@@ -139,6 +139,7 @@ export class DelegationManager {
 			teamId: task.teamId,
 			subagentType: task.subagentType,
 			model: task.model,
+			thinkingLevel: task.thinkingLevel,
 			isolation: task.isolation ?? defaultIsolation,
 			background: false,
 			cwd: task.cwd,

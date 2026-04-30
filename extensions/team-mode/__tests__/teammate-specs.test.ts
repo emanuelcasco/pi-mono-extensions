@@ -18,6 +18,7 @@ description: investigates the codebase
 needsWorktree: false
 hasMemory: true
 modelTier: sonnet:high
+thinkingLevel: high
 tools: read, bash, grep
 ---
 You are a researcher.`;
@@ -27,6 +28,7 @@ You are a researcher.`;
 		assert.equal(spec.needsWorktree, false);
 		assert.equal(spec.hasMemory, true);
 		assert.equal(spec.modelTier, "sonnet:high");
+		assert.equal(spec.thinkingLevel, "high");
 		assert.deepEqual(spec.tools, ["read", "bash", "grep"]);
 		assert.equal(spec.systemPrompt, "You are a researcher.");
 	});
