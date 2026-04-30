@@ -40,4 +40,25 @@ describe("PiStreamParser", () => {
 		assert.equal(events[2].text, "Done");
 		assert.equal(events[2].usage?.totalTokens, 42);
 	});
+
+	test("maps tool-only assistant messages so tool-use turns count", () => {
+		const parser = new PiStreamParser();
+		const events = parser.push(
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } }],
+					usage: { input: 10, output: 2, cacheRead: 30, cacheWrite: 0 },
+				},
+			})}\n`,
+		);
+		assert.equal(events.length, 1);
+		assert.equal(events[0]?.type, "assistant_message");
+		if (events[0]?.type !== "assistant_message") return;
+		assert.equal(events[0].text, "");
+		assert.equal(events[0].usage?.inputTokens, 10);
+		assert.equal(events[0].usage?.cacheReadTokens, 30);
+		assert.equal(events[0].usage?.totalTokens, 42);
+	});
 });

@@ -8,6 +8,7 @@ type SpawnCall = {
 	prompt: string;
 	name?: string;
 	thinkingLevel?: string;
+	runtime?: string;
 };
 
 function makeFakeAgents() {
@@ -78,5 +79,40 @@ describe("DelegationManager", () => {
 		assert.match(fake.calls[0]?.prompt ?? "", /Task=TOP/);
 		assert.match(fake.calls[1]?.prompt ?? "", /--- step1\.txt ---/);
 		assert.match(fake.calls[1]?.prompt ?? "", /RESULT:Task=TOP/);
+	});
+
+	test("runParallel applies top-level transient runtime and task overrides", async () => {
+		const fake = makeFakeAgents();
+		const manager = new DelegationManager(fake as never);
+		await manager.runParallel({
+			runtime: "transient",
+			tasks: [
+				{ description: "fast", prompt: "P1" },
+				{ description: "durable", prompt: "P2", runtime: "subprocess" },
+			],
+		});
+		assert.equal(fake.calls[0]?.runtime, "transient");
+		assert.equal(fake.calls[1]?.runtime, "subprocess");
+	});
+
+	test("runChain forwards transient runtime to chain and parallel steps", async () => {
+		const fake = makeFakeAgents();
+		const manager = new DelegationManager(fake as never);
+		await manager.runChain({
+			task: "TOP",
+			runtime: "transient",
+			chain: [
+				{ description: "one", prompt: "P1" },
+				{
+					parallel: [
+						{ description: "two", prompt: "P2" },
+						{ description: "three", prompt: "P3", runtime: "subprocess" },
+					],
+				},
+			],
+		});
+		assert.equal(fake.calls[0]?.runtime, "transient");
+		assert.equal(fake.calls[1]?.runtime, "transient");
+		assert.equal(fake.calls[2]?.runtime, "subprocess");
 	});
 });

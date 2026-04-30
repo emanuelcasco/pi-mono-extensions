@@ -11,7 +11,7 @@ import {
 	writeStepOutput,
 } from "../core/chain-utils.js";
 import { aggregateParallelOutputs, DEFAULT_PARALLEL_CONCURRENCY, mapConcurrent } from "../core/parallel-utils.js";
-import type { IsolationMode, TeammateRunResult } from "../core/types.js";
+import type { ExecutionRuntime, IsolationMode, TeammateRunResult } from "../core/types.js";
 import type { AgentManager } from "./agent-manager.js";
 
 const DEFAULT_MAX_PARALLEL = 8;
@@ -27,6 +27,7 @@ export type RunParallelInput = {
 	tasks: DelegateTask[];
 	concurrency?: number;
 	isolation?: IsolationMode;
+	runtime?: ExecutionRuntime;
 };
 
 export type RunChainInput = {
@@ -34,6 +35,7 @@ export type RunChainInput = {
 	chain: DelegateChainStep[];
 	concurrency?: number;
 	isolation?: IsolationMode;
+	runtime?: ExecutionRuntime;
 };
 
 export class DelegationManager {
@@ -54,7 +56,7 @@ export class DelegationManager {
 			const results = await mapConcurrent(expanded, concurrency, async (task, index) => {
 				launched += 1;
 				this.agents.setQueuedCount(Math.max(0, expanded.length - launched));
-				return this.runTask(task, index, input.isolation);
+				return this.runTask(task, index, input.isolation, input.runtime);
 			});
 			return {
 				mode: "parallel",
@@ -97,6 +99,7 @@ export class DelegationManager {
 							renderedTask,
 							index,
 							step.isolation ?? input.isolation,
+							step.runtime ?? input.runtime,
 						);
 						await writeStepOutput(chainDir, renderedTask.output, run.result);
 						if (step.failFast && run.status !== "completed") failFastTriggered = true;
@@ -113,7 +116,7 @@ export class DelegationManager {
 			}
 
 			const stepTask = await withTemplatedTask(step, input.task, previous, chainDir);
-			const result = await this.runTask(stepTask, i, input.isolation);
+			const result = await this.runTask(stepTask, i, input.isolation, input.runtime);
 			await writeStepOutput(chainDir, stepTask.output, result.result);
 			previous = result.result;
 		}
@@ -130,6 +133,7 @@ export class DelegationManager {
 		task: DelegateTask,
 		index: number,
 		defaultIsolation?: IsolationMode,
+		defaultRuntime?: ExecutionRuntime,
 	): Promise<TeammateRunResult> {
 		const name = task.name?.trim();
 		const result = await this.agents.spawn({
@@ -141,6 +145,7 @@ export class DelegationManager {
 			model: task.model,
 			thinkingLevel: task.thinkingLevel,
 			isolation: task.isolation ?? defaultIsolation,
+			runtime: task.runtime ?? defaultRuntime,
 			background: false,
 			cwd: task.cwd,
 		});

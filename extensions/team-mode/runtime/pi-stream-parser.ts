@@ -101,7 +101,6 @@ function assistantMessage(event: Record<string, unknown>): { text: string; usage
 	if (!message) return undefined;
 	if (str(message.role) !== "assistant") return undefined;
 	const text = extractText(message);
-	if (!text) return undefined;
 	return { text, usage: parseUsage(message.usage) };
 }
 
@@ -131,12 +130,25 @@ function parseUsage(value: unknown): PiUsage | undefined {
 	const usage = obj(value);
 	if (!usage) return undefined;
 	const mapped: PiUsage = {
-		inputTokens: num(usage.inputTokens) ?? num(usage.input_tokens),
-		outputTokens: num(usage.outputTokens) ?? num(usage.output_tokens),
+		inputTokens: num(usage.inputTokens) ?? num(usage.input_tokens) ?? num(usage.input),
+		outputTokens: num(usage.outputTokens) ?? num(usage.output_tokens) ?? num(usage.output),
 		totalTokens: num(usage.totalTokens) ?? num(usage.total_tokens),
-		cacheReadTokens: num(usage.cacheReadTokens) ?? num(usage.cache_read_tokens),
-		cacheWriteTokens: num(usage.cacheWriteTokens) ?? num(usage.cache_write_tokens),
+		cacheReadTokens: num(usage.cacheReadTokens) ?? num(usage.cache_read_tokens) ?? num(usage.cacheRead),
+		cacheWriteTokens: num(usage.cacheWriteTokens) ?? num(usage.cache_write_tokens) ?? num(usage.cacheWrite),
 	};
+	if (
+		mapped.totalTokens === undefined &&
+		(mapped.inputTokens !== undefined ||
+			mapped.outputTokens !== undefined ||
+			mapped.cacheReadTokens !== undefined ||
+			mapped.cacheWriteTokens !== undefined)
+	) {
+		mapped.totalTokens =
+			(mapped.inputTokens ?? 0) +
+			(mapped.outputTokens ?? 0) +
+			(mapped.cacheReadTokens ?? 0) +
+			(mapped.cacheWriteTokens ?? 0);
+	}
 	if (
 		mapped.inputTokens === undefined &&
 		mapped.outputTokens === undefined &&

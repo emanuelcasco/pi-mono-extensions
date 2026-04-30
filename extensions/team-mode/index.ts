@@ -169,6 +169,7 @@ async function pushTaskNotification(
 // --- schemas ---
 
 const IsolationSchema = Type.Union([Type.Literal("none"), Type.Literal("worktree")]);
+const RuntimeSchema = Type.Union([Type.Literal("subprocess"), Type.Literal("transient")]);
 const ThinkingLevelSchema = Type.Union([
 	Type.Literal("off"),
 	Type.Literal("minimal"),
@@ -195,6 +196,7 @@ const AgentParams = Type.Object({
 	thinking: Type.Optional(ThinkingLevelSchema),
 	thinking_level: Type.Optional(ThinkingLevelSchema),
 	isolation: Type.Optional(IsolationSchema),
+	runtime: Type.Optional(RuntimeSchema),
 	run_in_background: Type.Optional(Type.Boolean({ description: "Return immediately; worker keeps running. Completion arrives as <task-notification>." })),
 });
 
@@ -208,6 +210,7 @@ const DelegateTaskParams = Type.Object({
 	thinking: Type.Optional(ThinkingLevelSchema),
 	thinking_level: Type.Optional(ThinkingLevelSchema),
 	isolation: Type.Optional(IsolationSchema),
+	runtime: Type.Optional(RuntimeSchema),
 	count: Type.Optional(Type.Number()),
 	output: Type.Optional(Type.Union([Type.String(), Type.Boolean()])),
 	reads: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Boolean()])),
@@ -218,6 +221,7 @@ const DelegateChainParallelStepParams = Type.Object({
 	concurrency: Type.Optional(Type.Number()),
 	failFast: Type.Optional(Type.Boolean()),
 	isolation: Type.Optional(IsolationSchema),
+	runtime: Type.Optional(RuntimeSchema),
 });
 
 const DelegateChainStepParams = Type.Union([
@@ -231,6 +235,7 @@ const DelegateParams = Type.Object({
 	chain: Type.Optional(Type.Array(DelegateChainStepParams)),
 	concurrency: Type.Optional(Type.Number()),
 	isolation: Type.Optional(IsolationSchema),
+	runtime: Type.Optional(RuntimeSchema),
 });
 
 const SendMessageParams = Type.Object({
@@ -338,6 +343,7 @@ function registerAgentTools(pi: ExtensionAPI): void {
 				model: params.model,
 				thinkingLevel: params.thinking ?? params.thinking_level,
 				isolation: params.isolation,
+				runtime: params.runtime,
 				background: params.run_in_background,
 			});
 			await refreshWidget(ctx);
@@ -429,6 +435,7 @@ function registerDelegateTools(pi: ExtensionAPI): void {
 					tasks: (params.tasks ?? []).map(mapDelegateTask),
 					concurrency: params.concurrency,
 					isolation: params.isolation,
+					runtime: params.runtime,
 				});
 				return {
 					content: [{ type: "text", text: formatDelegateResult(result) }],
@@ -443,6 +450,7 @@ function registerDelegateTools(pi: ExtensionAPI): void {
 						concurrency: step.concurrency,
 						failFast: step.failFast,
 						isolation: step.isolation,
+						runtime: step.runtime,
 					};
 				}
 				return mapDelegateTask(step);
@@ -456,6 +464,7 @@ function registerDelegateTools(pi: ExtensionAPI): void {
 				chain: chainSteps,
 				concurrency: params.concurrency,
 				isolation: params.isolation,
+				runtime: params.runtime,
 			});
 			return {
 				content: [{ type: "text", text: formatDelegateResult(result) }],
@@ -475,6 +484,7 @@ function mapDelegateTask(task: {
 	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	isolation?: "none" | "worktree";
+	runtime?: "subprocess" | "transient";
 	count?: number;
 	output?: string | boolean;
 	reads?: string[] | boolean;
@@ -488,6 +498,7 @@ function mapDelegateTask(task: {
 		model: task.model,
 		thinkingLevel: task.thinking ?? task.thinking_level,
 		isolation: task.isolation,
+		runtime: task.runtime,
 		count: task.count,
 		output: task.output === true ? undefined : task.output,
 		reads: task.reads === true ? undefined : task.reads,
@@ -786,9 +797,10 @@ function formatSpawnResult(result: TeammateRunResult): string {
 		result.provider && result.model
 			? `${result.provider}/${result.model}`
 			: result.model ?? "(pi default)";
+	const runtime = result.runtime ?? "subprocess";
 	const lines = [
 		`task_id: ${result.teammateId}`,
-		`Worker: ${result.name} (status=${result.status}, exit=${result.exitCode ?? "n/a"})`,
+		`Worker: ${result.name} (status=${result.status}, exit=${result.exitCode ?? "n/a"}, runtime=${runtime})`,
 		`Model: ${modelStr}${result.thinkingLevel ? ` (thinking=${result.thinkingLevel})` : ""}${result.modelRationale ? `  — ${result.modelRationale}` : ""}`,
 	];
 	if (result.worktree) {

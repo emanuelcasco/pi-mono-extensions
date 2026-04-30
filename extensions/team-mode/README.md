@@ -1,6 +1,6 @@
 # pi-mono-team-mode
 
-A faithful port of **Claude Code's team-mode mode** to the pi coding agent. Named workers are spawned as pi subprocesses, the coordinator ends its turn after launching, and completion arrives as a `<task-notification>` user-role message that wakes the coordinator event-driven — no polling, no leader subprocess.
+A faithful port of **Claude Code's team-mode mode** to the pi coding agent. Named workers are spawned as pi subprocesses by default, the coordinator ends its turn after launching, and completion arrives as a `<task-notification>` user-role message that wakes the coordinator event-driven — no polling, no leader subprocess.
 
 > **Sibling of `pi-mono-team-mode`.** `team-mode` is leader-driven (a coordinator subprocess runs on its own task graph). `team-mode` maps 1:1 to Claude Code's semantics instead.
 
@@ -10,7 +10,7 @@ Everything below mirrors `claude-code/src/` behavior (`coordinator/coordinatorMo
 
 | Claude Code                                                                                         | team-mode                                                           |
 | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `Agent({ description, prompt, name?, team_name?, subagent_type?, isolation?, run_in_background? })` | `agent(...)` — same schema                                          |
+| `Agent({ description, prompt, name?, team_name?, subagent_type?, isolation?, run_in_background? })` | `agent(...)` — same schema plus optional `runtime` selector         |
 | `subagent({ tasks })`-style fan-out                                                                 | `delegate({ tasks: [...] })`                                        |
 | `subagent({ chain })`-style sequencing                                                              | `delegate({ task, chain: [...] })`                                  |
 | `SendMessage({ to, message })`                                                                      | `send_message(...)`                                                 |
@@ -157,6 +157,33 @@ Built-in provider catalogs map `xs`/`sm` to small models, `md` to default models
 
 Thinking resolution order is: explicit tool `thinking`, teammate spec `thinkingLevel`, `roles`/`roleTiers` tier metadata (`tiers[tier].thinkingLevel`), a legacy `:<thinking>` model suffix such as `gpt-5.4:high`, legacy `tierThinkingLevels`, then `defaultThinkingLevel`. If none applies, pi inherits its normal default.
 
+## Execution runtimes
+
+`agent` and `delegate` accept an explicit `runtime` selector:
+
+```ts
+agent({
+  description: "quick summary",
+  prompt: "Summarize README.md",
+  runtime: "transient",
+});
+
+delegate({
+  runtime: "transient",
+  tasks: [
+    { description: "scan docs", prompt: "Find docs gaps" },
+    { description: "scan tests", prompt: "Find missing coverage" },
+  ],
+});
+```
+
+- `runtime: "subprocess"` (default): durable, resumable workers backed by `pi --session`; supports `send_message`, names, teams, worktree isolation, background notifications, transcripts, and persistent records.
+- `runtime: "transient"`: fast one-shot in-process `createAgentSession()` runs; returns output directly to the current tool call; does not create teammate records, cannot be resumed, and does not share the parent LLM context window.
+
+Transient prompts must be fully self-contained. They only share the parent Node.js process/runtime infrastructure, not the coordinator conversation. Initial transient mode rejects `isolation: "worktree"`, `run_in_background: true`, `team_name`, and `name` because those imply durable teammate semantics.
+
+Use transient mode for quick disposable research/summarization fan-out. Use subprocess mode for implementation work, resumable teammates, background work, worktrees, or anything that needs a stable `task_id` for later `send_message`.
+
 ## Storage
 
 ```
@@ -213,5 +240,5 @@ When a task transitions to `completed`, the hook runs in the task's cwd. Non-zer
 
 ```bash
 cd extensions/team-mode
-npm test    # 69 tests
+npm test
 ```

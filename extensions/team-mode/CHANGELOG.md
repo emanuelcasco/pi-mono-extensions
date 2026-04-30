@@ -1,5 +1,17 @@
 # pi-mono-team-mode
 
+## 2.3.0
+
+### Minor Changes
+
+- Add `runtime: "transient"` for fast one-shot in-process `agent` and `delegate` fan-out runs that return output directly without creating durable teammate records.
+- Forward runtime selection through delegate parallel and chain steps, with validation for transient-incompatible durable options such as names, teams, worktrees, and background notifications.
+
+### Patch Changes
+
+- Fix live team-mode metrics for tool-only assistant turns so the **● Agents** panel increments turns and token counts when workers respond with tool calls before text.
+- Parse Pi's current usage shape (`input`, `output`, `cacheRead`, `cacheWrite`) in addition to legacy token field names.
+
 ## 2.2.0
 
 ### Minor Changes

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { IsolationMode, SpawnOpts } from "./types.js";
+import type { ExecutionRuntime, IsolationMode, SpawnOpts } from "./types.js";
 
 export type DelegateTask = SpawnOpts & {
 	count?: number;
@@ -17,6 +17,7 @@ export type DelegateChainParallelStep = {
 	concurrency?: number;
 	failFast?: boolean;
 	isolation?: IsolationMode;
+	runtime?: ExecutionRuntime;
 };
 
 export type DelegateChainStep = DelegateTask | DelegateChainParallelStep;

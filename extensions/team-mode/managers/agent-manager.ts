@@ -3,6 +3,7 @@
 import type { TeamMateStore } from "../core/store.js";
 import { generateTeammateId } from "../core/store.js";
 import {
+	type ExecutionRuntime,
 	type IsolationMode,
 	type LiveTeammateMetrics,
 	type LiveTeammateSnapshot,
@@ -14,6 +15,7 @@ import {
 	type TeammateSpec,
 } from "../core/types.js";
 import { runPi, type PiRun, type PiRunResult } from "../runtime/subprocess.js";
+import { runTransientSession, type TransientSessionOpts } from "../runtime/transient-session.js";
 import { cleanupWorktree, createWorktree, type WorktreeHandle } from "../runtime/worktree.js";
 import { loadTeammateSpec } from "../core/teammate-specs.js";
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from "../core/prompts.js";
@@ -52,6 +54,8 @@ export type AgentManagerDeps = {
 	 * `<task-notification>` to the parent session when appropriate.
 	 */
 	onTeammateEnd?: (record: TeammateRecord, metrics: TeammateEndMetrics) => void;
+	/** Test seam for the in-process one-shot runner. */
+	runTransientSession?: (opts: TransientSessionOpts) => Promise<TeammateRunResult>;
 };
 
 export type ModelPick = {
@@ -111,6 +115,9 @@ export class AgentManager {
 	 * the final message.
 	 */
 	async spawn(opts: SpawnOpts): Promise<TeammateRunResult> {
+		const runtime: ExecutionRuntime = opts.runtime ?? "subprocess";
+		if (runtime === "transient") return this.spawnTransient(opts);
+
 		const parentSessionId = this.deps.getParentSessionId();
 		const nameIndex = await this.deps.store.getNameIndex(parentSessionId);
 
@@ -181,6 +188,32 @@ export class AgentManager {
 			pick.rationale,
 			opts.description,
 		);
+	}
+
+	private async spawnTransient(opts: SpawnOpts): Promise<TeammateRunResult> {
+		validateTransientOptions(opts);
+		const baseCwd = opts.cwd ?? this.deps.getDefaultCwd();
+		const spec = opts.subagentType
+			? await loadTeammateSpec(baseCwd, opts.subagentType)
+			: null;
+		const pick = await this.resolveModel(opts.model ?? spec?.modelTier, opts.subagentType);
+		const thinkingLevel = opts.thinkingLevel ?? spec?.thinkingLevel ?? pick.thinkingLevel;
+		const teammateId = generateTeammateId();
+		const name = teammateId;
+		const initialMessage = buildInitialMessage(opts, spec?.description);
+		const runner = this.deps.runTransientSession ?? runTransientSession;
+		return runner({
+			id: teammateId,
+			name,
+			description: opts.description,
+			message: initialMessage,
+			cwd: baseCwd,
+			provider: pick.provider,
+			model: pick.model,
+			thinkingLevel,
+			modelRationale: pick.rationale,
+			spec: spec ?? undefined,
+		});
 	}
 
 	/** Resume an existing teammate by name. Context is preserved via pi's --session. */
@@ -450,6 +483,7 @@ export class AgentManager {
 				modelRationale,
 				worktree: worktreeInfo,
 				durationMs: Date.now() - startedAt,
+				runtime: "subprocess",
 			};
 		};
 
@@ -475,6 +509,7 @@ export class AgentManager {
 			thinkingLevel: record.thinkingLevel,
 			modelRationale,
 			background: true,
+			runtime: "subprocess",
 		};
 	}
 
@@ -555,6 +590,21 @@ function tierFromOverride(value: string | undefined, config: Awaited<ReturnType<
 	if (isModelTier(v)) return v;
 	if (config.tiers[v] || Object.values(config.roles).includes(v) || Object.values(config.roleTiers).includes(v)) return v;
 	return TIER_ALIASES[v];
+}
+
+function validateTransientOptions(opts: SpawnOpts): void {
+	if (opts.isolation === "worktree") {
+		throw new Error('runtime "transient" does not support isolation "worktree"; use runtime "subprocess" for worktree isolation.');
+	}
+	if (opts.background) {
+		throw new Error('runtime "transient" does not support run_in_background; use runtime "subprocess" for background workers.');
+	}
+	if (opts.teamId) {
+		throw new Error('runtime "transient" does not support team_name; transient runs are not durable team members.');
+	}
+	if (opts.name?.trim()) {
+		throw new Error('runtime "transient" does not support name; transient runs cannot be resumed with send_message.');
+	}
 }
 
 function packResolved(r: ResolvedModel): ModelPick {

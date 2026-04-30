@@ -22,6 +22,8 @@ export type TeammateExitReason =
 
 export type IsolationMode = "none" | "worktree";
 
+export type ExecutionRuntime = "subprocess" | "transient";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** Persistent record for a single named teammate. */
@@ -89,6 +91,8 @@ export type SpawnOpts = {
 	thinkingLevel?: ThinkingLevel;
 	isolation?: IsolationMode;
 	background?: boolean;
+	/** Execution backend. Defaults to subprocess for durable/resumable workers. */
+	runtime?: ExecutionRuntime;
 	/** Override cwd (defaults to ctx.cwd or team's worktreeBase). */
 	cwd?: string;
 };
@@ -135,6 +139,7 @@ export type TeammateRunResult = {
 	};
 	background?: boolean;
 	durationMs?: number;
+	runtime?: ExecutionRuntime;
 };
 
 /** Teammate role spec loaded from `.pi/teammates/*.md` or `.claude/teammates/*.md`. */
