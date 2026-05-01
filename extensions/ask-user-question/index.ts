@@ -21,6 +21,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { initI18n, t } from "./i18n.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -158,6 +159,8 @@ const SYM = {
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function askUserQuestion(pi: ExtensionAPI) {
+	initI18n(pi);
+
 	pi.registerTool({
 		name: "ask_user_question",
 		label: "Ask User",
@@ -664,17 +667,17 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 						lines.push("");
 						if (allRequired()) {
-							add(` ${theme.fg("success", "Press Enter to submit")}`);
+							add(` ${theme.fg("success", t("ask.pressEnterSubmit", "Press Enter to submit"))}`);
 						} else {
 							const missing = questions
 								.filter((q) => q.required && !isAnswered(q))
 								.map((q) => q.label)
 								.join(", ");
-							add(` ${theme.fg("warning", `Required: ${missing}`)}`);
+							add(` ${theme.fg("warning", t("ask.required", "Required: {missing}", { missing }))}`);
 						}
 
 						lines.push("");
-						add(theme.fg("dim", " Tab/←→ navigate questions • Enter submit • Esc cancel"));
+						add(theme.fg("dim", ` ${t("ask.navQuestions", "Tab/←→ navigate questions • Enter submit • Esc cancel")}`));
 						hr();
 						cachedLines = lines;
 						return lines;
@@ -689,10 +692,10 @@ Use this tool when you need user input to proceed — for clarifying requirement
 					// ── Question prompt ──────────────────────────────────
 					const typeTag =
 						q.type === "radio"
-							? theme.fg("dim", "[single-select]")
+							? theme.fg("dim", t("ask.type.single", "[single-select]"))
 							: q.type === "checkbox"
-								? theme.fg("dim", "[multi-select]")
-								: theme.fg("dim", "[text]");
+								? theme.fg("dim", t("ask.type.multi", "[multi-select]"))
+								: theme.fg("dim", t("ask.type.text", "[text]"));
 
 					const promptLines = wrapText(q.prompt, maxW - 2);
 					for (let i = 0; i < promptLines.length; i++) {
@@ -700,7 +703,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 						add(` ${theme.fg("text", theme.bold(promptLines[i]))}${isLast ? ` ${typeTag}` : ""}`);
 					}
 					if (q.required) {
-						add(` ${theme.fg("warning", "*required")}`);
+						add(` ${theme.fg("warning", t("ask.requiredMark", "*required"))}`);
 					}
 					lines.push("");
 
@@ -733,7 +736,9 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const isSelected = selected?.wasCustom === true;
 							const bullet = isSelected ? theme.fg("accent", SYM.radioOn) : theme.fg("dim", SYM.radioOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
-							const label = isSelected ? `Other: ${selected.label}` : "Other...";
+							const label = isSelected
+								? t("ask.otherValue", "Other: {value}", { value: selected.label })
+								: t("ask.other", "Other...");
 							const prefix = ` ${pointer} ${bullet} `;
 							const prefixWidth = visibleWidth(prefix);
 							const labelLines = wrapText(label, Math.max(1, maxW - prefixWidth));
@@ -745,7 +750,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 							if (otherMode) {
 								lines.push("");
-								add(` ${theme.fg("muted", "  Your answer:")}`);
+								add(`   ${theme.fg("muted", t("ask.yourAnswer", "Your answer:"))}`);
 								for (const line of editor.render(maxW - 6)) {
 									add(`   ${line}`);
 								}
@@ -782,7 +787,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							const custom = checkCustom.get(q.id)?.trim();
 							const box = custom ? theme.fg("accent", SYM.checkOn) : theme.fg("dim", SYM.checkOff);
 							const pointer = isCursor ? theme.fg("accent", SYM.pointer) : " ";
-							const label = custom ? `Other: ${custom}` : "Other...";
+							const label = custom ? t("ask.otherValue", "Other: {value}", { value: custom }) : t("ask.other", "Other...");
 							const prefix = ` ${pointer} ${box} `;
 							const prefixWidth = visibleWidth(prefix);
 							const labelLines = wrapText(label, Math.max(1, maxW - prefixWidth));
@@ -807,16 +812,16 @@ Use this tool when you need user input to proceed — for clarifying requirement
 					// ── Footer ───────────────────────────────────────────
 					lines.push("");
 					if (otherMode) {
-						add(theme.fg("dim", " Enter submit • Esc go back"));
+						add(theme.fg("dim", ` ${t("ask.enterBack", "Enter submit • Esc go back")}`));
 					} else if (q.type === "text") {
 						const nav = isMulti ? "Tab/←→ navigate • " : "";
-						add(theme.fg("dim", ` ${nav}Enter submit • Esc cancel`));
+						add(theme.fg("dim", ` ${t("ask.textFooter", "{nav}Enter submit • Esc cancel", { nav })}`));
 					} else if (q.type === "checkbox") {
 						const nav = isMulti ? "Tab/←→ navigate • " : "";
-						add(theme.fg("dim", ` ↑↓ navigate • Space toggle • ${nav}Enter ${isMulti ? "next" : "submit"} • Esc cancel`));
+						add(theme.fg("dim", ` ${t("ask.checkboxFooter", "↑↓ navigate • Space toggle • {nav}Enter {action} • Esc cancel", { nav, action: isMulti ? t("ask.next", "next") : t("ask.submit", "submit") })}`));
 					} else {
 						const nav = isMulti ? "Tab/←→ navigate • " : "";
-						add(theme.fg("dim", ` ↑↓ navigate • ${nav}Enter select • Esc cancel`));
+						add(theme.fg("dim", ` ${t("ask.radioFooter", "↑↓ navigate • {nav}Enter select • Esc cancel", { nav })}`));
 					}
 					hr();
 
@@ -843,7 +848,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 
 			if (result.cancelled) {
 				return {
-					content: [{ type: "text", text: "User cancelled the form" }],
+					content: [{ type: "text", text: t("ask.cancelled", "User cancelled the form") }],
 					details: result,
 				};
 			}
