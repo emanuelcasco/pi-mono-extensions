@@ -264,11 +264,11 @@ Full details: [extensions/review/README.md](extensions/review/README.md).
 
 - `/review <url>` detects GitHub vs GitLab from the URL
 - fetches the diff under the hood with the appropriate CLI
-- runs the review with the active pi model
-- prints the review summary in the terminal
+- runs the review with the active pi model using a scoped `report_finding` tool when supported, with JSON fallback
+- prints a compact P0–P3 findings summary in the terminal
 - stores the review for `/review-tui`
 - `/review-tui` opens the saved review in a side pane
-- lets you approve, dismiss, or edit each comment
+- lets you approve, dismiss, or edit each titled finding/comment
 - submits approved comments directly to GitHub or GitLab based on the saved review URL
 
 ### Install

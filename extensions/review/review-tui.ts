@@ -21,8 +21,6 @@ export function registerReviewTuiCommand(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_switch", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_fork", async (_event, ctx) => reconstructState(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
 	pi.registerMessageRenderer("review-submit", (message, _options, theme) => {
@@ -158,9 +156,10 @@ export function registerReviewTuiCommand(pi: ExtensionAPI): void {
 			}
 
 			const session = latestSession!;
+			const cloned = cloneSession(session);
 			const prepared: ReviewSession = {
-				...cloneSession(session),
-				comments: session.comments.map((comment: ReviewComment) => ({
+				...cloned,
+				comments: cloned.comments.map((comment: ReviewComment) => ({
 					...comment,
 					status:
 						comment.status === "approved" || comment.status === "edited" || comment.status === "dismissed"

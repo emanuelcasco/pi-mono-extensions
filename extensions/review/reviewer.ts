@@ -5,32 +5,20 @@
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { KeyId } from "@mariozechner/pi-tui";
-import type { CommentSeverity, CommentStatus, ReviewAction, ReviewComment } from "./common.js";
+import {
+	getCommentBody,
+	getCommentConfidence,
+	getCommentPriority,
+	getCommentTitle,
+	getPriorityInfo,
+	type CommentStatus,
+	type ReviewAction,
+	type ReviewComment,
+} from "./common.js";
 
-function severityColor(severity: CommentSeverity): "error" | "warning" | "accent" | "muted" {
-	switch (severity) {
-		case "error":
-			return "error";
-		case "warning":
-			return "warning";
-		case "suggestion":
-			return "accent";
-		case "info":
-			return "muted";
-	}
-}
-
-function severityLabel(severity: CommentSeverity): string {
-	switch (severity) {
-		case "error":
-			return "!! error";
-		case "warning":
-			return "!  warning";
-		case "suggestion":
-			return "*  suggestion";
-		case "info":
-			return "i  info";
-	}
+function priorityLabel(comment: ReviewComment): string {
+	const priority = getCommentPriority(comment);
+	return `${getPriorityInfo(priority).symbol}  ${priority} ${(getCommentConfidence(comment) * 100).toFixed(0)}% confidence`;
 }
 
 function statusIcon(status: CommentStatus): string {
@@ -284,11 +272,15 @@ export class ReviewerComponent {
 			row("");
 		}
 
-		addWrapped(th.fg(severityColor(comment.severity), severityLabel(comment.severity)), "  ");
+		const priority = getCommentPriority(comment);
+		addWrapped(th.fg(getPriorityInfo(priority).color, priorityLabel(comment)), "  ");
 		divider();
 		row("");
-		for (const bl of comment.body.split("\n").slice(0, 20)) addWrapped(th.fg("text", bl), "  ");
-		if (comment.body.split("\n").length > 20) addWrapped(th.fg("dim", `... ${comment.body.split("\n").length - 20} more lines`), "  ");
+		addWrapped(th.fg("text", th.bold(getCommentTitle(comment))), "  ");
+		row("");
+		const bodyLines = getCommentBody(comment).split("\n");
+		for (const bl of bodyLines.slice(0, 20)) addWrapped(th.fg("text", bl), "  ");
+		if (bodyLines.length > 20) addWrapped(th.fg("dim", `... ${bodyLines.length - 20} more lines`), "  ");
 		if (comment.status === "edited" && comment.originalBody) {
 			row("");
 			addWrapped(th.fg("dim", "original: " + comment.originalBody), "  ");
