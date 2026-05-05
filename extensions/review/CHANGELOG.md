@@ -1,5 +1,11 @@
 # pi-mono-review
 
+## 1.8.0
+
+### Minor Changes
+
+- 9b49d33: Add structured review findings with P0-P3 priority, confidence, title/body fields, scoped `report_finding` tool-call review generation, compact findings rendering, and legacy severity/JSON fallback support.
+
 ## 1.7.2
 
 ### Patch Changes
@@ -7,7 +13,6 @@
 ### Fixed: ask-user-question
 
 - Remove unused `StringEnum` import from `@mariozechner/pi-ai`.
-
 
 ## 1.7.1
 
@@ -34,7 +39,6 @@
 ### Tests
 
 - New `intent-queue` and `model-config` suites; expanded coverage across `leader-runtime`, `team-manager`, `team-query-tool` and `formatters`.
-
 
 ## 1.7.0
 
