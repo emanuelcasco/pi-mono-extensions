@@ -12,6 +12,14 @@
 - Updated tool descriptions, README, and skill guidance to prefer processed tools and keep raw JSON tools as debugging escape hatches.
 - Added response caps, truncation metadata, and next-step suggestions for summarized node output.
 
+## 0.1.2
+
+### Patch Changes
+
+### Fixed: package extension entrypoint
+
+- Added the package root `index.ts` extension entrypoint so pi can load the Figma tools from the published package manifest.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # pi-mono-linear
 
+## 0.1.2
+
+### Patch Changes
+
+### Fixed: package extension entrypoint
+
+- Added the package root `index.ts` extension entrypoint so pi can load the Linear tools from the published package manifest.
+
 ## 0.1.1
 
 ### Patch Changes
