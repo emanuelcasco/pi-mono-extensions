@@ -41,6 +41,11 @@ describe("getCoordinatorSystemPrompt", () => {
 		assert.match(prompt, /end your response/i);
 		assert.match(prompt, /Never fabricate or predict/);
 	});
+	test("avoids TODO overhead for a single task", () => {
+		assert.match(prompt, /single coherent task/i);
+		assert.match(prompt, /do not call task_create\/task_update/i);
+		assert.match(prompt, /Creating exactly one TODO item is overhead/i);
+	});
 });
 
 describe("formatTaskNotification", () => {

@@ -53,6 +53,8 @@ Turn 2 (coordinator, woken by the notification):
   [turn ends]
 ```
 
+For a single coherent task, the coordinator should resolve it directly without creating a TODO item. Creating exactly one `task_create` entry is overhead, not coordination.
+
 For a DAG of dependent tasks, the coordinator:
 
 1. Seeds the TODO list via `task_create` (each task with `blocks`/`blockedBy` set via `task_update`).

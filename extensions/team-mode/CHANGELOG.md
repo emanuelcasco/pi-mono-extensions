@@ -1,5 +1,11 @@
 # pi-mono-team-mode
 
+## 2.3.1
+
+### Patch Changes
+
+- Clarify coordinator prompt guidance so single coherent tasks are handled directly without creating a one-item TODO, reserving `task_create`/`task_update` for multi-task goals or dependency tracking.
+
 ## 2.3.0
 
 ### Minor Changes
