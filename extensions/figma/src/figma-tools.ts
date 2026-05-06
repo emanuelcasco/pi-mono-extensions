@@ -4,8 +4,13 @@ import { jsonToolResult, textToolResult } from "pi-common/tool-result";
 import { FigmaClient, parseFigmaUrl } from "./figma-client.js";
 import {
 	FigmaGetDesignContextParams,
+	FigmaComponentImplementationHintsParams,
+	FigmaExtractAssetsParams,
+	FigmaFindCodeConnectMappingParams,
 	FigmaGetFileParams,
 	FigmaGetNodesParams,
+	FigmaFindNodesParams,
+	FigmaImplementationContextParams,
 	FigmaProcessedNodeParams,
 	FigmaProcessedNodeWithRenderParams,
 	FigmaParseUrlParams,
@@ -29,6 +34,13 @@ interface ProcessedNodeParams {
 	format?: "png" | "jpg" | "svg" | "pdf";
 	scale?: number;
 	maxResponseChars?: number;
+}
+
+interface ImplementationContextParams extends ProcessedNodeParams {
+	framework?: "react" | "html" | "vue" | "angular" | "react-native";
+	styling?: "css" | "css-modules" | "styled-components" | "tailwind" | "inline";
+	resolveTokens?: boolean;
+	includeCodeSnippets?: boolean;
 }
 
 const FIGMA_AUTH: AuthConfiguratorOptions = {
@@ -81,6 +93,30 @@ export function registerFigmaTools(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "figma_find_nodes_by_name",
+		label: "Figma Find Nodes By Name",
+		description: "Search Figma layer/node names within a file or scoped subtree. Returns compact path-aware matches with result caps; prefer this before raw JSON exploration.",
+		promptSnippet: "Find Figma nodes/layers by name before choosing a target frame.",
+		parameters: FigmaFindNodesParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await withFigmaAuth(ctx, () => client.findNodesByName(params.fileKey, params));
+			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
+		},
+	});
+
+	pi.registerTool({
+		name: "figma_find_nodes_by_text",
+		label: "Figma Find Nodes By Text",
+		description: "Search visible Figma text nodes within a file or scoped subtree and return compact path-aware matches with nearest parent context.",
+		promptSnippet: "Find Figma nodes by visible text before choosing a target frame.",
+		parameters: FigmaFindNodesParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await withFigmaAuth(ctx, () => client.findNodesByText(params.fileKey, params));
+			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
+		},
+	});
+
+	pi.registerTool({
 		name: "figma_get_node_summary",
 		label: "Figma Node Summary",
 		description: "Fetch a compact structured summary of a Figma node: dimensions, layout, spacing, styles, visible text, component properties, and shallow child hierarchy. Default depth is 2; hidden nodes, vectors, and component internals are omitted by default.",
@@ -120,12 +156,14 @@ export function registerFigmaTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "figma_get_implementation_context",
 		label: "Figma Implementation Context",
-		description: "Return concise design-to-code context for a Figma node: purpose, sections, fields/buttons, measurements, typography, colors, spacing, assets, and React-friendly component hierarchy.",
+		description: "Return concise design-to-code context for a Figma node: purpose, sections, fields/buttons, measurements, typography, colors, spacing, CSS layout/responsive hints, accessibility hints, design tokens, assets, and optional framework starter snippets.",
 		promptSnippet: "Get coding-ready Figma implementation context.",
-		parameters: FigmaProcessedNodeWithRenderParams,
+		parameters: FigmaImplementationContextParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const assets = params.renderImage ? await withFigmaAuth(ctx, () => renderAssets(client, ctx, params)) : undefined;
-			const result = await withFigmaAuth(ctx, () => client.getImplementationContext(params.fileKey, params.nodeId, { ...processedOptions(params), assets }));
+			const result = await withFigmaAuth(ctx, () =>
+				client.getImplementationContext(params.fileKey, params.nodeId, { ...processedOptions(params), assets, ...implementationOptions(params) }),
+			);
 			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
 		},
 	});
@@ -236,6 +274,42 @@ export function registerFigmaTools(pi: ExtensionAPI): void {
 			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
 		},
 	});
+
+	pi.registerTool({
+		name: "figma_extract_assets",
+		label: "Figma Extract Assets",
+		description: "Extract a compact asset manifest for a Figma subtree, including SVG/icon exports, node renders, image fills, node paths, hashes, sizes, and local file paths when downloaded.",
+		promptSnippet: "Extract icons, renders, and image fills from a Figma frame as an asset manifest.",
+		parameters: FigmaExtractAssetsParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await withFigmaAuth(ctx, () => client.extractAssets(params.fileKey, params.nodeId, { ...params, cwd: ctx.cwd }));
+			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
+		},
+	});
+
+	pi.registerTool({
+		name: "figma_find_code_connect_mapping",
+		label: "Figma Find Code Connect Mapping",
+		description: "Scan the local repo for Code Connect files, figma.connect calls, Figma URLs, node IDs, and component keys matching a target. No live Figma request is required.",
+		promptSnippet: "Find local Code Connect or Figma-node-to-component mappings in the current repo.",
+		parameters: FigmaFindCodeConnectMappingParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await client.findCodeConnectMapping({ ...params, cwd: ctx.cwd });
+			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
+		},
+	});
+
+	pi.registerTool({
+		name: "figma_get_component_implementation_hints",
+		label: "Figma Component Implementation Hints",
+		description: "Combine Figma summary, implementation context, variants/properties, accessibility, token dependencies, assets, optional local Code Connect matches, and starter snippets into compact component implementation guidance.",
+		promptSnippet: "Get high-level implementation hints for turning a Figma component into code.",
+		parameters: FigmaComponentImplementationHintsParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await withFigmaAuth(ctx, () => client.getComponentImplementationHints(params.fileKey, params.nodeId, { ...processedOptions(params), ...params, cwd: ctx.cwd }));
+			return jsonToolResult(result, { maxChars: params.maxResponseChars ?? DEFAULT_PROCESSED_MAX_CHARS });
+		},
+	});
 }
 
 function processedOptions(params: ProcessedNodeParams) {
@@ -244,6 +318,15 @@ function processedOptions(params: ProcessedNodeParams) {
 		includeHidden: params.includeHidden,
 		includeVectors: params.includeVectors,
 		includeComponentInternals: params.includeComponentInternals,
+	};
+}
+
+function implementationOptions(params: ImplementationContextParams) {
+	return {
+		framework: params.framework,
+		styling: params.styling,
+		resolveTokens: params.resolveTokens,
+		includeCodeSnippets: params.includeCodeSnippets,
 	};
 }
 

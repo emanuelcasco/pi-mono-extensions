@@ -1,0 +1,28 @@
+{
+  "id": "4:1",
+  "name": "Visibility Fixture",
+  "type": "FRAME",
+  "absoluteBoundingBox": { "width": 200, "height": 120 },
+  "children": [
+    {
+      "id": "4:2",
+      "name": "Visible text",
+      "type": "TEXT",
+      "characters": "Visible copy"
+    },
+    {
+      "id": "4:3",
+      "name": "Hidden text",
+      "type": "TEXT",
+      "visible": false,
+      "characters": "Hidden copy"
+    },
+    {
+      "id": "4:4",
+      "name": "Search icon",
+      "type": "VECTOR",
+      "absoluteBoundingBox": { "width": 16, "height": 16 },
+      "children": [{ "id": "4:5", "name": "Vector point", "type": "VECTOR" }]
+    }
+  ]
+}

@@ -36,11 +36,14 @@ Use `figma_parse_url` when you need to extract these values from a full URL.
 
 1. Use `figma_configure_auth` only when auth is missing, invalid, expired, or the user asks to update the token.
 2. Use `figma_parse_url` for full Figma URLs.
-3. Use `figma_render_nodes` for screenshots/assets when visual context helps.
-4. Use `figma_explain_node` or `figma_get_node_summary` for the target frame/component.
-5. Use `figma_get_implementation_context` when coding from a design.
-6. Use `figma_get_design_context` for compact file/page/top-level context.
-7. Use `figma_get_nodes` only for raw debugging.
+3. If the exact target node is unclear, use `figma_get_design_context` plus `figma_find_nodes_by_name` or `figma_find_nodes_by_text` before raw exploration.
+4. Use `figma_render_nodes` for screenshots and `figma_extract_assets` when icons, node renders, or image fills are needed for implementation.
+   - Do **not** pass `outputDir` unless the user explicitly requests persistent files in a specific location. Let the extension use its OS temp directory default for generated images/assets.
+5. Use `figma_explain_node` or `figma_get_node_summary` for the target frame/component.
+6. Use enriched `figma_get_implementation_context` when coding from a design. Pass `framework`, `styling`, `resolveTokens`, and `includeCodeSnippets` when useful.
+7. Use `figma_find_code_connect_mapping` only when the local repo may contain Code Connect mappings or Figma URL/node references.
+8. Use `figma_get_component_implementation_hints` for component-level implementation planning.
+9. Use `figma_get_nodes` only for raw debugging.
 
 **Do not call `figma_get_nodes` by default. Prefer processed tools.**
 
@@ -60,10 +63,28 @@ figma_explain_node
 
 ```text
 figma_parse_url
+figma_find_nodes_by_name/text if the URL lacks an exact target node
 figma_render_nodes
-figma_get_implementation_context
+figma_get_implementation_context with framework/styling/token options when useful
 figma_get_node_summary for specific subnodes if needed
 ```
+
+### Extracting assets
+
+```text
+figma_extract_assets
+```
+
+Use this when visual assets are needed. Prefer the manifest's `nodePath`, `suggestedName`, hashes, and local paths over guessing layer-to-file mappings.
+
+### Finding local implementation mappings
+
+```text
+figma_find_code_connect_mapping
+figma_get_component_implementation_hints
+```
+
+Only use these when you are working in a local code repository where Code Connect or Figma URL/node references may exist.
 
 ### Debugging the extension or raw Figma data
 
@@ -76,7 +97,11 @@ figma_get_nodes
 - `figma_get_node_summary` returns compact structured summaries: name, type, size, layout, spacing/padding, fills/strokes/effects, visible text, component properties, and immediate child hierarchy.
 - `figma_extract_text` returns visible text nodes only.
 - `figma_explain_node` returns human-readable Markdown for questions like “Explain this component.”
-- `figma_get_implementation_context` returns coding-ready context: purpose, sections, fields/buttons, measurements, typography, colors, spacing, assets, and React-friendly hierarchy.
+- `figma_find_nodes_by_name` and `figma_find_nodes_by_text` search names/text with compact path-aware matches. Use them before raw file exploration.
+- `figma_get_implementation_context` returns coding-ready context: purpose, sections, fields/buttons, measurements, typography, colors, spacing, CSS layout/responsive hints, accessibility hints, design tokens, assets, framework hints, and hierarchy.
+- `figma_extract_assets` returns an asset manifest for SVG icons, node renders, and image fills.
+- `figma_find_code_connect_mapping` scans the local repo for Code Connect/Figma references.
+- `figma_get_component_implementation_hints` combines Figma context, variants, tokens, assets, accessibility, Code Connect matches, and optional starter snippets.
 
 Processed tools default to shallow, safe fetches:
 
@@ -85,7 +110,11 @@ Processed tools default to shallow, safe fetches:
   depth: 2,
   includeHidden: false,
   includeVectors: false,
-  includeComponentInternals: false
+  includeComponentInternals: false,
+  framework?: "react" | "html" | "vue" | "angular" | "react-native",
+  styling?: "css" | "css-modules" | "styled-components" | "tailwind" | "inline",
+  resolveTokens?: true,
+  includeCodeSnippets?: false
 }
 ```
 
@@ -111,3 +140,4 @@ Processed tools enforce compact defaults and may include `metadata.truncated: tr
 - Figma API is rate-limited; batch node IDs where supported.
 - Large responses may be truncated; narrow to a specific child node when needed.
 - This integration is read-only and cannot modify Figma files.
+- Live Figma selection is not implemented. True Dev Mode-style live selection requires a future local Figma plugin/bridge.

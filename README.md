@@ -165,7 +165,7 @@ pi install npm:pi-mono-context-guard
 
 ### figma
 
-The `figma` package registers native Figma tools for LLM-ready design context (`figma_get_node_summary`, `figma_explain_node`, `figma_extract_text`, `figma_get_implementation_context`, `figma_render_nodes`, and related helpers) and bundles a Figma skill for design-to-code workflows. Raw JSON tools (`figma_get_file`, `figma_get_nodes`) remain available as debugging escape hatches.
+The `figma` package registers native Figma tools for LLM-ready design context (`figma_find_nodes_by_name/text`, `figma_get_node_summary`, `figma_explain_node`, `figma_extract_text`, enriched `figma_get_implementation_context`, `figma_extract_assets`, Code Connect/component hint helpers, `figma_render_nodes`, and related helpers) and bundles a Figma skill for design-to-code workflows. Rendered/generated image files default to OS temp directories unless `outputDir` is explicitly provided. Raw JSON tools (`figma_get_file`, `figma_get_nodes`) remain available as debugging escape hatches.
 
 Auth is read from `FIGMA_TOKEN` or `~/.pi/agent/auth.json` at `.figma.token`. Use `/figma-auth --force` or `figma_configure_auth` for masked token setup/update.
 

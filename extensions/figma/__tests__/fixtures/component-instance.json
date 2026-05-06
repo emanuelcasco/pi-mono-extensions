@@ -1,0 +1,50 @@
+{
+  "id": "2:1",
+  "name": "Settings modal",
+  "type": "FRAME",
+  "absoluteBoundingBox": { "width": 480, "height": 360 },
+  "children": [
+    {
+      "id": "2:2",
+      "name": "Primary CTA instance",
+      "type": "INSTANCE",
+      "componentId": "99:1",
+      "componentSetId": "99:0",
+      "componentProperties": {
+        "State": { "type": "VARIANT", "value": "Default" },
+        "Disabled": { "type": "BOOLEAN", "value": false }
+      },
+      "absoluteBoundingBox": { "width": 180, "height": 44 },
+      "children": [
+        {
+          "id": "2:3",
+          "name": "Hidden icon",
+          "type": "VECTOR",
+          "absoluteBoundingBox": { "width": 16, "height": 16 }
+        },
+        {
+          "id": "2:4",
+          "name": "Label",
+          "type": "TEXT",
+          "characters": "Continue",
+          "absoluteBoundingBox": { "width": 70, "height": 20 },
+          "style": { "fontFamily": "Inter", "fontSize": 14, "fontWeight": 600 }
+        }
+      ]
+    },
+    {
+      "id": "2:5",
+      "name": "Email input field",
+      "type": "FRAME",
+      "absoluteBoundingBox": { "width": 300, "height": 48 },
+      "children": [
+        {
+          "id": "2:6",
+          "name": "Placeholder",
+          "type": "TEXT",
+          "characters": "Email address"
+        }
+      ]
+    }
+  ]
+}

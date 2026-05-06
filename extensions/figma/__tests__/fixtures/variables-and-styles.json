@@ -1,0 +1,40 @@
+{
+  "id": "3:1",
+  "name": "Tokenized Button",
+  "type": "FRAME",
+  "absoluteBoundingBox": { "width": 160, "height": 48 },
+  "layoutMode": "HORIZONTAL",
+  "primaryAxisAlignItems": "CENTER",
+  "counterAxisAlignItems": "CENTER",
+  "styles": { "fill": "S:primary-fill", "stroke": "S:border-default" },
+  "boundVariables": {
+    "fills": [{ "type": "VARIABLE_ALIAS", "id": "VariableID:color-primary" }],
+    "cornerRadius": { "type": "VARIABLE_ALIAS", "id": "VariableID:radius-md" }
+  },
+  "fills": [
+    {
+      "type": "SOLID",
+      "color": { "r": 0.02, "g": 0.35, "b": 0.9 },
+      "opacity": 1
+    }
+  ],
+  "cornerRadius": 8,
+  "children": [
+    {
+      "id": "3:2",
+      "name": "Label",
+      "type": "TEXT",
+      "characters": "Submit",
+      "style": { "fontFamily": "Inter", "fontSize": 14, "fontWeight": 600 },
+      "styles": { "text": "S:text-button" },
+      "boundVariables": {
+        "fills": [
+          { "type": "VARIABLE_ALIAS", "id": "VariableID:text-on-primary" }
+        ]
+      },
+      "fills": [
+        { "type": "SOLID", "color": { "r": 1, "g": 1, "b": 1 }, "opacity": 1 }
+      ]
+    }
+  ]
+}

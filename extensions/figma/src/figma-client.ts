@@ -6,16 +6,30 @@ import { createHttpClient, type HttpClient } from "pi-common/http-client";
 import { createRateLimiter, type RateLimiter } from "pi-common/rate-limiter";
 import { figmaCache } from "./figma-cache.js";
 import {
+	collectAssetCandidates,
+	manifestEntryFromFile,
+	manifestEntryFromUrl,
+	safeFilename,
+	type FigmaAssetManifestEntry,
+	type FigmaAssetType,
+	type FigmaExtractAssetsResult,
+} from "./figma-assets.js";
+import { findCodeConnectMapping, type CodeConnectScanResult } from "./code-connect.js";
+import { buildComponentImplementationHints, type FigmaComponentImplementationHints } from "./figma-component-hints.js";
+import {
 	explainNode,
 	extractVisibleText,
 	getImplementationContext,
 	summarizeNode,
 	type FigmaImplementationContext,
+	type FigmaImplementationContextOptions,
 	type FigmaNodeSummary,
 	type FigmaRenderedAsset,
 	type FigmaSummarizerOptions,
 	type FigmaTextExtractionResult,
 } from "./figma-summarizer.js";
+import { findNodesByName, findNodesByText, type FigmaFindNodesOptions, type FigmaNodeSearchResult } from "./figma-search.js";
+import { buildFigmaTokenMap } from "./figma-tokens.js";
 
 export interface FigmaClientOptions {
 	baseUrl?: string;
@@ -42,6 +56,22 @@ export interface ParsedFigmaUrl {
 export interface RenderNodesResult {
 	images: Record<string, string | null>;
 	savedFiles: Array<{ nodeId: string; path: string }>;
+}
+
+export interface ExtractAssetsOptions {
+	depth?: number;
+	assetTypes?: FigmaAssetType[];
+	outputDir?: string;
+	includeHidden?: boolean;
+	maxAssets?: number;
+	cwd: string;
+}
+
+export interface ComponentHintsOptions extends FigmaImplementationContextOptions {
+	includeCodeConnect?: boolean;
+	includeSnippet?: boolean;
+	rootDir?: string;
+	cwd: string;
 }
 
 export class FigmaClient {
@@ -131,8 +161,33 @@ export class FigmaClient {
 		return explainNode(await this.getSingleNodeDocument(fileKey, nodeId, options.depth ?? 2), options);
 	}
 
-	async getImplementationContext(fileKey: string, nodeId: string, options: FigmaSummarizerOptions & { assets?: FigmaRenderedAsset[] } = {}): Promise<FigmaImplementationContext> {
-		return getImplementationContext(await this.getSingleNodeDocument(fileKey, nodeId, options.depth ?? 2), options);
+	async getImplementationContext(fileKey: string, nodeId: string, options: FigmaImplementationContextOptions = {}): Promise<FigmaImplementationContext> {
+		const document = await this.getSingleNodeDocument(fileKey, nodeId, options.depth ?? 2);
+		if (options.resolveTokens === false) return getImplementationContext(document, options);
+		try {
+			const [styles, variables] = await Promise.all([this.getStyles(fileKey), this.getVariables(fileKey)]);
+			return getImplementationContext(document, { ...options, tokenMap: buildFigmaTokenMap(styles, variables) });
+		} catch {
+			return getImplementationContext(document, options);
+		}
+	}
+
+	async findNodesByName(fileKey: string, params: FigmaFindNodesOptions & { nodeId?: string }): Promise<FigmaNodeSearchResult> {
+		const document = await this.getSearchRoot(fileKey, params);
+		const result = findNodesByName(document, params);
+		if (!params.nodeId) {
+			result.metadata.nextSteps.unshift("Full-file search is depth-limited; pass nodeId from figma_get_design_context to search a specific frame more precisely.");
+		}
+		return result;
+	}
+
+	async findNodesByText(fileKey: string, params: FigmaFindNodesOptions & { nodeId?: string }): Promise<FigmaNodeSearchResult> {
+		const document = await this.getSearchRoot(fileKey, params);
+		const result = findNodesByText(document, params);
+		if (!params.nodeId) {
+			result.metadata.nextSteps.unshift("Full-file search is depth-limited; pass nodeId from figma_get_design_context to search a specific frame more precisely.");
+		}
+		return result;
 	}
 
 	async getNodeMetadata(fileKey: string, nodeIds: readonly string[]): Promise<unknown> {
@@ -204,6 +259,80 @@ export class FigmaClient {
 		return { images, savedFiles };
 	}
 
+	getImageFills(fileKey: string): Promise<Record<string, string>> {
+		return this.cached(`imageFills:${fileKey}`, async () => {
+			const response = await this.get<{ meta?: { images?: Record<string, string> } }>(`/v1/files/${fileKey}/images`);
+			return response.meta?.images ?? {};
+		});
+	}
+
+	async extractAssets(fileKey: string, nodeId: string, options: ExtractAssetsOptions): Promise<FigmaExtractAssetsResult> {
+		const document = await this.getSingleNodeDocument(fileKey, nodeId, options.depth ?? 3);
+		const assetTypes = options.assetTypes?.length ? options.assetTypes : (["svgIcons", "nodeRenders", "imageFills"] as FigmaAssetType[]);
+		const collected = collectAssetCandidates(document, { assetTypes, includeHidden: options.includeHidden, maxAssets: options.maxAssets });
+		const outputDir = await resolveOutputDir(options.cwd, options.outputDir);
+		await mkdir(outputDir, { recursive: true });
+		const manifest: FigmaAssetManifestEntry[] = [];
+
+		const svgCandidates = collected.assets.filter((asset) => asset.kind === "svgIcon" && asset.nodeId);
+		if (svgCandidates.length) {
+			const rendered = await this.renderNodes(fileKey, svgCandidates.map((asset) => asset.nodeId as string), { cwd: options.cwd, outputDir, format: "svg", download: true });
+			for (const candidate of svgCandidates) {
+				const file = rendered.savedFiles.find((saved) => saved.nodeId === candidate.nodeId);
+				manifest.push(file ? await manifestEntryFromFile(candidate, file.path, rendered.images[candidate.nodeId as string], "svg") : manifestEntryFromUrl(candidate, rendered.images[candidate.nodeId as string], "svg"));
+			}
+		}
+
+		const renderCandidates = collected.assets.filter((asset) => asset.kind === "nodeRender" && asset.nodeId);
+		if (renderCandidates.length) {
+			const rendered = await this.renderNodes(fileKey, renderCandidates.map((asset) => asset.nodeId as string), { cwd: options.cwd, outputDir, format: "png", download: true });
+			for (const candidate of renderCandidates) {
+				const file = rendered.savedFiles.find((saved) => saved.nodeId === candidate.nodeId);
+				manifest.push(file ? await manifestEntryFromFile(candidate, file.path, rendered.images[candidate.nodeId as string], "png") : manifestEntryFromUrl(candidate, rendered.images[candidate.nodeId as string], "png"));
+			}
+		}
+
+		const imageFillCandidates = collected.assets.filter((asset) => asset.kind === "imageFill" && asset.imageRef);
+		if (imageFillCandidates.length) {
+			const images = await this.getImageFills(fileKey);
+			for (const candidate of imageFillCandidates) {
+				const url = images[candidate.imageRef as string];
+				if (!url) {
+					manifest.push(manifestEntryFromUrl(candidate, null, "unknown"));
+					continue;
+				}
+				const bytes = await this.http.download(url);
+				const extension = url.includes(".webp") ? "webp" : url.includes(".jpg") || url.includes(".jpeg") ? "jpg" : "png";
+				const outputPath = resolve(outputDir, `${safeFilename(candidate.suggestedName.replace(/\.[^.]+$/, ""))}-${safeFilename(candidate.imageRef as string).slice(0, 12)}.${extension}`);
+				await writeFile(outputPath, Buffer.from(bytes));
+				manifest.push(await manifestEntryFromFile(candidate, outputPath, url, extension));
+			}
+		}
+
+		const unresolvedFills = manifest.filter((entry) => entry.kind === "imageFill" && !entry.url).length;
+		return {
+			nodeId: normalizeNodeId(nodeId),
+			assetTypes,
+			assets: manifest,
+			metadata: {
+				truncated: collected.metadata.truncated,
+				truncatedReasons: [...collected.metadata.truncatedReasons, ...(unresolvedFills ? [`${unresolvedFills} image fill(s) could not be resolved to downloadable URLs.`] : [])],
+				nextSteps: [...collected.metadata.nextSteps, "Use manifest nodePath values to map downloaded files back to source Figma layers."],
+			},
+		};
+	}
+
+	findCodeConnectMapping(options: { fileKey: string; nodeId?: string; componentKey?: string; rootDir?: string; maxMatches?: number; cwd: string }): Promise<CodeConnectScanResult> {
+		return findCodeConnectMapping(options);
+	}
+
+	async getComponentImplementationHints(fileKey: string, nodeId: string, options: ComponentHintsOptions): Promise<FigmaComponentImplementationHints> {
+		const summary = await this.getNodeSummary(fileKey, nodeId, options);
+		const implementation = await this.getImplementationContext(fileKey, nodeId, { ...options, includeCodeSnippets: options.includeSnippet ?? options.includeCodeSnippets });
+		const codeConnect = options.includeCodeConnect === false ? undefined : await this.findCodeConnectMapping({ fileKey, nodeId, rootDir: options.rootDir, cwd: options.cwd });
+		return buildComponentImplementationHints(summary, implementation, { framework: options.framework, styling: options.styling, includeSnippet: options.includeSnippet ?? options.includeCodeSnippets, includeCodeConnect: options.includeCodeConnect !== false }, codeConnect);
+	}
+
 	private get<T = unknown>(path: string): Promise<T> {
 		return this.limiter.schedule(() => this.http.get<T>(path));
 	}
@@ -246,6 +375,13 @@ export class FigmaClient {
 		const document = asRecord(asRecord(asRecord(response).nodes)[normalizedNodeId]).document;
 		if (!document) throw new Error(`Figma node ${normalizedNodeId} was not found in file ${fileKey}.`);
 		return document;
+	}
+
+	private async getSearchRoot(fileKey: string, params: FigmaFindNodesOptions & { nodeId?: string }): Promise<unknown> {
+		const depth = params.depth ? clampInteger(params.depth, 1, 4) : 4;
+		if (params.nodeId) return this.getSingleNodeDocument(fileKey, params.nodeId, depth);
+		const file = await this.getFile(fileKey, depth);
+		return asRecord(file).document;
 	}
 
 	private cached<T>(key: string, load: () => Promise<T>): Promise<T> {

@@ -1,3 +1,14 @@
+import {
+	buildAccessibilityHints,
+	buildCssLayoutHints,
+	buildDesignTokenHints,
+	buildFrameworkHints,
+	buildResponsiveHints,
+	type FigmaFramework,
+	type FigmaStyling,
+} from "./figma-implementation.js";
+import type { FigmaTokenMap } from "./figma-tokens.js";
+
 export interface FigmaSummarizerOptions {
 	depth?: number;
 	includeHidden?: boolean;
@@ -52,9 +63,23 @@ export interface FigmaImplementationContext {
 	typography: Array<Record<string, unknown>>;
 	colors: Array<Record<string, unknown>>;
 	spacing: Array<Record<string, unknown>>;
+	cssLayout?: Record<string, unknown>;
+	responsive?: Array<Record<string, unknown>>;
+	accessibility?: Array<Record<string, unknown>>;
+	designTokens?: Record<string, unknown>;
+	frameworkHints?: Record<string, unknown>;
 	componentHierarchy: FigmaNodeSummary[];
 	assets?: FigmaRenderedAsset[];
 	metadata: FigmaSummaryMetadata;
+}
+
+export interface FigmaImplementationContextOptions extends FigmaSummarizerOptions {
+	assets?: FigmaRenderedAsset[];
+	framework?: FigmaFramework;
+	styling?: FigmaStyling;
+	resolveTokens?: boolean;
+	includeCodeSnippets?: boolean;
+	tokenMap?: FigmaTokenMap;
 }
 
 interface SummaryState {
@@ -149,7 +174,7 @@ export function explainNode(node: unknown, options: FigmaSummarizerOptions & { a
 	return lines.join("\n");
 }
 
-export function getImplementationContext(node: unknown, options: FigmaSummarizerOptions & { assets?: FigmaRenderedAsset[] } = {}): FigmaImplementationContext {
+export function getImplementationContext(node: unknown, options: FigmaImplementationContextOptions = {}): FigmaImplementationContext {
 	const summary = summarizeNode(node, options);
 	const typography = collectTypography(node, normalizeSummarizerOptions(options));
 	const colors = collectColors(node, normalizeSummarizerOptions(options));
@@ -180,6 +205,11 @@ export function getImplementationContext(node: unknown, options: FigmaSummarizer
 		typography,
 		colors,
 		spacing,
+		cssLayout: buildCssLayoutHints(node),
+		responsive: buildResponsiveHints(node),
+		accessibility: buildAccessibilityHints(summary),
+		designTokens: options.resolveTokens === false ? undefined : buildDesignTokenHints(node, options.tokenMap),
+		frameworkHints: buildFrameworkHints(summary, options),
 		componentHierarchy: flattenHierarchy(summary).slice(0, DEFAULT_MAX_CHILDREN),
 		assets: options.assets?.length ? options.assets : undefined,
 		metadata: summary.metadata ?? buildMetadata({ visibleText: [], truncatedReasons: [], options: normalizeSummarizerOptions(options) }),
@@ -384,9 +414,15 @@ function extractLayout(record: Record<string, unknown>): Record<string, unknown>
 		primaryAxisAlignItems: record.primaryAxisAlignItems,
 		counterAxisAlignItems: record.counterAxisAlignItems,
 		layoutWrap: record.layoutWrap,
+		layoutAlign: record.layoutAlign,
 		layoutGrow: record.layoutGrow,
 		layoutSizingHorizontal: record.layoutSizingHorizontal,
 		layoutSizingVertical: record.layoutSizingVertical,
+		minWidth: record.minWidth,
+		maxWidth: record.maxWidth,
+		minHeight: record.minHeight,
+		maxHeight: record.maxHeight,
+		layoutGrids: compactLayoutGrids(record.layoutGrids),
 		constraints: record.constraints,
 	});
 }
@@ -402,6 +438,36 @@ function extractSpacing(record: Record<string, unknown>): Record<string, unknown
 	});
 }
 
+function compactLayoutGrids(value: unknown): Array<Record<string, unknown>> | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const grids = value
+		.slice(0, 4)
+		.map((grid) => {
+			const record = asRecord(grid);
+			return compactObject({ pattern: record.pattern, count: record.count, gutterSize: record.gutterSize, sectionSize: record.sectionSize, alignment: record.alignment });
+		})
+		.filter((grid): grid is Record<string, unknown> => Boolean(grid));
+	return grids.length ? grids : undefined;
+}
+
+function compactBoundVariables(value: unknown): Record<string, unknown> | undefined {
+	const out: Record<string, unknown> = {};
+	function visit(raw: unknown, path: string): void {
+		if (Array.isArray(raw)) {
+			raw.forEach((item, index) => visit(item, `${path}[${index}]`));
+			return;
+		}
+		const record = asRecord(raw);
+		if (typeof record.id === "string") {
+			out[path || "value"] = record.id;
+			return;
+		}
+		for (const [key, child] of Object.entries(record)) visit(child, path ? `${path}.${key}` : key);
+	}
+	visit(value, "");
+	return Object.keys(out).length ? out : undefined;
+}
+
 function extractStyle(record: Record<string, unknown>): Record<string, unknown> | undefined {
 	return compactObject({
 		fills: compactPaints(record.fills),
@@ -412,6 +478,7 @@ function extractStyle(record: Record<string, unknown>): Record<string, unknown> 
 		effects: compactEffects(record.effects),
 		textStyle: record.type === "TEXT" ? compactTextStyle(record.style) : undefined,
 		styleIds: compactObject(asRecord(record.styles)),
+		boundVariables: compactBoundVariables(record.boundVariables),
 	});
 }
 

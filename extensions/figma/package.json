@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-figma",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Pi extension and skill for Figma design context tools",
   "type": "module",
   "keywords": [
@@ -9,6 +9,9 @@
     "pi-skill",
     "figma"
   ],
+  "scripts": {
+    "test": "npx tsx --test '__tests__/**/*.test.ts'"
+  },
   "dependencies": {
     "pi-common": "workspace:*"
   },

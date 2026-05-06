@@ -8,10 +8,10 @@ This package is Pi-native and uses Figma's REST API directly, with tools designe
 
 - **No hosted Figma MCP quota path:** the extension calls Figma's REST API directly instead of using a hosted Claude/Figma connector quota path. It is still subject to Figma API limits, and the client smooths calls with a fixed 1s limiter plus a 5-minute TTL cache.
 - **Better LLM-shaped output:** `figma_get_node_summary`, `figma_explain_node`, and `figma_get_implementation_context` avoid raw Figma JSON by default. They cap depth, skip hidden nodes, vector internals, and component internals unless requested, and return `metadata.nextSteps` when follow-up inspection would help.
-- **Design-to-code specialization:** `figma_get_implementation_context` extracts fields, buttons, layout measurements, typography, colors, spacing, assets, and a React-friendly component hierarchy instead of simply relaying generic server output.
+- **Design-to-code specialization:** `figma_get_implementation_context` extracts fields, buttons, layout measurements, typography, colors, spacing, CSS/flex/grid hints, responsive guidance, accessibility hints, design tokens, assets, and optional framework starter snippets instead of simply relaying generic server output.
 - **Safer local auth UX:** `figma_configure_auth` uses masked local prompting and stores the token in Pi auth storage. The model never sees the token.
 - **Good raw escape hatches:** raw `figma_get_file` and `figma_get_nodes` tools are available for debugging, while tool descriptions steer agents toward processed tools first.
-- **Local asset handling:** `figma_render_nodes` can download rendered images into an OS temp directory or a user-provided directory, which is useful for implementation and visual QA.
+- **Local asset handling:** `figma_render_nodes` can download rendered images to an OS temp directory by default, while `figma_extract_assets` returns a manifest for SVG icons, node renders, and image fills with node paths, hashes, byte sizes, and suggested names. Persistent project directories are used only when `outputDir` is explicitly provided.
 - **Broader inspection surface:** styles, variables, components, component sets, component search, metadata, text extraction, rendering, summaries, explanations, and implementation context are exposed as separate native tools.
 
 ## Tools
@@ -19,11 +19,16 @@ This package is Pi-native and uses Figma's REST API directly, with tools designe
 ### Processed, LLM-ready tools (preferred)
 
 - `figma_parse_url` — parse a Figma URL into `fileKey` and `nodeId`.
-- `figma_render_nodes` — render node image URLs and optionally download assets locally. Downloads use an OS temp directory by default unless `outputDir` is provided.
+- `figma_find_nodes_by_name` — search layer/node names in a file or subtree and return compact path-aware matches.
+- `figma_find_nodes_by_text` — search visible text in a file or subtree and return matches with nearest parent context.
+- `figma_render_nodes` — render node image URLs and optionally download assets locally. Downloads use an OS temp directory by default unless the user explicitly provides `outputDir`.
 - `figma_get_node_summary` — fetch a compact structured summary of a node: name, type, size, layout, spacing, visual style, visible text, component properties, and shallow child hierarchy.
 - `figma_extract_text` — return visible text nodes only.
 - `figma_explain_node` — explain a node in Markdown using summary, visible text, hierarchy, and optional rendered asset.
-- `figma_get_implementation_context` — return coding-ready design context: purpose, sections, fields/buttons, measurements, typography, colors, spacing, assets, and component hierarchy.
+- `figma_get_implementation_context` — return coding-ready design context: purpose, sections, fields/buttons, measurements, typography, colors, spacing, CSS layout, responsive hints, accessibility hints, design token resolution, assets, component hierarchy, and optional snippets.
+- `figma_extract_assets` — extract SVG/icon exports, node renders, and image fills into a node-path manifest with hashes and local paths.
+- `figma_find_code_connect_mapping` — scan the current repo for Code Connect files, `figma.connect(...)`, Figma URLs/node IDs, and component key references.
+- `figma_get_component_implementation_hints` — combine summary, implementation context, variants/properties, tokens, assets, accessibility, optional Code Connect matches, and starter snippets.
 - `figma_get_design_context` — fetch compact file context. With `nodeId`, returns target node summary plus location/sibling context; without `nodeId`, returns canvases and top-level frames only.
 - `figma_get_node_metadata` — fetch compact spatial/layout metadata for one or more nodes.
 - `figma_get_styles` — fetch named styles.
@@ -54,16 +59,60 @@ figma_explain_node
 
 ```text
 figma_parse_url
+figma_find_nodes_by_name or figma_find_nodes_by_text when the URL does not include the exact target node
 figma_render_nodes
-figma_get_implementation_context
+figma_get_implementation_context with framework/styling when useful
 figma_get_node_summary for specific subnodes if needed
 ```
+
+Example implementation-context options:
+
+```ts
+{
+  framework: "react",
+  styling: "styled-components",
+  resolveTokens: true,
+  includeCodeSnippets: true
+}
+```
+
+### Finding a frame or layer before implementation
+
+```text
+figma_get_design_context
+figma_find_nodes_by_name query="Checkout" nodeId=<top-level-frame-if-known>
+figma_find_nodes_by_text query="Submit" nodeId=<candidate-frame>
+```
+
+### Extracting assets for a frame
+
+```text
+figma_extract_assets assetTypes=["svgIcons", "nodeRenders", "imageFills"]
+```
+
+Use returned `nodePath`, `suggestedName`, `sha256`, and `bytes` to map downloaded files back to Figma layers and avoid duplicate assets.
+Omit `outputDir` unless the user asked for files to be saved in a persistent project location; the default is an OS temp directory.
+
+### Finding local Code Connect mappings
+
+```text
+figma_find_code_connect_mapping fileKey=<fileKey> nodeId=<nodeId>
+figma_get_component_implementation_hints includeCodeConnect=true framework="react"
+```
+
+Use Code Connect matches only as local implementation hints; no Figma write access is used.
 
 ### Debugging raw Figma data
 
 ```text
 figma_get_nodes
 ```
+
+## Live selection boundary
+
+This package is REST/API-based and read-only. It can inspect files, nodes, styles, variables, renders, and local repository mappings when you provide a file key/node ID, but it does **not** currently know the live selection in an open Figma desktop/browser session.
+
+True Dev Mode-style live selection parity would require a separate local bridge or Figma plugin that captures the current selection and exposes selected file/node IDs to Pi. See [`docs/live-selection-bridge.md`](docs/live-selection-bridge.md) for a future architecture sketch.
 
 ## Processed node options
 
@@ -75,6 +124,10 @@ Processed tools fetch nodes with compact depth limits and summarize safely:
   includeHidden?: boolean; // default false
   includeVectors?: boolean; // default false
   includeComponentInternals?: boolean; // default false
+  framework?: "react" | "html" | "vue" | "angular" | "react-native";
+  styling?: "css" | "css-modules" | "styled-components" | "tailwind" | "inline";
+  resolveTokens?: boolean; // implementation context, default true
+  includeCodeSnippets?: boolean; // implementation context, default false
 }
 ```
 

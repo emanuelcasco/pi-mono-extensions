@@ -1,6 +1,6 @@
 # pi-mono-figma
 
-## Unreleased
+## 0.2.0
 
 ### Minor Changes
 
@@ -11,6 +11,16 @@
 - Changed `figma_get_design_context` to return compact top-level file context or target-node summaries instead of full recursive file structure.
 - Updated tool descriptions, README, and skill guidance to prefer processed tools and keep raw JSON tools as debugging escape hatches.
 - Added response caps, truncation metadata, and next-step suggestions for summarized node output.
+
+### Added: Dev Mode parity helpers
+
+- Added golden fixture tests for Figma summarization and design-to-code helper behavior.
+- Added `figma_find_nodes_by_name` and `figma_find_nodes_by_text` for compact path-aware layer/text search.
+- Enriched `figma_get_implementation_context` with CSS layout, responsive, accessibility, design token, framework, and starter snippet hints.
+- Added `figma_extract_assets` for SVG/icon exports, node renders, image fill downloads, hashes, byte sizes, suggested names, and node-path manifests.
+- Added `figma_find_code_connect_mapping` for bounded local Code Connect/Figma reference discovery.
+- Added `figma_get_component_implementation_hints` for higher-level component implementation guidance.
+- Documented live selection parity as future plugin/bridge work rather than a REST baseline feature.
 
 ## 0.1.2
 
