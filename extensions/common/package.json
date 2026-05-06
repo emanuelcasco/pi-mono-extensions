@@ -1,0 +1,22 @@
+{
+  "name": "pi-common",
+  "version": "0.1.1",
+  "description": "Shared utilities for pi integration extensions",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./auth": "./src/auth.ts",
+    "./auth-config": "./src/auth-config.ts",
+    "./http-client": "./src/http-client.ts",
+    "./rate-limiter": "./src/rate-limiter.ts",
+    "./cache": "./src/cache.ts",
+    "./errors": "./src/errors.ts",
+    "./tool-result": "./src/tool-result.ts"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}

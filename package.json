@@ -19,7 +19,8 @@
       "./extensions"
     ],
     "skills": [
-      "./skills"
+      "./skills",
+      "./extensions/*/skills"
     ]
   },
   "scripts": {

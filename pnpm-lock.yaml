@@ -46,6 +46,15 @@ importers:
         specifier: '*'
         version: 0.34.49
 
+  extensions/auto-fix:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+
   extensions/btw:
     dependencies:
       '@mariozechner/pi-ai':
@@ -76,6 +85,18 @@ importers:
         specifier: '*'
         version: 0.34.49
 
+  extensions/common:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-tui':
+        specifier: '*'
+        version: 0.65.0
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+
   extensions/context-guard:
     dependencies:
       '@mariozechner/pi-coding-agent':
@@ -84,6 +105,30 @@ importers:
       '@sinclair/typebox':
         specifier: '*'
         version: 0.34.49
+
+  extensions/figma:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+      pi-common:
+        specifier: workspace:*
+        version: link:../common
+
+  extensions/linear:
+    dependencies:
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+      pi-common:
+        specifier: workspace:*
+        version: link:../common
 
   extensions/loop:
     dependencies:
@@ -2649,7 +2694,7 @@ snapshots:
 
   '@types/yauzl@2.10.3':
     dependencies:
-      '@types/node': 25.5.2
+      '@types/node': 25.6.0
     optional: true
 
   agent-base@7.1.4: {}
