@@ -2,6 +2,18 @@
 
 A pi extension and skill package that exposes native Figma tools for design exploration and design-to-code workflows. The default tools return compact, LLM-ready design context instead of raw Figma JSON.
 
+## Benefits over Figma MCP
+
+This package is Pi-native and uses Figma's REST API directly, with tools designed specifically for LLM-friendly design exploration and design-to-code workflows.
+
+- **No hosted Figma MCP quota path:** the extension calls Figma's REST API directly instead of using a hosted Claude/Figma connector quota path. It is still subject to Figma API limits, and the client smooths calls with a fixed 1s limiter plus a 5-minute TTL cache.
+- **Better LLM-shaped output:** `figma_get_node_summary`, `figma_explain_node`, and `figma_get_implementation_context` avoid raw Figma JSON by default. They cap depth, skip hidden nodes, vector internals, and component internals unless requested, and return `metadata.nextSteps` when follow-up inspection would help.
+- **Design-to-code specialization:** `figma_get_implementation_context` extracts fields, buttons, layout measurements, typography, colors, spacing, assets, and a React-friendly component hierarchy instead of simply relaying generic server output.
+- **Safer local auth UX:** `figma_configure_auth` uses masked local prompting and stores the token in Pi auth storage. The model never sees the token.
+- **Good raw escape hatches:** raw `figma_get_file` and `figma_get_nodes` tools are available for debugging, while tool descriptions steer agents toward processed tools first.
+- **Local asset handling:** `figma_render_nodes` can download rendered images into an OS temp directory or a user-provided directory, which is useful for implementation and visual QA.
+- **Broader inspection surface:** styles, variables, components, component sets, component search, metadata, text extraction, rendering, summaries, explanations, and implementation context are exposed as separate native tools.
+
 ## Tools
 
 ### Processed, LLM-ready tools (preferred)

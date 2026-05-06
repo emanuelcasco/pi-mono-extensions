@@ -19,6 +19,7 @@
 ### Fixed: package extension entrypoint
 
 - Added the package root `index.ts` extension entrypoint so pi can load the Figma tools from the published package manifest.
+- Documented the extension's benefits over Figma MCP in the package README.
 
 ## 0.1.1
 
