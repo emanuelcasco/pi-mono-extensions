@@ -167,13 +167,74 @@ pi install npm:pi-mono-context-guard
 
 The `figma` package registers native Figma tools for LLM-ready design context (`figma_find_nodes_by_name/text`, `figma_get_node_summary`, `figma_explain_node`, `figma_extract_text`, enriched `figma_get_implementation_context`, `figma_extract_assets`, Code Connect/component hint helpers, `figma_render_nodes`, and related helpers) and bundles a Figma skill for design-to-code workflows. Rendered/generated image files default to OS temp directories unless `outputDir` is explicitly provided. Raw JSON tools (`figma_get_file`, `figma_get_nodes`) remain available as debugging escape hatches.
 
+Full details: [extensions/figma/README.md](extensions/figma/README.md).
+
+#### Usage
+
+```text
+/figma-auth --force
+```
+
+Typical tool workflows:
+
+```text
+figma_parse_url
+figma_render_nodes
+figma_explain_node
+```
+
+```text
+figma_parse_url
+figma_find_nodes_by_name or figma_find_nodes_by_text
+figma_get_implementation_context
+figma_extract_assets
+```
+
+#### Authentication
+
 Auth is read from `FIGMA_TOKEN` or `~/.pi/agent/auth.json` at `.figma.token`. Use `/figma-auth --force` or `figma_configure_auth` for masked token setup/update.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-figma
+```
 
 ### linear
 
 The `linear` package registers native Linear tools (`linear_workspace_metadata`, `linear_search_issues`, `linear_get_issue`, create/update/comment tools, and metadata helpers) and bundles a Linear workflow skill.
 
+Full details: [extensions/linear/README.md](extensions/linear/README.md).
+
+#### Usage
+
+```text
+/linear-auth --force
+```
+
+Typical tool workflows:
+
+```text
+linear_workspace_metadata
+linear_search_issues
+linear_get_issue
+```
+
+```text
+linear_get_issue
+linear_update_issue
+linear_create_comment
+```
+
+#### Authentication
+
 Auth is read from `LINEAR_API_KEY` or `~/.pi/agent/auth.json` at `.linear.key`. Use `/linear-auth --force` or `linear_configure_auth` for masked key setup/update.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-linear
+```
 
 ### loop
 
