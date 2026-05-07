@@ -47,6 +47,10 @@ function statusColor(status: CommentStatus): "success" | "error" | "accent" | "w
 	}
 }
 
+function expandTabs(text: string): string {
+	return text.replace(/\t/g, "    ");
+}
+
 interface HunkWindow {
 	header: string | null;
 	lines: string[];
@@ -199,15 +203,19 @@ export class ReviewerComponent {
 		const innerW = Math.max(20, maxW - 2);
 
 		const row = (content = "") => {
-			const fitted = visibleWidth(content) > innerW ? truncateToWidth(content, innerW) : content;
+			// The TUI renderer validates terminal-visible width after the terminal expands tabs.
+			// Keep every custom-rendered row bounded by normalizing tabs before measuring/padding.
+			const normalized = expandTabs(content);
+			const fitted = visibleWidth(normalized) > innerW ? truncateToWidth(normalized, innerW) : normalized;
 			const padding = Math.max(0, innerW - visibleWidth(fitted));
 			lines.push(th.fg("border", "│") + fitted + " ".repeat(padding) + th.fg("border", "│"));
 		};
 
 		const addWrapped = (content: string, prefix = "") => {
-			const available = Math.max(8, innerW - visibleWidth(prefix));
-			for (const part of wrapTextWithAnsi(content, available)) {
-				row(prefix + part);
+			const normalizedPrefix = expandTabs(prefix);
+			const available = Math.max(8, innerW - visibleWidth(normalizedPrefix));
+			for (const part of wrapTextWithAnsi(expandTabs(content), available)) {
+				row(normalizedPrefix + part);
 			}
 		};
 

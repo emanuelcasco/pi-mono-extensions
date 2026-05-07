@@ -1,5 +1,11 @@
 # pi-mono-review
 
+## 1.8.1
+
+### Patch Changes
+
+- Fix review TUI rendering crashes for diff lines containing tabs by normalizing tabs before wrapping and measuring terminal-visible width.
+
 ## 1.8.0
 
 ### Minor Changes
