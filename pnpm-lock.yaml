@@ -31,6 +31,69 @@ importers:
         specifier: ^25.6.0
         version: 25.6.0
 
+  extensions/all:
+    dependencies:
+      '@mariozechner/pi-ai':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.65.0(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-tui':
+        specifier: '*'
+        version: 0.65.0
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
+      pi-common:
+        specifier: workspace:*
+        version: link:../common
+      pi-mono-ask-user-question:
+        specifier: workspace:*
+        version: link:../ask-user-question
+      pi-mono-auto-fix:
+        specifier: workspace:*
+        version: link:../auto-fix
+      pi-mono-btw:
+        specifier: workspace:*
+        version: link:../btw
+      pi-mono-clear:
+        specifier: workspace:*
+        version: link:../clear
+      pi-mono-context:
+        specifier: workspace:*
+        version: link:../context
+      pi-mono-context-guard:
+        specifier: workspace:*
+        version: link:../context-guard
+      pi-mono-figma:
+        specifier: workspace:*
+        version: link:../figma
+      pi-mono-linear:
+        specifier: workspace:*
+        version: link:../linear
+      pi-mono-loop:
+        specifier: workspace:*
+        version: link:../loop
+      pi-mono-multi-edit:
+        specifier: workspace:*
+        version: link:../multi-edit
+      pi-mono-review:
+        specifier: workspace:*
+        version: link:../review
+      pi-mono-sentinel:
+        specifier: workspace:*
+        version: link:../sentinel
+      pi-mono-simplify:
+        specifier: workspace:*
+        version: link:../simplify
+      pi-mono-status-line:
+        specifier: workspace:*
+        version: link:../status-line
+      pi-mono-team-mode:
+        specifier: workspace:*
+        version: link:../team-mode
+
   extensions/ask-user-question:
     dependencies:
       '@mariozechner/pi-ai':
@@ -539,6 +602,7 @@ packages:
   '@mariozechner/pi-agent-core@0.65.0':
     resolution: {integrity: sha512-QCDqkgxvCkizCgJOl0aFekT1gURppznzuBIGXS8dXWZMour/xX6YF7chxX56mZ0p0DXkILM1ixf5jXYBfDsP5w==}
     engines: {node: '>=20.0.0'}
+    deprecated: please use @earendil-works/pi-agent-core instead going forward
 
   '@mariozechner/pi-ai@0.65.0':
     resolution: {integrity: sha512-MsCsCHlHIlBYbg6jB2PJBeCNKbjzVZge7ddBNUJN2gsFY8sdjFh482+GB+r5Ou6k9Fnhi3nO779YDymo5+t89w==}
@@ -548,6 +612,7 @@ packages:
   '@mariozechner/pi-coding-agent@0.65.0':
     resolution: {integrity: sha512-IEBZ74n17w8NxnG/X2ixErsSYcvLm/h5WKALNbPgPWJZqvafNtJ0GcrCfLCS6RVIq2o+O/a2QwsbSI6bgJ6W/A==}
     engines: {node: '>=20.6.0'}
+    deprecated: please use @earendil-works/pi-coding-agent instead going forward
     hasBin: true
 
   '@mariozechner/pi-tui@0.65.0':

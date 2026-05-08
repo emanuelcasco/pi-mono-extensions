@@ -1,5 +1,11 @@
 # pi-mono-figma
 
+## 0.2.1
+
+### Patch Changes
+
+- Add the all-in-one pi package and bundle the shared pi-common workspace package into distributed packages.
+
 ## 0.2.0
 
 ### Minor Changes

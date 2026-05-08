@@ -24,11 +24,19 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
 
 ## Installation
 
-Install individual extensions by package name:
+Install all extensions and bundled skills at once:
+
+```bash
+pi install npm:pi-mono-all
+```
+
+Or install individual extensions by package name:
 
 ```bash
 pi install npm:pi-mono-btw
 pi install npm:pi-mono-team-mode
+pi install npm:pi-mono-figma
+pi install npm:pi-mono-linear
 ```
 
 Load temporarily for testing (without installing):

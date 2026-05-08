@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-linear",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension and skill for Linear GraphQL tools",
   "type": "module",
   "keywords": [
@@ -12,6 +12,9 @@
   "dependencies": {
     "pi-common": "workspace:*"
   },
+  "bundledDependencies": [
+    "pi-common"
+  ],
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
