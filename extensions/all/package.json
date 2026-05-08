@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-all",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "All pi-mono extensions and bundled skills",
   "type": "module",
   "keywords": [
@@ -24,7 +24,8 @@
     "pi-mono-sentinel": "workspace:*",
     "pi-mono-simplify": "workspace:*",
     "pi-mono-status-line": "workspace:*",
-    "pi-mono-team-mode": "workspace:*"
+    "pi-mono-team-mode": "workspace:*",
+    "pi-mono-usage": "workspace:*"
   },
   "bundledDependencies": [
     "pi-mono-ask-user-question",
@@ -42,7 +43,8 @@
     "pi-mono-sentinel",
     "pi-mono-simplify",
     "pi-mono-status-line",
-    "pi-mono-team-mode"
+    "pi-mono-team-mode",
+    "pi-mono-usage"
   ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -66,7 +68,8 @@
       "./node_modules/pi-mono-sentinel/index.ts",
       "./node_modules/pi-mono-simplify/index.ts",
       "./node_modules/pi-mono-status-line/index.ts",
-      "./node_modules/pi-mono-team-mode/index.ts"
+      "./node_modules/pi-mono-team-mode/index.ts",
+      "./node_modules/pi-mono-usage/index.ts"
     ],
     "skills": [
       "./node_modules/pi-mono-figma/skills",

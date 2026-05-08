@@ -93,6 +93,9 @@ importers:
       pi-mono-team-mode:
         specifier: workspace:*
         version: link:../team-mode
+      pi-mono-usage:
+        specifier: workspace:*
+        version: link:../usage
 
   extensions/ask-user-question:
     dependencies:
@@ -297,6 +300,21 @@ importers:
       '@sinclair/typebox':
         specifier: '*'
         version: 0.34.49
+
+  extensions/usage:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: '*'
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.74.0
+      impact-equivalences:
+        specifier: ^0.1.2
+        version: 0.1.2
 
 packages:
 
@@ -1183,6 +1201,10 @@ packages:
   ignore@7.0.5:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
+
+  impact-equivalences@0.1.2:
+    resolution: {integrity: sha512-7Vrx0qpatqprvrOAX5Mgo5hoTiFVXX9C8uo4bgOsF7i2/17mHEafjT/ri1ZcKXi67xrafHWVsoSIxwNKzbIdIw==}
+    engines: {node: '>=18'}
 
   ip-address@10.1.0:
     resolution: {integrity: sha512-XXADHxXmvT9+CRxhXg56LJovE+bmWnEWB78LB83VZTprKTmaC5QfruXocxzTZ2Kl0DNwKuBdlIhjL8LeY8Sf8Q==}
@@ -3000,6 +3022,8 @@ snapshots:
   ignore@5.3.2: {}
 
   ignore@7.0.5: {}
+
+  impact-equivalences@0.1.2: {}
 
   ip-address@10.1.0: {}
 

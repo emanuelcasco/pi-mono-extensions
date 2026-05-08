@@ -21,6 +21,7 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
   - [simplify](#simplify)
   - [status-line](#status-line)
   - [team-mode](#team-mode)
+  - [usage](#usage)
 
 ## Installation
 
@@ -435,4 +436,22 @@ Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
 
 ```bash
 pi install npm:pi-mono-team-mode
+```
+
+### usage
+
+The `usage` extension adds a `/usage` command that aggregates local pi session files and renders an inline dashboard with three views:
+
+- **Summary** — totals, top providers (with horizontal bars), and an environmental footprint estimate (kWh, kg CO₂e, real-world equivalences) computed from [`impact-equivalences`](https://www.npmjs.com/package/impact-equivalences).
+- **Providers** — per-provider table that expands into per-model rows on `Enter`.
+- **Patterns** — cost-driver insights for the selected period (parallel sessions, oversized contexts, large uncached prompts, marathon sessions, top-session concentration).
+
+`Tab`/arrows cycle the period (Today / This Week / Last Week / All Time). `v` or `1`/`2`/`3` switch view. `q`/`Esc` close the panel.
+
+Full details: [extensions/usage/README.md](extensions/usage/README.md).
+
+#### Install
+
+```bash
+pi install npm:pi-mono-usage
 ```

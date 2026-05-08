@@ -1,0 +1,34 @@
+{
+  "name": "pi-mono-usage",
+  "version": "0.1.0",
+  "description": "Pi extension that aggregates local session usage, cost and sustainability impact",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "usage",
+    "cost",
+    "sustainability"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "dependencies": {
+    "impact-equivalences": "^0.1.2"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
+    "directory": "extensions/usage"
+  },
+  "bugs": {
+    "url": "https://github.com/emanuelcasco/pi-mono-extensions/issues"
+  },
+  "homepage": "https://github.com/emanuelcasco/pi-mono-extensions#readme"
+}

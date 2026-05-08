@@ -1,5 +1,13 @@
 # pi-mono-all
 
+## 1.1.0
+
+### Minor Changes
+
+### Enhanced: all
+
+- Bundle the new `pi-mono-usage` extension in the all-in-one package.
+
 ## 1.0.1
 
 ### Patch Changes
