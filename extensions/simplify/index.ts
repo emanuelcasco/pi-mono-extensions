@@ -9,7 +9,7 @@
  *   /simplify focus on perf      — review with additional focus
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const SIMPLIFY_PROMPT = `# Simplify: Code Review and Cleanup
 

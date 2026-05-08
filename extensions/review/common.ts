@@ -1,5 +1,5 @@
-import { complete, Type, type AssistantMessage, type Tool, type ToolCall, type ToolResultMessage, type UserMessage } from "@mariozechner/pi-ai";
-import { formatSize, truncateHead, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { complete, Type, type AssistantMessage, type Tool, type ToolCall, type ToolResultMessage, type UserMessage } from "@earendil-works/pi-ai";
+import { formatSize, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const PERSIST_ENTRY_TYPE = "review-session";
 export const MAX_DIFF_BYTES = 150_000;

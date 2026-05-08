@@ -220,7 +220,7 @@ The tool includes `promptSnippet` and `promptGuidelines` so the LLM knows when a
 
 | Package                         | Role                                              |
 | ------------------------------- | ------------------------------------------------- |
-| `@mariozechner/pi-coding-agent` | Extension API, theme types                        |
-| `@mariozechner/pi-tui`          | TUI primitives: Editor, Key, matchesKey, etc.     |
-| `@mariozechner/pi-ai`           | `StringEnum` for Google-compatible enum schemas   |
+| `@earendil-works/pi-coding-agent` | Extension API, theme types                        |
+| `@earendil-works/pi-tui`          | TUI primitives: Editor, Key, matchesKey, etc.     |
+| `@earendil-works/pi-ai`           | `StringEnum` for Google-compatible enum schemas   |
 | `@sinclair/typebox`             | JSON Schema definitions for tool parameters       |

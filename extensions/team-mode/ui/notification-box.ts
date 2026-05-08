@@ -1,5 +1,5 @@
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import { Box, Text } from "@mariozechner/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 
 import type { LiveTeammateMetrics } from "../core/types.js";
 import { formatDuration, formatTokenCount, summarizeResult } from "./formatters.js";

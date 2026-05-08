@@ -1,13 +1,13 @@
 {
   "name": "pi-mono-loop",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Pi extension that runs a prompt or slash command on a recurring interval",
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
     "extensions": [

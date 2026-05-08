@@ -1,5 +1,13 @@
 # pi-mono-auto-fix
 
+## 0.3.1
+
+### Patch Changes
+
+### Maintenance
+
+- Update pi core imports and peer dependencies to the new `@earendil-works` package scope.
+
 ## 0.3.0
 
 ### Added

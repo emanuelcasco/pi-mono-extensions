@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-figma",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi extension and skill for Figma design context tools",
   "type": "module",
   "keywords": [
@@ -19,7 +19,7 @@
     "pi-common"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
   },
   "pi": {

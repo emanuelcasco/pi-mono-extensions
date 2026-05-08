@@ -13,7 +13,7 @@
  * - patch mode: preflight by applying patch operations on a virtual filesystem
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { applyClassicEdits } from "./classic.ts";

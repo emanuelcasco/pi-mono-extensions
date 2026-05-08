@@ -16,7 +16,7 @@
 //   - Teammate subprocesses get the TEAMMATE_SYSTEM_PROMPT_ADDENDUM, so they
 //     know to communicate via send_message rather than free text.
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { TeamMateStore } from "./core/store.js";

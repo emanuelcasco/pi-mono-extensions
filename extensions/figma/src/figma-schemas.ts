@@ -36,10 +36,17 @@ const FigmaNodeProcessingOptions = {
 	includeComponentInternals: Type.Optional(Type.Boolean({ description: "Expand component instance internals. Defaults to false." })),
 };
 
+const RenderFormatSchema = Type.Union([Type.Literal("png"), Type.Literal("jpg"), Type.Literal("svg"), Type.Literal("pdf")], {
+	description: "Rendered asset format",
+});
+const FrameworkSchema = Type.Union([Type.Literal("react"), Type.Literal("html"), Type.Literal("vue"), Type.Literal("angular"), Type.Literal("react-native")]);
+const StylingSchema = Type.Union([Type.Literal("css"), Type.Literal("css-modules"), Type.Literal("styled-components"), Type.Literal("tailwind"), Type.Literal("inline")]);
+const AssetTypeSchema = Type.Union([Type.Literal("svgIcons"), Type.Literal("nodeRenders"), Type.Literal("imageFills")]);
+
 const FigmaOptionalRenderOptions = {
 	renderImage: Type.Optional(Type.Boolean({ description: "Render the node and include image URL/local path in the response. Defaults to false." })),
 	outputDir: Type.Optional(Type.String({ description: "Optional directory for downloaded rendered image files. Omit unless the user requested persistent files; by default downloads go to an OS temp directory." })),
-	format: Type.Optional(Type.Unsafe<"png" | "jpg" | "svg" | "pdf">({ type: "string", enum: ["png", "jpg", "svg", "pdf"] })),
+	format: Type.Optional(RenderFormatSchema),
 	scale: Type.Optional(Type.Number({ description: "Render scale for bitmap formats", minimum: 0.01, maximum: 4 })),
 };
 
@@ -63,8 +70,8 @@ export const FigmaImplementationContextParams = Type.Object({
 	nodeId: NodeIdSchema,
 	...FigmaNodeProcessingOptions,
 	...FigmaOptionalRenderOptions,
-	framework: Type.Optional(Type.Unsafe<"react" | "html" | "vue" | "angular" | "react-native">({ type: "string", enum: ["react", "html", "vue", "angular", "react-native"] })),
-	styling: Type.Optional(Type.Unsafe<"css" | "css-modules" | "styled-components" | "tailwind" | "inline">({ type: "string", enum: ["css", "css-modules", "styled-components", "tailwind", "inline"] })),
+	framework: Type.Optional(FrameworkSchema),
+	styling: Type.Optional(StylingSchema),
 	resolveTokens: Type.Optional(Type.Boolean({ description: "Resolve style and variable IDs into token names when possible. Defaults to true." })),
 	includeCodeSnippets: Type.Optional(Type.Boolean({ description: "Include compact starter snippets for the selected framework/styling target. Defaults to false." })),
 	maxResponseChars: MaxResponseCharsSchema,
@@ -96,7 +103,7 @@ export const FigmaRenderNodesParams = Type.Object({
 	fileKey: FileKeySchema,
 	nodeIds: NodeIdsSchema,
 	outputDir: Type.Optional(Type.String({ description: "Optional directory for downloaded image files. Omit unless the user requested persistent files; if omitted, an OS temp directory is created." })),
-	format: Type.Optional(Type.Unsafe<"png" | "jpg" | "svg" | "pdf">({ type: "string", enum: ["png", "jpg", "svg", "pdf"] })),
+	format: Type.Optional(RenderFormatSchema),
 	scale: Type.Optional(Type.Number({ description: "Render scale for bitmap formats", minimum: 0.01, maximum: 4 })),
 	download: Type.Optional(Type.Boolean({ description: "Download rendered assets locally. Defaults to true." })),
 	maxResponseChars: MaxResponseCharsSchema,
@@ -106,7 +113,7 @@ export const FigmaExtractAssetsParams = Type.Object({
 	fileKey: FileKeySchema,
 	nodeId: NodeIdSchema,
 	depth: Type.Optional(Type.Number({ description: "How many levels of node hierarchy to inspect for assets. Defaults to 3 and is capped at 4.", minimum: 1, maximum: 4 })),
-	assetTypes: Type.Optional(Type.Array(Type.Unsafe<"svgIcons" | "nodeRenders" | "imageFills">({ type: "string", enum: ["svgIcons", "nodeRenders", "imageFills"] }), { description: "Asset categories to extract. Defaults to all supported categories." })),
+	assetTypes: Type.Optional(Type.Array(AssetTypeSchema, { description: "Asset categories to extract. Defaults to all supported categories." })),
 	outputDir: Type.Optional(Type.String({ description: "Optional directory for downloaded asset files. Omit unless the user requested persistent files; by default files go to an OS temp directory." })),
 	includeHidden: Type.Optional(Type.Boolean({ description: "Include hidden nodes while discovering assets. Defaults to false." })),
 	maxAssets: Type.Optional(Type.Number({ description: "Maximum assets to include in the manifest. Defaults to 80.", minimum: 1, maximum: 500 })),
@@ -126,8 +133,8 @@ export const FigmaComponentImplementationHintsParams = Type.Object({
 	fileKey: FileKeySchema,
 	nodeId: NodeIdSchema,
 	...FigmaNodeProcessingOptions,
-	framework: Type.Optional(Type.Unsafe<"react" | "html" | "vue" | "angular" | "react-native">({ type: "string", enum: ["react", "html", "vue", "angular", "react-native"] })),
-	styling: Type.Optional(Type.Unsafe<"css" | "css-modules" | "styled-components" | "tailwind" | "inline">({ type: "string", enum: ["css", "css-modules", "styled-components", "tailwind", "inline"] })),
+	framework: Type.Optional(FrameworkSchema),
+	styling: Type.Optional(StylingSchema),
 	includeCodeConnect: Type.Optional(Type.Boolean({ description: "Scan the local repo for Figma Code Connect mappings. Defaults to true." })),
 	includeSnippet: Type.Optional(Type.Boolean({ description: "Include starter framework snippet. Defaults to false." })),
 	rootDir: Type.Optional(Type.String({ description: "Optional local repo subdirectory for Code Connect scanning." })),

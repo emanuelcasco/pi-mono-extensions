@@ -18,7 +18,7 @@
  *    shell configs / system directories, rm -rf on system paths).
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { SentinelSession } from "./session.js";
 import { registerOutputScanner } from "./guards/output-scanner.js";

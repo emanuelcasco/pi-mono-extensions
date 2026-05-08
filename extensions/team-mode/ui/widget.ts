@@ -1,6 +1,6 @@
 // Pi Team-Mode — Live Agents Widget
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { TeammateRecord } from "../core/types.js";
 import type { AgentManager } from "../managers/agent-manager.js";

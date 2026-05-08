@@ -1,5 +1,5 @@
-import { BorderedLoader, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
-import { Container, Text } from "@mariozechner/pi-tui";
+import { BorderedLoader, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import {
 	buildReviewSession,
 	getCommentBody,

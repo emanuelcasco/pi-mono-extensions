@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-team-mode",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "Pi extension for flat peer-agent orchestration — named, addressable teammates with resumable context (mirrors Claude Code's team-mate model)",
   "type": "module",
   "keywords": [
@@ -11,9 +11,9 @@
     "test": "npx tsx --test '__tests__/**/*.test.ts'"
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
   "pi": {

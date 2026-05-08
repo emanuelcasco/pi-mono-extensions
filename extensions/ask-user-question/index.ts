@@ -18,8 +18,8 @@
  *   - Esc to cancel
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -61,6 +61,12 @@ interface FormResult {
 	questions: NormalizedQuestion[];
 	answers: Answer[];
 	cancelled: boolean;
+}
+
+interface AskUserQuestionInput {
+	title?: string;
+	description?: string;
+	questions: Question[];
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -182,11 +188,12 @@ Use this tool when you need user input to proceed — for clarifying requirement
 			if (!ctx.hasUI) {
 				return errorResult("Error: UI not available (running in non-interactive mode)");
 			}
-			if (!params.questions.length) {
+			const input = params as AskUserQuestionInput;
+			if (!input.questions.length) {
 				return errorResult("Error: No questions provided");
 			}
 
-			const questions = normalize(params.questions as Question[]);
+			const questions = normalize(input.questions);
 			const isMulti = questions.length > 1;
 			const totalTabs = questions.length + (isMulti ? 1 : 0); // +1 for Submit tab
 
@@ -344,7 +351,7 @@ Use this tool when you need user input to proceed — for clarifying requirement
 							answers.push({ id: q.id, type: "text", value: t, wasCustom: true });
 						}
 					}
-					done({ title: params.title, questions, answers, cancelled });
+					done({ title: input.title, questions, answers, cancelled });
 				}
 
 				// ── Editor submit (for "Other" mode) ────────────────────
@@ -549,13 +556,13 @@ Use this tool when you need user input to proceed — for clarifying requirement
 					hr();
 
 					// Title & description
-					if (params.title) {
-						add(` ${theme.fg("accent", theme.bold(params.title))}`);
+					if (input.title) {
+						add(` ${theme.fg("accent", theme.bold(input.title))}`);
 					}
-					if (params.description) {
-						add(` ${theme.fg("muted", params.description)}`);
+					if (input.description) {
+						add(` ${theme.fg("muted", input.description)}`);
 					}
-					if (params.title || params.description) lines.push("");
+					if (input.title || input.description) lines.push("");
 
 					// Tab bar (multi-question)
 					if (isMulti) {
@@ -876,8 +883,9 @@ Use this tool when you need user input to proceed — for clarifying requirement
 		// ── Custom rendering ─────────────────────────────────────────────
 
 		renderCall(args, theme, _context) {
-			const qs = (args.questions as Question[]) || [];
-			const title = args.title as string | undefined;
+			const input = args as Partial<AskUserQuestionInput>;
+			const qs = input.questions || [];
+			const title = input.title;
 			let text = theme.fg("toolTitle", theme.bold("ask_user_question "));
 			if (title) {
 				text += theme.fg("accent", title) + " ";

@@ -1,5 +1,13 @@
 # pi-mono-all
 
+## 1.0.1
+
+### Patch Changes
+
+### Maintenance
+
+- all-in-one package peer dependencies now target the new `@earendil-works` pi core package scope.
+
 ## 1.0.0
 
 ### Major Changes

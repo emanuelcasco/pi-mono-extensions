@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerReviewCommand } from "./review.js";
 import { registerReviewTuiCommand } from "./review-tui.js";
 

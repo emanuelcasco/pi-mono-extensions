@@ -22,8 +22,8 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -86,9 +86,10 @@ export default function (pi: ExtensionAPI): void {
 	// -------------------------------------------------------------------------
 	// Cache invalidation — fired by multi-edit after every real file write
 	// -------------------------------------------------------------------------
-	pi.events.on("context-guard:file-modified", (data: { path: string }) => {
-		if (data?.path) {
-			readCache.delete(resolve(data.path));
+	pi.events.on("context-guard:file-modified", (data: unknown) => {
+		const event = data as { path?: string };
+		if (event.path) {
+			readCache.delete(resolve(event.path));
 		}
 	});
 

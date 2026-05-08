@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-all",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "All pi-mono extensions and bundled skills",
   "type": "module",
   "keywords": [
@@ -45,9 +45,9 @@
     "pi-mono-team-mode"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
   "pi": {

@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-sentinel",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "description": "Pi extension that guards against content-based secret leaks and indirect script execution",
   "keywords": [
     "pi-package",
@@ -10,7 +10,7 @@
     "test": "npx tsx --test '__tests__/**/*.test.ts'"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
   },
   "pi": {

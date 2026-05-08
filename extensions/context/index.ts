@@ -5,9 +5,9 @@
  *   /context
  */
 
-import type { ContextUsage, ExtensionAPI, ExtensionCommandContext, Theme, ToolInfo } from "@mariozechner/pi-coding-agent";
-import type { SlashCommandInfo } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { ContextUsage, ExtensionAPI, ExtensionCommandContext, Theme, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 type TextBlock = { type?: string; text?: string };
 type ImageBlock = { type?: string; data?: string; mimeType?: string };

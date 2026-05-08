@@ -160,7 +160,7 @@ In `multi` mode, items that omit `path` automatically inherit the top-level `pat
 
 | Package                         | Role                                                |
 | ------------------------------- | --------------------------------------------------- |
-| `@mariozechner/pi-coding-agent` | `ExtensionAPI` type and tool registration           |
+| `@earendil-works/pi-coding-agent` | `ExtensionAPI` type and tool registration           |
 | `@sinclair/typebox`             | Runtime JSON Schema / TypeBox parameter definitions |
 | `diff`                          | Line-level diff generation for result output        |
 

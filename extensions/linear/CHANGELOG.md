@@ -1,5 +1,13 @@
 # pi-mono-linear
 
+## 0.2.2
+
+### Patch Changes
+
+### Maintenance
+
+- Update pi core imports and peer dependencies to the new `@earendil-works` package scope.
+
 ## 0.2.1
 
 ### Patch Changes

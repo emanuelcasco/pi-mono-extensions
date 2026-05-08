@@ -1,5 +1,13 @@
 # pi-mono-ask-user-question
 
+## 1.7.4
+
+### Patch Changes
+
+### Maintenance
+
+- Update pi core imports and peer dependencies to the new `@earendil-works` package scope.
+
 ## 1.7.3
 
 ### Patch Changes
@@ -17,7 +25,7 @@
 
 ### Fixed: ask-user-question
 
-- Remove unused `StringEnum` import from `@mariozechner/pi-ai`.
+- Remove unused `StringEnum` import from `@earendil-works/pi-ai`.
 
 ## 1.7.1
 

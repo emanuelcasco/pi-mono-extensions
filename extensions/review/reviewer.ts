@@ -2,9 +2,9 @@
  * ReviewerComponent — Interactive TUI for reviewing code review comments
  */
 
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
-import type { KeyId } from "@mariozechner/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { KeyId } from "@earendil-works/pi-tui";
 import {
 	getCommentBody,
 	getCommentConfidence,

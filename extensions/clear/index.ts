@@ -6,7 +6,7 @@
  *   Ctrl+Shift+L    — keyboard shortcut for /clear
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	async function clearSession(ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1]) {

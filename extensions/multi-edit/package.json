@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-multi-edit",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Pi extension that replaces edit with batch edits and Codex-style patches",
   "type": "module",
   "keywords": [
@@ -12,9 +12,9 @@
     "bench": "npx tsx benchmark-edits.ts"
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
   "dependencies": {
