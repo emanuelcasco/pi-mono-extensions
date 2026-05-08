@@ -10,6 +10,7 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
   - [auto-fix](#auto-fix)
   - [btw](#btw)
   - [clear](#clear)
+  - [context](#context)
   - [context-guard](#context-guard)
   - [figma](#figma)
   - [linear](#linear)
@@ -131,6 +132,26 @@ Or press `Ctrl+Shift+L` for the keyboard shortcut.
 
 ```bash
 pi install npm:pi-mono-clear
+```
+
+### context
+
+The `context` extension adds a Claude Code-style `/context` command that prints current context-window usage in the conversation without adding that report to future LLM context. It includes a grid, estimated category breakdown, extension allocation by source/package, session stats, and active tool/command sections.
+
+Full details: [extensions/context/README.md](extensions/context/README.md).
+
+#### Usage
+
+```text
+/context
+```
+
+The printed report is display-only and filtered from future LLM context.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-context
 ```
 
 ### context-guard

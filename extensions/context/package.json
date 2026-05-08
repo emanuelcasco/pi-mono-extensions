@@ -1,0 +1,29 @@
+{
+  "name": "pi-mono-context",
+  "version": "0.1.0",
+  "description": "Pi extension that prints current context-window usage without adding the report to future LLM context",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "context"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
+    "directory": "extensions/context"
+  },
+  "bugs": {
+    "url": "https://github.com/emanuelcasco/pi-mono-extensions/issues"
+  },
+  "homepage": "https://github.com/emanuelcasco/pi-mono-extensions#readme"
+}
