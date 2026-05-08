@@ -8,8 +8,9 @@ This extension adds Claude Code-style ` /btw ` behavior to pi.
 - starts a separate model request immediately
 - does not queue the question into the main agent loop
 - does not interrupt the current task
-- renders answers in a passive widget below the editor while pi keeps working
-- stores hidden history as custom session entries (`btw-history`)
+- renders active requests and answers in a focused `/btw` panel while pi keeps working
+- lets the user dismiss the panel with `Esc`/`Enter`, scroll long answers with `↑`/`↓`, and clear displayed history with `x`
+- stores hidden history as custom session entries (`btw-history`) without injecting answers into the visible transcript or main agent context
 
 ## Why it is implemented this way
 

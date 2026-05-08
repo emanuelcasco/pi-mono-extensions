@@ -1,14 +1,14 @@
 import { complete, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 
-const BTW_ENTRY_TYPE = "btw-history";
-const BTW_WIDGET_ID = "btw-widget";
+const BTW_HISTORY_ENTRY_TYPE = "btw-history";
+const LEGACY_BTW_MESSAGE_TYPE = "btw-answer";
 const COMPLETED_ITEM_TTL_MS = 90_000;
 const MAX_TRANSCRIPT_CHARS = 14_000;
 const MAX_TOOL_RESULT_CHARS = 800;
-const MAX_RENDER_ITEMS = 2;
-const MAX_RENDERED_ANSWER_LINES = 6;
+const MAX_PANEL_HISTORY_ITEMS = 5;
+const MAX_PANEL_BODY_LINES = 18;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 const SIDE_QUESTION_SYSTEM_PROMPT = [
@@ -58,12 +58,14 @@ type BtwRuntime = {
 	items: BtwItem[];
 	spinnerFrame: number;
 	requestRender?: () => void;
+	closePanel?: () => void;
+	panelOpen?: boolean;
 	spinnerTimer?: ReturnType<typeof setInterval>;
 	expiryTimer?: ReturnType<typeof setTimeout>;
 };
 
 const runtimes = new Map<string, BtwRuntime>();
-const pendingPersistence = new Map<string, BtwRecord[]>();
+const pendingHistory = new Map<string, BtwRecord[]>();
 let nextItemId = 1;
 
 function getSessionKey(ctx: ExtensionContext): string {
@@ -236,42 +238,29 @@ async function askSideQuestion(question: string, ctx: ExtensionContext): Promise
 	return answer || "No response received.";
 }
 
-function ensureWidget(ctx: ExtensionContext, runtime: BtwRuntime) {
-	if (!ctx.hasUI) return;
-
-	ctx.ui.setWidget(
-		BTW_WIDGET_ID,
-		(tui, theme) => {
-			runtime.requestRender = () => tui.requestRender();
-			return new BtwWidget(theme, runtime);
-		},
-		{ placement: "belowEditor" },
-	);
-}
-
-function persistOrQueue(pi: ExtensionAPI, ctx: ExtensionContext, record: BtwRecord) {
+function persistOrQueueHistory(pi: ExtensionAPI, ctx: ExtensionContext, record: BtwRecord) {
 	if (ctx.isIdle()) {
-		pi.appendEntry(BTW_ENTRY_TYPE, record);
+		pi.appendEntry(BTW_HISTORY_ENTRY_TYPE, record);
 		return;
 	}
 
 	const key = getSessionKey(ctx);
-	const queue = pendingPersistence.get(key) ?? [];
+	const queue = pendingHistory.get(key) ?? [];
 	queue.push(record);
-	pendingPersistence.set(key, queue);
+	pendingHistory.set(key, queue);
 }
 
 function flushPendingForCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext) {
 	if (!ctx.isIdle()) return;
 
 	const key = getSessionKey(ctx);
-	const queue = pendingPersistence.get(key);
+	const queue = pendingHistory.get(key);
 	if (!queue || queue.length === 0) return;
 
 	for (const record of queue) {
-		pi.appendEntry(BTW_ENTRY_TYPE, record);
+		pi.appendEntry(BTW_HISTORY_ENTRY_TYPE, record);
 	}
-	pendingPersistence.delete(key);
+	pendingHistory.delete(key);
 }
 
 function cleanupExpiredItems(runtime: BtwRuntime) {
@@ -321,7 +310,7 @@ async function startBtw(question: string, pi: ExtensionAPI, ctx: ExtensionContex
 	}
 
 	const runtime = getRuntime(ctx);
-	ensureWidget(ctx, runtime);
+	ensurePanel(ctx, runtime);
 
 	const item: BtwItem = {
 		id: `btw-${nextItemId++}`,
@@ -342,7 +331,7 @@ async function startBtw(question: string, pi: ExtensionAPI, ctx: ExtensionContex
 		item.answer = answer;
 		item.answeredAt = new Date().toISOString();
 		item.expiresAt = Date.now() + COMPLETED_ITEM_TTL_MS;
-		persistOrQueue(pi, ctx, {
+		persistOrQueueHistory(pi, ctx, {
 			question,
 			answer,
 			askedAt: item.askedAt,
@@ -355,7 +344,7 @@ async function startBtw(question: string, pi: ExtensionAPI, ctx: ExtensionContex
 		item.error = error instanceof Error ? error.message : String(error);
 		item.answeredAt = new Date().toISOString();
 		item.expiresAt = Date.now() + COMPLETED_ITEM_TTL_MS;
-		persistOrQueue(pi, ctx, {
+		persistOrQueueHistory(pi, ctx, {
 			question,
 			error: item.error,
 			askedAt: item.askedAt,
@@ -381,56 +370,123 @@ function extractBtwQuestion(text: string): string | null {
 	return match[1]?.trim() ?? "";
 }
 
-class BtwWidget {
+function indentWrapped(text: string, width: number, indent = "    "): string[] {
+	const bodyWidth = Math.max(12, width - indent.length);
+	return text.split("\n").flatMap((line) => {
+		const wrapped = wrapTextWithAnsi(line.length > 0 ? line : " ", bodyWidth);
+		return wrapped.map((part) => indent + part);
+	});
+}
+
+function ensurePanel(ctx: ExtensionContext, runtime: BtwRuntime) {
+	if (!ctx.hasUI || runtime.panelOpen) {
+		runtime.requestRender?.();
+		return;
+	}
+
+	runtime.panelOpen = true;
+	void ctx.ui
+		.custom<void>((tui, theme, _keybindings, done) => {
+			const close = () => done();
+			runtime.requestRender = () => tui.requestRender();
+			runtime.closePanel = close;
+			return new BtwPanel(theme, runtime, () => tui.requestRender(), close);
+		})
+		.finally(() => {
+			runtime.panelOpen = false;
+			runtime.closePanel = undefined;
+			runtime.requestRender = undefined;
+		});
+}
+
+class BtwPanel {
+	private scrollOffset = 0;
+
 	constructor(
 		private readonly theme: Theme,
 		private readonly runtime: BtwRuntime,
+		private readonly requestRender: () => void,
+		private readonly close: () => void,
 	) {}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "return")) {
+			this.close();
+			return;
+		}
+
+		if (data === "x" || data === "X" || matchesKey(data, "x")) {
+			this.runtime.items = this.runtime.items.filter((item) => item.state === "loading");
+			this.scrollOffset = 0;
+			syncRuntimeTimers(this.runtime);
+			if (this.runtime.items.length === 0) {
+				this.close();
+			} else {
+				this.requestRender();
+			}
+			return;
+		}
+
+		if (matchesKey(data, "up")) {
+			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+			this.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "down")) {
+			this.scrollOffset += 1;
+			this.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "home")) {
+			this.scrollOffset = 0;
+			this.requestRender();
+		}
+	}
 
 	render(width: number): string[] {
 		cleanupExpiredItems(this.runtime);
 		if (this.runtime.items.length === 0) {
-			return [];
+			return [this.theme.fg("dim", "No /btw history."), this.theme.fg("dim", "Esc to close")].map((line) =>
+				truncateToWidth(line, width, "...", true),
+			);
 		}
 
 		const innerWidth = Math.max(24, width);
+		const latest = this.runtime.items[0]!;
 		const lines: string[] = [];
-		const activeCount = this.runtime.items.filter((item) => item.state === "loading").length;
-		const recentCount = this.runtime.items.filter((item) => item.state !== "loading").length;
-		const summaryParts = [activeCount > 0 ? `${activeCount} running` : undefined, recentCount > 0 ? `${recentCount} recent` : undefined]
-			.filter(Boolean)
-			.join(" · ");
+		lines.push(this.theme.fg("accent", "/btw"));
+		lines.push("");
 
-		lines.push(this.theme.fg("accent", "BTW") + (summaryParts ? this.theme.fg("dim", ` · ${summaryParts}`) : ""));
-		lines.push(this.theme.fg("borderMuted", "─".repeat(Math.max(1, innerWidth - 2))));
-
-		for (const item of this.runtime.items.slice(0, MAX_RENDER_ITEMS)) {
-			const questionLines = wrapTextWithAnsi(this.theme.fg("accent", `Q: ${item.question}`), innerWidth);
-			lines.push(...questionLines);
-
-			if (item.state === "loading") {
-				const frame = SPINNER_FRAMES[this.runtime.spinnerFrame] ?? SPINNER_FRAMES[0]!;
-				lines.push(this.theme.fg("warning", `${frame} Answering with ${item.model}...`));
-			} else {
-				const body = item.state === "error" ? this.theme.fg("error", item.error ?? "Unknown error") : item.answer ?? "";
-				const wrapped = body
-					.split("\n")
-					.flatMap((line) => wrapTextWithAnsi(line.length > 0 ? line : " ", innerWidth));
-				const clipped = wrapped.slice(0, MAX_RENDERED_ANSWER_LINES);
-				lines.push(...clipped);
-				if (wrapped.length > clipped.length) {
-					lines.push(this.theme.fg("dim", `... ${wrapped.length - clipped.length} more line(s)`));
-				}
-			}
-
-			lines.push("");
+		for (const item of this.runtime.items.slice(0, MAX_PANEL_HISTORY_ITEMS).reverse()) {
+			const question = `/btw ${item.question}`;
+			const color = item.id === latest.id ? "accent" : "dim";
+			lines.push(...wrapTextWithAnsi(`  ${this.theme.fg(color, question)}`, innerWidth));
 		}
 
-		if (lines[lines.length - 1] === "") {
-			lines.pop();
+		lines.push("");
+
+		let bodyLines: string[];
+		if (latest.state === "loading") {
+			const frame = SPINNER_FRAMES[this.runtime.spinnerFrame] ?? SPINNER_FRAMES[0]!;
+			bodyLines = [this.theme.fg("warning", `    ${frame} Answering…`)];
+		} else if (latest.state === "error") {
+			bodyLines = indentWrapped(this.theme.fg("error", latest.error ?? "Unknown error"), innerWidth);
+		} else {
+			bodyLines = indentWrapped(latest.answer ?? "No response received.", innerWidth);
 		}
 
-		lines.push(this.theme.fg("dim", "Use /btw <question> anytime, even while pi is still working."));
+		const maxOffset = Math.max(0, bodyLines.length - MAX_PANEL_BODY_LINES);
+		this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
+		lines.push(...bodyLines.slice(this.scrollOffset, this.scrollOffset + MAX_PANEL_BODY_LINES));
+
+		if (bodyLines.length > MAX_PANEL_BODY_LINES) {
+			lines.push(this.theme.fg("dim", `    ... ${bodyLines.length - this.scrollOffset - MAX_PANEL_BODY_LINES} more line(s)`));
+		}
+
+		lines.push("");
+		lines.push(this.theme.fg("dim", "↑/↓ to scroll · x to clear history · Enter/Esc to close"));
 		return lines.map((line) => truncateToWidth(line, width, "...", true));
 	}
 
@@ -438,8 +494,13 @@ class BtwWidget {
 }
 
 export default function (pi: ExtensionAPI) {
-	const attachCurrentSessionWidget = (_event: unknown, ctx: ExtensionContext) => {
-		ensureWidget(ctx, getRuntime(ctx));
+	// Hide answers written by older versions of this extension. New answers are
+	// shown in the focused /btw panel only, so users can dismiss them with Esc.
+	pi.registerMessageRenderer(LEGACY_BTW_MESSAGE_TYPE, () => {
+		return { render: () => [], invalidate: () => {} };
+	});
+
+	const onSessionStart = (_event: unknown, ctx: ExtensionContext) => {
 		flushPendingForCurrentSession(pi, ctx);
 	};
 
@@ -447,13 +508,18 @@ export default function (pi: ExtensionAPI) {
 		flushPendingForCurrentSession(pi, ctx);
 	};
 
-	pi.on("session_start", attachCurrentSessionWidget);
-	pi.on("session_switch", attachCurrentSessionWidget);
+	pi.on("session_start", onSessionStart);
+	pi.on("context", (event) => ({
+		messages: event.messages.filter(
+			(message) => !(message.role === "custom" && (message as { customType?: string }).customType === LEGACY_BTW_MESSAGE_TYPE),
+		),
+	}));
 	pi.on("agent_end", flush);
 	pi.on("session_before_switch", flush);
 	pi.on("session_before_fork", flush);
 	pi.on("session_shutdown", (_event, _ctx) => {
 		for (const runtime of runtimes.values()) {
+			runtime.closePanel?.();
 			if (runtime.spinnerTimer) clearInterval(runtime.spinnerTimer);
 			if (runtime.expiryTimer) clearTimeout(runtime.expiryTimer);
 		}
@@ -467,6 +533,8 @@ export default function (pi: ExtensionAPI) {
 		if (event.source === "extension") {
 			return { action: "continue" as const };
 		}
+
+		flushPendingForCurrentSession(pi, ctx);
 
 		const question = extractBtwQuestion(event.text);
 		if (question === null) {
