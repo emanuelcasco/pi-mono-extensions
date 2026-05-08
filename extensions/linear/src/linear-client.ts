@@ -3,6 +3,8 @@ import { createTtlCache } from "pi-common/cache";
 import { ApiError } from "pi-common/errors";
 import { createHttpClient, type HttpClient } from "pi-common/http-client";
 import { createRateLimiter, type RateLimiter } from "pi-common/rate-limiter";
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
 import * as queries from "./linear-queries.js";
 
 export interface LinearClientOptions {
@@ -36,6 +38,45 @@ export interface UpdateIssueInput {
 	assigneeId?: string;
 }
 
+export interface UploadFileInput {
+	filePath: string;
+	filename?: string;
+	contentType?: string;
+	maxBytes?: number;
+	makePublic?: boolean;
+}
+
+interface UploadFileHeader {
+	key: string;
+	value: string;
+}
+
+interface LinearUploadFile {
+	filename: string;
+	contentType: string;
+	size: number;
+	uploadUrl: string;
+	assetUrl: string;
+	metaData?: unknown;
+	headers: UploadFileHeader[];
+}
+
+interface FileUploadMutationResponse {
+	fileUpload: {
+		success: boolean;
+		uploadFile?: LinearUploadFile | null;
+	};
+}
+
+export interface UploadedFileResult {
+	filename: string;
+	contentType: string;
+	size: number;
+	assetUrl: string;
+	makePublic: boolean;
+	success: boolean;
+}
+
 type Variables = Record<string, unknown>;
 
 interface GraphQlResponse<T> {
@@ -44,6 +85,7 @@ interface GraphQlResponse<T> {
 }
 
 const cache = createTtlCache<unknown>({ defaultTtlMs: 60_000, maxEntries: 100 });
+const DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export class LinearClient {
 	private readonly http: HttpClient;
@@ -142,6 +184,33 @@ export class LinearClient {
 		return this.graphql(queries.CREATE_COMMENT, { input: { issueId, body } });
 	}
 
+	async uploadFile(input: UploadFileInput): Promise<UploadedFileResult> {
+		const file = await prepareUploadFile(input);
+		const makePublic = input.makePublic ?? true;
+		const response = await this.graphql<FileUploadMutationResponse>(queries.FILE_UPLOAD, {
+			filename: file.filename,
+			contentType: file.contentType,
+			size: file.size,
+			makePublic,
+			metaData: { source: "pi-linear-extension" },
+		});
+		const uploadFile = response.fileUpload.uploadFile;
+		if (!response.fileUpload.success || !uploadFile) {
+			throw new ApiError("Linear did not return file upload credentials", 502, response, "Linear");
+		}
+
+		await uploadBytesToSignedUrl(uploadFile.uploadUrl, file.bytes, uploadFile.headers, uploadFile.contentType);
+
+		return {
+			filename: uploadFile.filename,
+			contentType: uploadFile.contentType,
+			size: uploadFile.size,
+			assetUrl: uploadFile.assetUrl,
+			makePublic,
+			success: true,
+		};
+	}
+
 	listCycles(teamId?: string): Promise<unknown> {
 		return teamId
 			? this.cached(`teamCycles:${teamId}`, () => this.graphql(queries.LIST_TEAM_CYCLES, { id: teamId }))
@@ -188,3 +257,83 @@ function buildIssueFilter(options: ListIssuesOptions): Variables {
 function compact<T extends object>(input: T): Partial<T> {
 	return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== "")) as Partial<T>;
 }
+
+async function prepareUploadFile(input: UploadFileInput): Promise<{ filename: string; contentType: string; size: number; bytes: Buffer }> {
+	const filePath = resolve(input.filePath);
+	const stats = await stat(filePath).catch((error: unknown) => {
+		throw new ApiError(`Unable to access file at ${input.filePath}`, 400, error, "Linear");
+	});
+	if (!stats.isFile()) {
+		throw new ApiError(`Path is not a file: ${input.filePath}`, 400, undefined, "Linear");
+	}
+
+	const maxBytes = input.maxBytes ?? DEFAULT_MAX_UPLOAD_BYTES;
+	if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+		throw new ApiError("maxBytes must be a positive number", 400, { maxBytes }, "Linear");
+	}
+	if (stats.size > maxBytes) {
+		throw new ApiError(`File is too large (${stats.size} bytes). Limit is ${maxBytes} bytes.`, 400, { size: stats.size, maxBytes }, "Linear");
+	}
+	if (stats.size > Number.MAX_SAFE_INTEGER) {
+		throw new ApiError("File is too large to upload safely", 400, { size: stats.size }, "Linear");
+	}
+
+	return {
+		filename: input.filename?.trim() || basename(filePath),
+		contentType: input.contentType?.trim() || inferContentType(filePath),
+		size: stats.size,
+		bytes: await readFile(filePath),
+	};
+}
+
+async function uploadBytesToSignedUrl(uploadUrl: string, bytes: Buffer, uploadHeaders: UploadFileHeader[], contentType: string): Promise<void> {
+	const headers = new Headers();
+	for (const header of uploadHeaders) headers.set(header.key, header.value);
+	if (!headers.has("content-type")) headers.set("content-type", contentType);
+
+	const body = new ArrayBuffer(bytes.byteLength);
+	new Uint8Array(body).set(bytes);
+	const response = await fetch(uploadUrl, { method: "PUT", headers, body });
+	if (!response.ok) {
+		throw new ApiError(response.statusText || `Upload failed with HTTP ${response.status}`, response.status, await safeUploadBody(response), "Linear");
+	}
+}
+
+async function safeUploadBody(response: Response): Promise<unknown> {
+	const text = await response.text().catch(() => "");
+	if (!text) return undefined;
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		return text;
+	}
+}
+
+function inferContentType(filePath: string): string {
+	const extension = extname(filePath).toLowerCase();
+	return CONTENT_TYPES[extension] ?? "application/octet-stream";
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+	".apng": "image/apng",
+	".avif": "image/avif",
+	".gif": "image/gif",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png": "image/png",
+	".svg": "image/svg+xml",
+	".webp": "image/webp",
+	".bmp": "image/bmp",
+	".ico": "image/x-icon",
+	".mp4": "video/mp4",
+	".mpeg": "video/mpeg",
+	".mov": "video/quicktime",
+	".webm": "video/webm",
+	".avi": "video/x-msvideo",
+	".pdf": "application/pdf",
+	".csv": "text/csv",
+	".txt": "text/plain",
+	".md": "text/markdown",
+	".json": "application/json",
+	".zip": "application/zip",
+};

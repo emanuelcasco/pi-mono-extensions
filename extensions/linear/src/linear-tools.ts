@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { registerAuthConfigurator, runWithAuthRetry, type AuthConfiguratorOptions } from "pi-common/auth-config";
 import { jsonToolResult } from "pi-common/tool-result";
-import { LinearClient } from "./linear-client.js";
+import { LinearClient, type UploadedFileResult } from "./linear-client.js";
 import {
 	EmptyParams,
 	LinearCommentsParams,
@@ -18,6 +18,8 @@ import {
 	LinearListMyIssuesParams,
 	LinearSearchIssuesParams,
 	LinearUpdateIssueParams,
+	LinearUploadFileParams,
+	LinearUploadFileToIssueCommentParams,
 	OptionalTeamParams,
 } from "./linear-schemas.js";
 
@@ -31,13 +33,28 @@ const LINEAR_AUTH: AuthConfiguratorOptions = {
 	tokenUrl: "https://linear.app/settings/account/security",
 	scopeInstructions: [
 		"Read access is enough for lookup/list/get tools.",
-		"Write access is required for creating issues, updating issues, and creating comments.",
+		"Write access is required for creating issues, updating issues, creating comments, and uploading files.",
 		"Admin access is not required.",
 	],
 };
 
 function withLinearAuth<T>(ctx: ExtensionContext, operation: () => Promise<T>): Promise<T> {
 	return runWithAuthRetry(ctx, LINEAR_AUTH, operation);
+}
+
+function buildFileCommentBody(upload: UploadedFileResult, commentBody?: string, altText?: string): string {
+	const markdown = upload.contentType.startsWith("image/")
+		? `![${escapeMarkdownAltText(altText?.trim() || upload.filename)}](${upload.assetUrl})`
+		: `[${upload.filename}](${upload.assetUrl})`;
+	if (!commentBody?.trim()) return markdown;
+	if (commentBody.includes("{markdown}") || commentBody.includes("{url}")) {
+		return commentBody.replaceAll("{markdown}", markdown).replaceAll("{url}", upload.assetUrl);
+	}
+	return `${commentBody.trim()}\n\n${markdown}`;
+}
+
+function escapeMarkdownAltText(value: string): string {
+	return value.replaceAll("[", "\\[").replaceAll("]", "\\]");
 }
 
 export function registerLinearTools(pi: ExtensionAPI): void {
@@ -261,6 +278,55 @@ export function registerLinearTools(pi: ExtensionAPI): void {
 		parameters: LinearCreateCommentParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return jsonToolResult(await withLinearAuth(ctx, () => client.createComment(params.issueId, params.body)), { maxChars: params.maxResponseChars });
+		},
+	});
+
+	pi.registerTool({
+		name: "linear_upload_file",
+		label: "Linear Upload File",
+		description: "Upload a local file to Linear and return a Linear asset URL. Supports images, videos, and generic files.",
+		promptGuidelines: [
+			"Use this when you need a Linear-hosted URL for a local image, video, or file.",
+			"Tool results include the asset URL and sanitized metadata, not file bytes, signed upload URLs, or upload headers.",
+			"Use linear_get_issue before inserting the returned URL into an issue or comment.",
+		],
+		parameters: LinearUploadFileParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const result = await withLinearAuth(ctx, () => client.uploadFile({
+				filePath: params.filePath,
+				filename: params.filename,
+				contentType: params.contentType,
+				maxBytes: params.maxBytes,
+				makePublic: params.makePublic,
+			}));
+			return jsonToolResult(result, { maxChars: params.maxResponseChars });
+		},
+	});
+
+	pi.registerTool({
+		name: "linear_upload_file_to_issue_comment",
+		label: "Linear Upload File to Issue Comment",
+		description: "Upload a local file to Linear and create a Markdown comment on an issue. Call linear_get_issue first.",
+		promptGuidelines: [
+			"Use this after linear_get_issue has verified the target issue.",
+			"Images are inserted as Markdown images; videos and other files are inserted as links.",
+			"Use commentBody with {url} or {markdown} placeholders for custom wording, or omit it to post only the file Markdown.",
+		],
+		parameters: LinearUploadFileToIssueCommentParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const result = await withLinearAuth(ctx, async () => {
+				const upload = await client.uploadFile({
+					filePath: params.filePath,
+					filename: params.filename,
+					contentType: params.contentType,
+					maxBytes: params.maxBytes,
+					makePublic: params.makePublic,
+				});
+				const body = buildFileCommentBody(upload, params.commentBody, params.altText);
+				const comment = await client.createComment(params.issueId, body);
+				return { upload, comment };
+			});
+			return jsonToolResult(result, { maxChars: params.maxResponseChars });
 		},
 	});
 

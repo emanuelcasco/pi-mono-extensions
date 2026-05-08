@@ -66,4 +66,25 @@ export const LinearCreateCommentParams = Type.Object({
 	maxResponseChars: MaxResponseCharsSchema,
 });
 
+export const LinearUploadFileParams = Type.Object({
+	filePath: Type.String({ description: "Local path to the file to upload" }),
+	filename: Type.Optional(Type.String({ description: "Filename to use in Linear. Defaults to the local basename." })),
+	contentType: Type.Optional(Type.String({ description: "MIME content type. Inferred from the file extension when omitted." })),
+	maxBytes: Type.Optional(Type.Number({ description: "Maximum allowed local file size in bytes before upload. Defaults to 50 MiB.", minimum: 1 })),
+	makePublic: Type.Optional(Type.Boolean({ description: "Whether Linear should create a public asset URL. Defaults to true for Markdown embeds." })),
+	maxResponseChars: MaxResponseCharsSchema,
+});
+
+export const LinearUploadFileToIssueCommentParams = Type.Object({
+	issueId: IssueIdSchema,
+	filePath: Type.String({ description: "Local path to the file to upload" }),
+	filename: Type.Optional(Type.String({ description: "Filename to use in Linear. Defaults to the local basename." })),
+	contentType: Type.Optional(Type.String({ description: "MIME content type. Inferred from the file extension when omitted." })),
+	commentBody: Type.Optional(Type.String({ description: "Optional Markdown comment body. Use {url} or {markdown} placeholders, or the file Markdown is appended." })),
+	altText: Type.Optional(Type.String({ description: "Alt text for image Markdown. Defaults to the uploaded filename." })),
+	maxBytes: Type.Optional(Type.Number({ description: "Maximum allowed local file size in bytes before upload. Defaults to 50 MiB.", minimum: 1 })),
+	makePublic: Type.Optional(Type.Boolean({ description: "Whether Linear should create a public asset URL. Defaults to true for Markdown embeds." })),
+	maxResponseChars: MaxResponseCharsSchema,
+});
+
 export const LinearDocumentsParams = Type.Object({ projectId: Type.Optional(ProjectIdSchema), maxResponseChars: MaxResponseCharsSchema });

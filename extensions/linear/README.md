@@ -1,6 +1,6 @@
 # pi-mono-linear
 
-A pi extension and skill package that exposes native Linear GraphQL tools for issue, project, team, user, comment, cycle, label, workflow-state, and document workflows.
+A pi extension and skill package that exposes native Linear GraphQL tools for issue, project, team, user, comment, file upload, cycle, label, workflow-state, and document workflows.
 
 ## Tools
 
@@ -38,6 +38,11 @@ A pi extension and skill package that exposes native Linear GraphQL tools for is
 - `linear_list_comments`
 - `linear_create_comment`
 - `linear_configure_auth`
+
+### Files
+
+- `linear_upload_file`
+- `linear_upload_file_to_issue_comment`
 
 The package also bundles the `linear` skill under `skills/linear/SKILL.md`.
 
@@ -114,7 +119,7 @@ If the file already contains other credentials, merge the `linear.key` entry ins
 Use the least privilege that supports the tools you need:
 
 - **Read** is enough for read-only tools such as `linear_workspace_metadata`, `linear_search_issues`, `linear_get_issue`, list tools, and document/comment reads.
-- **Write** is required for mutation tools: `linear_create_issue`, `linear_update_issue`, and `linear_create_comment`.
+- **Write** is required for mutation tools: `linear_create_issue`, `linear_update_issue`, `linear_create_comment`, `linear_upload_file`, and `linear_upload_file_to_issue_comment`.
 - **Admin** is not required for this extension's tools.
 
 If you restrict the key to specific teams, the key must include the teams/projects/issues you want to query or mutate.
@@ -127,6 +132,9 @@ Linear API keys are sent in the `Authorization` header as the raw key value; do 
 - Use `linear_search_issues` for keyword lookup.
 - Use `linear_get_issue` before updating an issue or creating a comment.
 - Use `linear_list_issues` for filtered issue lists by team, assignee, status, and limit.
+- Use `linear_upload_file` to upload a local image, video, or generic file and return a Linear asset URL.
+- Use `linear_upload_file_to_issue_comment` after `linear_get_issue` to upload a local file and post a Markdown comment. Images are rendered with image Markdown; other files use links.
+- File upload tool results return sanitized metadata and the stable Linear asset URL. They do not return local file bytes, signed upload URLs, or upload headers.
 
 ## Troubleshooting
 

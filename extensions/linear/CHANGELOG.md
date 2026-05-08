@@ -1,5 +1,12 @@
 # pi-mono-linear
 
+## 0.2.0
+
+### Minor Changes
+
+- Added `linear_upload_file` to upload local images, videos, and generic files to Linear and return sanitized asset metadata.
+- Added `linear_upload_file_to_issue_comment` to upload a local file and create a Markdown issue comment with the resulting Linear asset URL.
+
 ## 0.1.2
 
 ### Patch Changes

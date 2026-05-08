@@ -1,6 +1,6 @@
 ---
 name: linear
-description: Access Linear project management data using native pi tools — issues, projects, teams, users, comments, cycles, labels, workflow states, and documents. Requires a Linear personal API key.
+description: Access Linear project management data using native pi tools — issues, projects, teams, users, comments, file uploads, cycles, labels, workflow states, and documents. Requires a Linear personal API key.
 ---
 
 # Linear Integration
@@ -12,6 +12,7 @@ Use the native `linear_*` tools to read and write Linear data through the Linear
 - Never ask the user to paste a Linear API key in chat.
 - Never expose the API key inline in shell commands.
 - Before updating an issue or commenting, use `linear_get_issue` to verify the target.
+- Before uploading a file to an issue comment, use `linear_get_issue` to verify the target.
 - When IDs are unknown, use `linear_workspace_metadata` first.
 
 ## Authentication
@@ -30,6 +31,8 @@ If auth is missing, invalid, or expired, do **not** ask the user to paste the ke
 - Use `linear_create_issue` to create issues once the team ID is known.
 - Use `linear_update_issue` to change title, description, priority, state, or assignee.
 - Use `linear_create_comment` to add Markdown context to an issue.
+- Use `linear_upload_file` to upload a local image, video, or generic file and get a Linear asset URL.
+- Use `linear_upload_file_to_issue_comment` to upload a local file and comment on a verified issue in one step.
 
 ## Available Tool Groups
 
@@ -67,6 +70,20 @@ If auth is missing, invalid, or expired, do **not** ask the user to paste the ke
 - `linear_list_comments`
 - `linear_create_comment`
 - `linear_configure_auth`
+
+### Files
+
+- `linear_upload_file`
+- `linear_upload_file_to_issue_comment`
+
+## File Upload Notes
+
+- Upload tools accept local file paths only; they do not read folders recursively.
+- Tool results include sanitized metadata and the Linear asset URL, not file bytes, signed upload URLs, or upload headers.
+- Images are suitable for Markdown image embeds: `![alt text](assetUrl)`.
+- Videos and other files should generally be linked: `[filename](assetUrl)`.
+- `linear_upload_file_to_issue_comment` creates image Markdown automatically for image content types and link Markdown for other content types.
+- `commentBody` may include `{url}` or `{markdown}` placeholders; otherwise generated file Markdown is appended to the comment body.
 
 ## Priority Values
 

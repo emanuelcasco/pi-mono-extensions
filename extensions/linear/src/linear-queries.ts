@@ -70,6 +70,21 @@ export const CREATE_COMMENT = `mutation($input: CommentCreateInput!) {
   commentCreate(input: $input) { success comment { id body user { id name } createdAt } }
 }`;
 
+export const FILE_UPLOAD = `mutation($filename: String!, $contentType: String!, $size: Int!, $makePublic: Boolean, $metaData: JSON) {
+  fileUpload(filename: $filename, contentType: $contentType, size: $size, makePublic: $makePublic, metaData: $metaData) {
+    success
+    uploadFile {
+      filename
+      contentType
+      size
+      uploadUrl
+      assetUrl
+      headers { key value }
+      metaData
+    }
+  }
+}`;
+
 export const LIST_CYCLES = `query { cycles(first: 50, orderBy: createdAt) { nodes { id name number startDate endDate completedAt team { id name key } } } }`;
 export const LIST_TEAM_CYCLES = `query($id: String!) { team(id: $id) { id name cycles { nodes { id name number startDate endDate completedAt } } } }`;
 
