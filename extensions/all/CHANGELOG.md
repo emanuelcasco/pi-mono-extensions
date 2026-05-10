@@ -1,5 +1,13 @@
 # pi-mono-all
 
+## 1.2.0
+
+### Minor Changes
+
+### Enhanced: all
+
+- Bundle the new `pi-mono-web-search` extension and web-search skill in the all-in-one package.
+
 ## 1.1.0
 
 ### Minor Changes

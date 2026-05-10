@@ -1,0 +1,39 @@
+{
+  "name": "pi-mono-web-search",
+  "version": "0.1.0",
+  "description": "Pi extension for web search and page reading using DuckDuckGo and readability extraction",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "web-search",
+    "duckduckgo"
+  ],
+  "scripts": {
+    "test": "npx tsx --test '__tests__/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^29.1.1",
+    "pi-common": "workspace:*"
+  },
+  "bundledDependencies": [
+    "pi-common"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.1"
+  }
+}

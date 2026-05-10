@@ -22,6 +22,7 @@ This repo is a pnpm workspace monorepo. Each extension under `extensions/` can b
   - [status-line](#status-line)
   - [team-mode](#team-mode)
   - [usage](#usage)
+  - [web-search](#web-search)
 
 ## Installation
 
@@ -38,6 +39,7 @@ pi install npm:pi-mono-btw
 pi install npm:pi-mono-team-mode
 pi install npm:pi-mono-figma
 pi install npm:pi-mono-linear
+pi install npm:pi-mono-web-search
 ```
 
 Load temporarily for testing (without installing):
@@ -454,4 +456,21 @@ Full details: [extensions/usage/README.md](extensions/usage/README.md).
 
 ```bash
 pi install npm:pi-mono-usage
+```
+
+### web-search
+
+The `web-search` extension registers native `web_search` and `web_read` tools for online research. Search uses DuckDuckGo result pages, and page reading fetches a URL and extracts readable article text with Mozilla Readability plus a lightweight HTML fallback.
+
+Full details: [extensions/web-search/README.md](extensions/web-search/README.md).
+
+#### Tools
+
+- `web_search` — search the web and return titles, URLs, and snippets.
+- `web_read` — fetch a page URL and return cleaned readable content.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-web-search
 ```
