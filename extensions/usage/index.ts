@@ -33,8 +33,8 @@ import { estimateAiImpact, type AiEstimateResult } from "impact-equivalences";
 // Types
 // ---------------------------------------------------------------------------
 
-type Period = "day" | "week" | "lastWeek" | "all";
-type View = "summary" | "providers" | "patterns";
+type Period = "day" | "week" | "month" | "all";
+type View = "summary" | "providers" | "patterns" | "tools";
 
 interface TokenBucket {
 	input: number;
@@ -56,6 +56,18 @@ interface ProviderBucket extends Aggregate {
 	models: Map<string, ModelBucket>;
 }
 
+interface ToolBucket {
+	calls: number;
+	resultTokens: number;
+	sessions: Set<string>;
+}
+
+interface ToolGroupBucket extends ToolBucket {
+	tools: Map<string, ToolBucket>;
+}
+
+type ToolRegistry = Map<string, string>;
+
 interface RawTurn {
 	sessionId: string;
 	provider: string;
@@ -68,6 +80,13 @@ interface RawTurn {
 	ts: number;
 }
 
+interface RawToolUse {
+	sessionId: string;
+	name: string;
+	resultTokens: number;
+	ts: number;
+}
+
 interface InsightRow {
 	weight: number;
 	headline: string;
@@ -76,6 +95,7 @@ interface InsightRow {
 
 interface PeriodReport {
 	providers: Map<string, ProviderBucket>;
+	toolGroups: Map<string, ToolGroupBucket>;
 	totals: Aggregate;
 	turns: RawTurn[];
 	insights: InsightRow[];
@@ -89,7 +109,7 @@ interface SessionLifespan {
 interface UsageReport {
 	day: PeriodReport;
 	week: PeriodReport;
-	lastWeek: PeriodReport;
+	month: PeriodReport;
 	all: PeriodReport;
 	lifespans: Map<string, SessionLifespan>;
 }
@@ -97,25 +117,26 @@ interface UsageReport {
 interface SessionRecord {
 	sessionId: string;
 	turns: RawTurn[];
+	tools: RawToolUse[];
 }
 
 interface PeriodBoundaries {
 	dayStart: number;
 	weekStart: number;
-	lastWeekStart: number;
+	monthStart: number;
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const PERIOD_ORDER: readonly Period[] = ["day", "week", "lastWeek", "all"];
-const VIEW_ORDER: readonly View[] = ["summary", "providers", "patterns"];
+const PERIOD_ORDER: readonly Period[] = ["day", "week", "month", "all"];
+const VIEW_ORDER: readonly View[] = ["summary", "providers", "patterns", "tools"];
 
 const PERIOD_LABELS: Record<Period, string> = {
 	day: "Today",
 	week: "This Week",
-	lastWeek: "Last Week",
+	month: "This Month",
 	all: "All Time",
 };
 
@@ -123,6 +144,7 @@ const VIEW_LABELS: Record<View, string> = {
 	summary: "Summary",
 	providers: "Providers",
 	patterns: "Patterns",
+	tools: "Tools",
 };
 
 const NAME_COL_MAX = 28;
@@ -141,6 +163,12 @@ const SUMMARY_TOP_PROVIDERS = 3;
 const BAR_WIDTH = 24;
 const BAR_FILLED = "█";
 const BAR_EMPTY = "░";
+const BUILT_IN_TOOLS = new Set([
+	"bash",
+	"edit",
+	"read",
+	"write",
+]);
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -175,6 +203,85 @@ async function listSessionFiles(root: string, signal?: AbortSignal): Promise<str
 	return out.sort();
 }
 
+async function listFiles(root: string, predicate: (name: string) => boolean, signal?: AbortSignal): Promise<string[]> {
+	const queue: string[] = [root];
+	const out: string[] = [];
+
+	while (queue.length > 0) {
+		if (signal?.aborted) return [];
+		const dir = queue.shift()!;
+		let entries: import("node:fs").Dirent[];
+		try {
+			entries = (await readdir(dir, { withFileTypes: true })) as unknown as import("node:fs").Dirent[];
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const name = entry.name;
+			if (name === "node_modules" || name === "dist" || name === "__tests__") continue;
+			const full = join(dir, name);
+			if (entry.isDirectory()) queue.push(full);
+			else if (entry.isFile() && predicate(name)) out.push(full);
+		}
+	}
+
+	return out.sort();
+}
+
+async function buildToolRegistry(signal?: AbortSignal): Promise<ToolRegistry> {
+	const registry: ToolRegistry = new Map();
+	const extensionsDir = join(process.cwd(), "extensions");
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = (await readdir(extensionsDir, { withFileTypes: true })) as unknown as import("node:fs").Dirent[];
+	} catch {
+		return registry;
+	}
+
+	for (const entry of entries) {
+		if (signal?.aborted) return registry;
+		if (!entry.isDirectory()) continue;
+		const extensionDir = join(extensionsDir, entry.name);
+		const group = await extensionGroupName(extensionDir, entry.name);
+		const files = await listFiles(extensionDir, (name) => name.endsWith(".ts"), signal);
+		for (const file of files) {
+			if (signal?.aborted) return registry;
+			let source = "";
+			try {
+				source = await readFile(file, "utf8");
+			} catch {
+				continue;
+			}
+			for (const toolName of extractRegisteredToolNames(source)) registry.set(toolName, group);
+		}
+	}
+
+	return registry;
+}
+
+async function extensionGroupName(extensionDir: string, fallback: string): Promise<string> {
+	try {
+		const pkg = JSON.parse(await readFile(join(extensionDir, "package.json"), "utf8"));
+		const name = typeof pkg.name === "string" ? pkg.name : fallback;
+		return titleCaseWords(name.replace(/^pi-mono-/, ""));
+	} catch {
+		return titleCaseWords(fallback);
+	}
+}
+
+function extractRegisteredToolNames(source: string): string[] {
+	const names = new Set<string>();
+	const patterns = [
+		/registerTool\s*\(\s*{[\s\S]*?name:\s*["']([^"']+)["']/g,
+		/toolName:\s*["']([^"']+)["']/g,
+	];
+	for (const pattern of patterns) {
+		let match: RegExpExecArray | null;
+		while ((match = pattern.exec(source))) names.add(match[1]!);
+	}
+	return [...names];
+}
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
@@ -198,6 +305,7 @@ async function parseSessionFile(
 	if (signal?.aborted) return null;
 
 	const turns: RawTurn[] = [];
+	const tools: RawToolUse[] = [];
 	let sessionId = "";
 	const lines = raw.trim().split("\n");
 
@@ -222,6 +330,16 @@ async function parseSessionFile(
 
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
+		if (msg?.role === "toolResult" && typeof msg.toolName === "string") {
+			const ts = timestampForMessage(entry, msg);
+			tools.push({
+				sessionId: "", // filled later once header parsed
+				name: msg.toolName,
+				resultTokens: estimateTextTokens(toolResultText(msg.content)),
+				ts,
+			});
+			continue;
+		}
 		if (!msg || msg.role !== "assistant" || !msg.usage || !msg.provider || !msg.model) continue;
 
 		const input = numeric(msg.usage.input);
@@ -230,13 +348,7 @@ async function parseSessionFile(
 		const cacheWrite = numeric(msg.usage.cacheWrite);
 		const cost = numeric(msg.usage.cost?.total);
 
-		const tsCandidate =
-			typeof msg.timestamp === "number"
-				? msg.timestamp
-				: entry.timestamp
-					? Date.parse(entry.timestamp)
-					: 0;
-		const ts = Number.isFinite(tsCandidate) ? Number(tsCandidate) : 0;
+		const ts = timestampForMessage(entry, msg);
 
 		const fp = turnFingerprint({ input, output, cacheRead, cacheWrite, ts });
 		if (seen.has(fp)) continue;
@@ -257,12 +369,55 @@ async function parseSessionFile(
 
 	if (!sessionId) return null;
 	for (const turn of turns) turn.sessionId = sessionId;
-	return { sessionId, turns };
+	for (const tool of tools) tool.sessionId = sessionId;
+	return { sessionId, turns, tools };
 }
 
 function numeric(value: unknown): number {
 	const n = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(n) ? n : 0;
+}
+
+function timestampForMessage(entry: any, msg: any): number {
+	const tsCandidate =
+		typeof msg?.timestamp === "number"
+			? msg.timestamp
+			: entry.timestamp
+				? Date.parse(entry.timestamp)
+				: 0;
+	return Number.isFinite(tsCandidate) ? Number(tsCandidate) : 0;
+}
+
+function toolResultText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (typeof part === "string") return part;
+			if (part && typeof part === "object" && "text" in part) return String((part as { text?: unknown }).text ?? "");
+			return "";
+		})
+		.join("\n");
+}
+
+function estimateTextTokens(text: string): number {
+	if (!text) return 0;
+	return Math.ceil(text.length / 4);
+}
+
+function groupForTool(name: string, registry: ToolRegistry): string {
+	const registeredGroup = registry.get(name);
+	if (registeredGroup) return registeredGroup;
+	if (BUILT_IN_TOOLS.has(name)) return "Built-in";
+	return "Other";
+}
+
+function titleCaseWords(value: string): string {
+	return value
+		.split(/[\s_-]+/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +436,18 @@ function emptyProvider(): ProviderBucket {
 	return { ...emptyAggregate(), models: new Map() };
 }
 
+function emptyToolBucket(): ToolBucket {
+	return { calls: 0, resultTokens: 0, sessions: new Set() };
+}
+
+function emptyToolGroup(): ToolGroupBucket {
+	return { ...emptyToolBucket(), tools: new Map() };
+}
+
 function emptyPeriod(): PeriodReport {
 	return {
 		providers: new Map(),
+		toolGroups: new Map(),
 		totals: emptyAggregate(),
 		turns: [],
 		insights: [],
@@ -300,11 +464,17 @@ function applyTurn(target: Aggregate, sessionId: string, turn: RawTurn): void {
 	target.sessions.add(sessionId);
 }
 
+function applyTool(target: ToolBucket, sessionId: string, tool: RawToolUse): void {
+	target.calls += 1;
+	target.resultTokens += tool.resultTokens;
+	target.sessions.add(sessionId);
+}
+
 function periodsFor(ts: number, b: PeriodBoundaries): Period[] {
 	const periods: Period[] = ["all"];
 	if (ts >= b.dayStart) periods.push("day");
 	if (ts >= b.weekStart) periods.push("week");
-	else if (ts >= b.lastWeekStart) periods.push("lastWeek");
+	if (ts >= b.monthStart) periods.push("month");
 	return periods;
 }
 
@@ -318,13 +488,14 @@ function computeBoundaries(now = new Date()): PeriodBoundaries {
 	week.setDate(week.getDate() - offsetToMonday);
 	week.setHours(0, 0, 0, 0);
 
-	const lastWeek = new Date(week);
-	lastWeek.setDate(lastWeek.getDate() - 7);
+	const month = new Date(now);
+	month.setDate(1);
+	month.setHours(0, 0, 0, 0);
 
 	return {
 		dayStart: day.getTime(),
 		weekStart: week.getTime(),
-		lastWeekStart: lastWeek.getTime(),
+		monthStart: month.getTime(),
 	};
 }
 
@@ -360,12 +531,34 @@ function placeTurn(
 	}
 }
 
+function placeTool(
+	report: UsageReport,
+	tool: RawToolUse,
+	boundaries: PeriodBoundaries,
+	toolRegistry: ToolRegistry,
+): void {
+	for (const period of periodsFor(tool.ts, boundaries)) {
+		const slice = report[period];
+		const groupName = groupForTool(tool.name, toolRegistry);
+		const group = slice.toolGroups.get(groupName) ?? emptyToolGroup();
+		applyTool(group, tool.sessionId, tool);
+
+		const toolBucket = group.tools.get(tool.name) ?? emptyToolBucket();
+		applyTool(toolBucket, tool.sessionId, tool);
+
+		group.tools.set(tool.name, toolBucket);
+		slice.toolGroups.set(groupName, group);
+	}
+}
+
 async function buildReport(signal?: AbortSignal): Promise<UsageReport | null> {
 	const boundaries = computeBoundaries();
+	const toolRegistry = await buildToolRegistry(signal);
+	if (signal?.aborted) return null;
 	const report: UsageReport = {
 		day: emptyPeriod(),
 		week: emptyPeriod(),
-		lastWeek: emptyPeriod(),
+		month: emptyPeriod(),
 		all: emptyPeriod(),
 		lifespans: new Map(),
 	};
@@ -379,6 +572,7 @@ async function buildReport(signal?: AbortSignal): Promise<UsageReport | null> {
 		const session = await parseSessionFile(file, seen, signal);
 		if (!session) continue;
 		for (const turn of session.turns) placeTurn(report, turn, boundaries);
+		for (const tool of session.tools) placeTool(report, tool, boundaries, toolRegistry);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 
@@ -571,6 +765,35 @@ function formatPercent(p: number): string {
 	return `${(Math.round(p * 10) / 10).toFixed(1)}%`;
 }
 
+function formatDate(date: Date): string {
+	return new Intl.DateTimeFormat(undefined, {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+	}).format(date);
+}
+
+function dateRangeForPeriod(period: Period, report: UsageReport, now = new Date()): [Date, Date] {
+	const boundaries = computeBoundaries(now);
+	switch (period) {
+		case "day":
+			return [new Date(boundaries.dayStart), now];
+		case "week":
+			return [new Date(boundaries.weekStart), now];
+		case "month":
+			return [new Date(boundaries.monthStart), now];
+		case "all": {
+			let first = Number.POSITIVE_INFINITY;
+			let last = 0;
+			for (const span of report.lifespans.values()) {
+				if (span.first > 0 && span.first < first) first = span.first;
+				if (span.last > last) last = span.last;
+			}
+			return Number.isFinite(first) ? [new Date(first), new Date(last)] : [now, now];
+		}
+	}
+}
+
 function humanThreshold(n: number): string {
 	if (n >= 1_000_000) return `${n / 1_000_000}M`;
 	if (n >= 1_000) return `${n / 1_000}k`;
@@ -597,6 +820,11 @@ function pickFitting(width: number, options: string[]): string {
 	return options[options.length - 1] ?? "";
 }
 
+function randomItem<T>(items: readonly T[]): T | undefined {
+	if (items.length === 0) return undefined;
+	return items[Math.floor(Math.random() * items.length)];
+}
+
 // ---------------------------------------------------------------------------
 // Table layout
 // ---------------------------------------------------------------------------
@@ -606,6 +834,12 @@ interface TableColumn {
 	width: number;
 	dim?: boolean;
 	value: (row: Aggregate) => string;
+}
+
+interface ToolColumn {
+	label: string;
+	width: number;
+	value: (row: ToolBucket) => string;
 }
 
 const COL_SESSIONS: TableColumn = {
@@ -663,6 +897,14 @@ interface TableLayout {
 	compact: boolean;
 }
 
+function toolColumns(): ToolColumn[] {
+	return [
+		{ label: "Calls", width: 8, value: (r) => formatCount(r.calls) },
+		{ label: "Result", width: 9, value: (r) => formatTokens(r.resultTokens) },
+		{ label: "Sess", width: 7, value: (r) => formatCount(r.sessions.size) },
+	];
+}
+
 function pickLayout(width: number): TableLayout {
 	const safe = Math.max(width, 0);
 	const choose = (candidate: LayoutCandidate): TableLayout => {
@@ -693,6 +935,7 @@ class UsagePanel {
 	private cursor = 0;
 	private expanded = new Set<string>();
 	private providerOrder: string[] = [];
+	private toolGroupOrder: string[] = [];
 	private impactCache = new Map<Period, AiEstimateResult | null>();
 
 	constructor(
@@ -702,6 +945,7 @@ class UsagePanel {
 		private readonly close: () => void,
 	) {
 		this.refreshProviderOrder();
+		this.refreshToolGroupOrder();
 	}
 
 	handleInput(input: string): void {
@@ -725,20 +969,23 @@ class UsagePanel {
 		if (input === "1") return this.gotoView("summary");
 		if (input === "2") return this.gotoView("providers");
 		if (input === "3") return this.gotoView("patterns");
+		if (input === "4") return this.gotoView("tools");
 
-		if (this.view !== "providers") return;
+		if (this.view !== "providers" && this.view !== "tools") return;
+
+		const order = this.view === "providers" ? this.providerOrder : this.toolGroupOrder;
 
 		if (matchesKey(input, "up") && this.cursor > 0) {
 			this.cursor--;
 			this.requestRender();
-		} else if (matchesKey(input, "down") && this.cursor < this.providerOrder.length - 1) {
+		} else if (matchesKey(input, "down") && this.cursor < order.length - 1) {
 			this.cursor++;
 			this.requestRender();
 		} else if (matchesKey(input, "enter") || matchesKey(input, "space")) {
-			const provider = this.providerOrder[this.cursor];
-			if (provider) {
-				if (this.expanded.has(provider)) this.expanded.delete(provider);
-				else this.expanded.add(provider);
+			const expandable = order[this.cursor];
+			if (expandable) {
+				if (this.expanded.has(expandable)) this.expanded.delete(expandable);
+				else this.expanded.add(expandable);
 				this.requestRender();
 			}
 		}
@@ -755,6 +1002,10 @@ class UsagePanel {
 			}
 			case "patterns":
 				return clipLines([...head, ...this.renderPatterns(width)], width);
+			case "tools": {
+				const layout = pickLayout(width);
+				return clipLines([...head, ...this.renderTools(layout)], width);
+			}
 		}
 	}
 
@@ -771,11 +1022,20 @@ class UsagePanel {
 		this.cursor = Math.min(this.cursor, Math.max(0, this.providerOrder.length - 1));
 	}
 
+	private refreshToolGroupOrder(): void {
+		const slice = this.report[this.period];
+		this.toolGroupOrder = Array.from(slice.toolGroups.entries())
+			.sort((a, b) => b[1].calls - a[1].calls || b[1].resultTokens - a[1].resultTokens)
+			.map(([name]) => name);
+		this.cursor = Math.min(this.cursor, Math.max(0, this.toolGroupOrder.length - 1));
+	}
+
 	private shiftPeriod(direction: 1 | -1): void {
 		const idx = PERIOD_ORDER.indexOf(this.period);
 		const next = (idx + direction + PERIOD_ORDER.length) % PERIOD_ORDER.length;
 		this.period = PERIOD_ORDER[next]!;
 		this.refreshProviderOrder();
+		this.refreshToolGroupOrder();
 		this.requestRender();
 	}
 
@@ -808,7 +1068,8 @@ class UsagePanel {
 		const title = th.fg("accent", th.bold("Pi Usage"));
 		const tabs = this.renderViewTabs();
 		const periods = this.renderPeriodTabs(width);
-		return [title, "", periods, tabs, ""];
+		const dateRange = th.fg("dim", this.renderPeriodDateRange());
+		return [title, "", periods, tabs, dateRange, ""];
 	}
 
 	private renderViewTabs(): string {
@@ -828,6 +1089,11 @@ class UsagePanel {
 
 		const fallback = th.fg("accent", `‹${PERIOD_LABELS[this.period]}›`);
 		return pickFitting(width, [full, `${fallback}  ${th.fg("dim", "[Tab/←→]")}`, fallback]);
+	}
+
+	private renderPeriodDateRange(): string {
+		const [from, to] = dateRangeForPeriod(this.period, this.report);
+		return `From ${formatDate(from)} to ${formatDate(to)}`;
 	}
 
 	// ----- summary view -----------------------------------------------------
@@ -857,7 +1123,7 @@ class UsagePanel {
 		}
 
 		lines.push(th.bold("Sustainability"));
-		lines.push(th.fg("dim", "Estimated using impact-equivalences (illustrative ranges)."));
+		lines.push(th.fg("dim", "AI estimates are approximate inference ranges using impact-equivalences."));
 		lines.push("");
 		lines.push(...this.renderImpactBlock(width));
 		lines.push("");
@@ -921,7 +1187,7 @@ class UsagePanel {
 		const carbon = impact.carbon.kgCO2e;
 		const lines: string[] = [];
 
-		const profileNote = `${impact.profile.label} · grid ${impact.region.label}`;
+		const profileNote = `${impact.profile.label} · ${impact.region.label}`;
 		lines.push(`${indent}${th.fg("dim", profileNote)}`);
 
 		lines.push(
@@ -931,24 +1197,11 @@ class UsagePanel {
 			`${indent}${th.fg("dim", padTo("Carbon", 12, "right"))}  ${th.bold(formatRange(carbon.min, carbon.typical, carbon.max, "kg CO₂e"))}`,
 		);
 
-		const equivalents = impact.equivalents.slice(0, 3);
-		if (equivalents.length > 0) {
-			lines.push("");
-			lines.push(`${indent}${th.fg("dim", "Roughly equivalent to:")}`);
-			const bodyWidth = Math.max(20, width - indent.length - 4);
-			for (const phrase of equivalents) {
-				const wrapped = wrapTextWithAnsi(`• ${phrase}`, bodyWidth);
-				for (let i = 0; i < wrapped.length; i++) {
-					const prefix = i === 0 ? `${indent}  ` : `${indent}    `;
-					lines.push(`${prefix}${wrapped[i]}`);
-				}
-			}
-		}
-
-		if (impact.disclaimer) {
+		const equivalent = randomItem(impact.equivalents);
+		if (equivalent) {
 			lines.push("");
 			const wrapped = wrapTextWithAnsi(
-				th.fg("dim", impact.disclaimer),
+				th.fg("dim", `Roughly equivalent to ${equivalent}`),
 				Math.max(20, width - indent.length),
 			);
 			for (const part of wrapped) lines.push(`${indent}${part}`);
@@ -1047,6 +1300,96 @@ class UsagePanel {
 		return [th.fg("border", "─".repeat(layout.totalWidth)), row, ""];
 	}
 
+	// ----- tools view --------------------------------------------------------
+
+	private renderTools(layout: TableLayout): string[] {
+		const th = this.theme;
+		const slice = this.report[this.period];
+		const lines: string[] = [];
+		const columns = toolColumns();
+		const totalWidth = layout.nameWidth + columns.reduce((acc, col) => acc + col.width, 0);
+
+		lines.push(th.bold("Extensions / tools"));
+		lines.push(th.fg("dim", "Sorted by call count. Result tokens are estimated from tool output size."));
+		lines.push("");
+		lines.push(this.renderToolHeader(layout.nameWidth, columns));
+		lines.push(th.fg("border", "─".repeat(totalWidth)));
+
+		if (this.toolGroupOrder.length === 0) {
+			lines.push(th.fg("dim", "  No tool usage recorded for this period."));
+		} else {
+			for (let i = 0; i < this.toolGroupOrder.length; i++) {
+				const name = this.toolGroupOrder[i]!;
+				const group = slice.toolGroups.get(name)!;
+				const isSelected = i === this.cursor;
+				const isExpanded = this.expanded.has(name);
+				lines.push(this.renderToolGroupRow(name, group, layout.nameWidth, columns, isSelected, isExpanded));
+
+				if (isExpanded) {
+					const tools = Array.from(group.tools.entries()).sort(
+						(a, b) => b[1].calls - a[1].calls || b[1].resultTokens - a[1].resultTokens,
+					);
+					for (const [toolName, stats] of tools) {
+						lines.push(this.renderToolRow(toolName, stats, layout.nameWidth, columns));
+					}
+				}
+			}
+		}
+
+		lines.push(th.fg("border", "─".repeat(totalWidth)));
+		lines.push(this.renderToolTotalRow(slice, layout.nameWidth, columns));
+		lines.push("");
+		lines.push(...this.renderHelp(totalWidth));
+		return lines;
+	}
+
+	private renderToolHeader(nameWidth: number, columns: ToolColumn[]): string {
+		const th = this.theme;
+		let header = padTo("Extension / Tool", nameWidth);
+		for (const col of columns) header += th.fg("dim", padTo(col.label, col.width, "left"));
+		return th.fg("muted", header);
+	}
+
+	private renderToolGroupRow(
+		name: string,
+		stats: ToolGroupBucket,
+		nameWidth: number,
+		columns: ToolColumn[],
+		selected: boolean,
+		expanded: boolean,
+	): string {
+		const th = this.theme;
+		const arrow = expanded ? "▾" : "▸";
+		const prefix = selected ? th.fg("accent", `${arrow} `) : th.fg("dim", `${arrow} `);
+		const innerWidth = Math.max(nameWidth - 2, 0);
+		const display = innerWidth > 0 ? truncateToWidth(name, innerWidth) : "";
+		const styled = selected ? th.fg("accent", display) : display;
+		return prefix + padTo(styled, innerWidth) + columns.map((col) => padTo(col.value(stats), col.width, "left")).join("");
+	}
+
+	private renderToolRow(
+		name: string,
+		stats: ToolBucket,
+		nameWidth: number,
+		columns: ToolColumn[],
+	): string {
+		const th = this.theme;
+		const indent = "    ";
+		const innerWidth = Math.max(nameWidth - indent.length, 0);
+		const display = innerWidth > 0 ? truncateToWidth(name, innerWidth) : "";
+		return indent + padTo(th.fg("dim", display), innerWidth) + columns.map((col) => th.fg("dim", padTo(col.value(stats), col.width, "left"))).join("");
+	}
+
+	private renderToolTotalRow(slice: PeriodReport, nameWidth: number, columns: ToolColumn[]): string {
+		const total = emptyToolBucket();
+		for (const group of slice.toolGroups.values()) {
+			total.calls += group.calls;
+			total.resultTokens += group.resultTokens;
+			for (const sessionId of group.sessions) total.sessions.add(sessionId);
+		}
+		return padTo(this.theme.bold("Total"), nameWidth) + columns.map((col) => padTo(col.value(total), col.width, "left")).join("");
+	}
+
 	// ----- patterns view ----------------------------------------------------
 
 	private renderPatterns(width: number): string[] {
@@ -1086,14 +1429,14 @@ class UsagePanel {
 	private renderHelp(width: number): string[] {
 		const th = this.theme;
 		const variants =
-			this.view === "providers"
+			this.view === "providers" || this.view === "tools"
 				? [
-						"[Tab/←→] period · [↑↓] select · [Enter] expand · [v/1-3] view · [q] close",
+						"[Tab/←→] period · [↑↓] select · [Enter] expand · [v/1-4] view · [q] close",
 						"[Tab] period · [↑↓] · [Enter] · [v] view · [q]",
 						"[↑↓] · [Enter] · [q]",
 					]
 				: [
-						"[Tab/←→] period · [v/1-3] view · [q] close",
+						"[Tab/←→] period · [v/1-4] view · [q] close",
 						"[Tab] period · [v] view · [q]",
 						"[v] view · [q]",
 					];

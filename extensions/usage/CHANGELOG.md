@@ -1,5 +1,13 @@
 # pi-mono-usage
 
+## 0.1.1
+
+### Patch Changes
+
+- Add a Tools view grouped by currently registered extension ownership, with expandable per-tool breakdowns sorted by usage.
+- Replace Last Week with This Month and show the active period date range in the header.
+- Tighten sustainability copy, show a single random equivalence, and simplify the grid/profile label.
+
 ## 0.1.0
 
 ### Initial release

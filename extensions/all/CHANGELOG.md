@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.1
+
+### Patch Changes
+
+- Bundle `pi-mono-usage@0.1.1` with the updated Tools view and usage dashboard refinements.
+
 ## 1.2.0
 
 ### Minor Changes
