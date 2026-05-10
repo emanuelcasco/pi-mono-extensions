@@ -1,6 +1,8 @@
 # pi-mono-extensions
 
-This repo is a pnpm workspace monorepo. Each extension under `extensions/` can be installed individually, or install the root to load all extensions and bundled skills at once.
+`pi-mono-extensions` is a pnpm workspace that collects installable extensions for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent). Each package under `extensions/` adds a focused capability to pi: new tools, slash commands, TUI panels, workflow automation, security guards, design/product integrations, or bundled skills.
+
+You can install the full bundle with one command, or install only the extensions you need. This README is the top-level catalog; each extension section links to its own README for deeper usage, configuration, and development details.
 
 ## Table of Contents
 
@@ -32,17 +34,9 @@ Install all extensions and bundled skills at once:
 pi install npm:pi-mono-all
 ```
 
-Or install individual extensions by package name:
+Or install individual extensions by package name from the sections below.
 
-```bash
-pi install npm:pi-mono-btw
-pi install npm:pi-mono-team-mode
-pi install npm:pi-mono-figma
-pi install npm:pi-mono-linear
-pi install npm:pi-mono-web-search
-```
-
-Load temporarily for testing (without installing):
+Load an extension temporarily for local testing:
 
 ```bash
 pi -e /path/to/pi-extensions/extensions/btw/index.ts
@@ -52,9 +46,9 @@ pi -e /path/to/pi-extensions/extensions/btw/index.ts
 
 ### ask-user-question
 
-The `ask-user-question` extension registers an `ask_user_question` tool that lets the LLM ask structured questions using interactive TUI form controls — radio buttons, checkboxes, and multi-line text inputs — instead of free-form text.
-
 Full details: [extensions/ask-user-question/README.md](extensions/ask-user-question/README.md).
+
+Registers the `ask_user_question` tool so agents can ask structured questions with interactive TUI controls — radio buttons, checkboxes, and multi-line text inputs — instead of plain-text follow-up questions.
 
 #### Install
 
@@ -62,11 +56,28 @@ Full details: [extensions/ask-user-question/README.md](extensions/ask-user-quest
 pi install npm:pi-mono-ask-user-question
 ```
 
+#### Usage
+
+Use the `ask_user_question` tool when a task needs structured user input:
+
+```text
+ask_user_question
+- radio: choose one option
+- checkbox: choose many options
+- text: free-form input
+```
+
+Example prompts agents can satisfy with this tool:
+
+- “Ask me which implementation option to use.”
+- “Let me pick multiple files/features before continuing.”
+- “Collect a short free-form requirement before editing code.”
+
 ### auto-fix
 
-The `auto-fix` extension runs language-appropriate fixers (eslint, black, prettier, …) on every file written during a turn, flushing once on `agent_end`. Fixes are silent; a single summary notification reports how many files were actually updated.
-
 Full details: [extensions/auto-fix/README.md](extensions/auto-fix/README.md).
+
+Runs language-appropriate fixers such as eslint, prettier, and black on files written during a turn. Fixes are applied silently and summarized once at `agent_end`.
 
 #### Install
 
@@ -74,20 +85,32 @@ Full details: [extensions/auto-fix/README.md](extensions/auto-fix/README.md).
 pi install npm:pi-mono-auto-fix
 ```
 
-### btw
+#### Usage
 
-The `btw` extension adds Claude Code-style `/btw` behavior to pi for asking a quick side question while pi is busy with the main task.
+Install it and keep working normally. When the agent writes supported files, `auto-fix` queues and runs the matching fixer automatically.
+
+Examples:
+
+```text
+Ask pi to edit TypeScript, JavaScript, Python, or formatted text files.
+auto-fix applies available project fixers after writes.
+```
+
+#### Configuration
+
+See the extension README for supported fixer rules and configuration examples.
+
+### btw
 
 Full details: [extensions/btw/README.md](extensions/btw/README.md).
 
-#### What it does
+Adds Claude Code-style `/btw` behavior for asking a quick side question while pi is busy with the main task. Answers appear in a passive widget and are kept out of the visible transcript and future LLM context.
 
-- asks a one-off side question with `/btw <question>`
-- uses the active pi model and current session transcript as context
-- runs independently from the main agent loop, so it works while pi is still busy
-- shows the answer in a passive widget below the editor instead of interrupting the current UI
-- keeps the answer out of the visible transcript and out of future LLM context
-- persists the question/answer as hidden custom session metadata
+#### Install
+
+```bash
+pi install npm:pi-mono-btw
+```
 
 #### Usage
 
@@ -97,47 +120,19 @@ Full details: [extensions/btw/README.md](extensions/btw/README.md).
 /btw Summarize the current approach in one paragraph
 ```
 
+You can also press `Ctrl+Shift+B` to ask the current editor text as a side question.
+
 #### Behavior
 
-- If pi is idle, `/btw` asks the side question immediately.
-- If pi is busy, `/btw` still works because it makes a separate model call instead of waiting for the main agent turn to finish.
-- The result appears in a passive widget below the editor while the main agent keeps running.
-- Completed answers expire automatically after a short time.
-- `Ctrl+Shift+B` asks the current editor text as a side question.
-
-#### Notes
-
-- `/btw` is implemented by intercepting raw input that starts with `/btw`, not by registering a normal extension command.
-- This avoids pi's normal queued command behavior and makes it closer to Claude Code's side-question flow.
-- Hidden history is stored through `pi.appendEntry()` using custom session entries, so it does not affect future model context.
-
-#### Install
-
-```bash
-pi install npm:pi-mono-btw
-```
+- Works while pi is idle or busy.
+- Uses the active model and current session transcript as context.
+- Stores question/answer metadata as hidden session entries.
 
 ### clear
 
-The `clear` extension adds a `/clear` command that starts a fresh session, similar to the built-in `/new`.
-
 Full details: [extensions/clear/README.md](extensions/clear/README.md).
 
-#### Usage
-
-```text
-/clear
-```
-
-Or press `Ctrl+Shift+L` for the keyboard shortcut.
-
-#### Behavior
-
-- If the agent is busy, `/clear` waits for it to finish before switching sessions.
-- The keyboard shortcut sends `/clear` as a follow-up when pi is busy so the current turn can finish first.
-- Creates a brand new session via `ctx.newSession()`, same as `/new`.
-- Shows a warning if the new-session request is cancelled.
-- Shows an error notification if clearing fails.
+Adds a `/clear` command that starts a fresh session, similar to the built-in `/new` command.
 
 #### Install
 
@@ -145,11 +140,31 @@ Or press `Ctrl+Shift+L` for the keyboard shortcut.
 pi install npm:pi-mono-clear
 ```
 
+#### Usage
+
+```text
+/clear
+```
+
+Or press `Ctrl+Shift+L`.
+
+#### Behavior
+
+- If the agent is busy, `/clear` waits for it to finish before switching sessions.
+- Creates a new session via `ctx.newSession()`.
+- Shows a warning if the new-session request is cancelled and an error notification if clearing fails.
+
 ### context
 
-The `context` extension adds a Claude Code-style `/context` command that prints current context-window usage in the conversation without adding that report to future LLM context. It includes a grid, estimated category breakdown, extension allocation by source/package, session stats, and active tool/command sections.
-
 Full details: [extensions/context/README.md](extensions/context/README.md).
+
+Adds a Claude Code-style `/context` command that prints current context-window usage, estimated category breakdown, extension allocation, session stats, and active tool/command sections without adding the report to future LLM context.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-context
+```
 
 #### Usage
 
@@ -159,35 +174,11 @@ Full details: [extensions/context/README.md](extensions/context/README.md).
 
 The printed report is display-only and filtered from future LLM context.
 
-#### Install
-
-```bash
-pi install npm:pi-mono-context
-```
-
 ### context-guard
-
-The `context-guard` extension keeps pi sessions lean by intercepting tool calls before they execute.
 
 Full details: [extensions/context-guard/README.md](extensions/context-guard/README.md).
 
-#### What it does
-
-It applies three safeguards:
-
-- auto-injects a default `limit` of `120` on `read` calls that do not specify one
-- blocks duplicate `read` calls for unchanged files when the same path, `offset`, and `limit` are requested again
-- appends `| head -60` to unbounded `rg` usage inside `bash` commands
-
-#### Why it helps
-
-These guards reduce unnecessary token usage and make it less likely that long sessions waste context on repeated or unbounded output.
-
-#### Notes
-
-- the read dedup cache is session-scoped
-- dedup entries are invalidated when a file's mtime changes
-- the extension also listens for `context-guard:file-modified` so companion extensions can evict stale cache entries immediately after writes
+Keeps pi sessions lean by intercepting tool calls before they execute and reducing repeated or unbounded context-heavy output.
 
 #### Install
 
@@ -195,25 +186,53 @@ These guards reduce unnecessary token usage and make it less likely that long se
 pi install npm:pi-mono-context-guard
 ```
 
-### figma
+#### Usage
 
-The `figma` package registers native Figma tools for LLM-ready design context (`figma_find_nodes_by_name/text`, `figma_get_node_summary`, `figma_explain_node`, `figma_extract_text`, enriched `figma_get_implementation_context`, `figma_extract_assets`, Code Connect/component hint helpers, `figma_render_nodes`, and related helpers) and bundles a Figma skill for design-to-code workflows. Rendered/generated image files default to OS temp directories unless `outputDir` is explicitly provided. Raw JSON tools (`figma_get_file`, `figma_get_nodes`) remain available as debugging escape hatches.
+Install it and keep working normally. The extension automatically:
+
+- injects a default `limit` of `120` on `read` calls that omit a limit
+- blocks duplicate unchanged `read` calls with the same path, offset, and limit
+- appends `| head -60` to unbounded `rg` usage inside `bash` commands
+
+#### Notes
+
+The read dedup cache is session-scoped and invalidates when file mtimes change.
+
+### figma
 
 Full details: [extensions/figma/README.md](extensions/figma/README.md).
 
-#### Usage
+Registers native Figma tools for design context, node summaries, rendered screenshots, implementation guidance, text extraction, asset extraction, component hints, Code Connect lookup, and raw JSON debugging escape hatches. It also bundles a Figma skill for design-to-code workflows.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-figma
+```
+
+#### Authentication
+
+Auth is read from `FIGMA_TOKEN` or `~/.pi/agent/auth.json` at `.figma.token`.
+
+For masked token setup or update, use:
 
 ```text
 /figma-auth --force
 ```
 
-Typical tool workflows:
+Agents can also use the `figma_configure_auth` tool when authentication is missing, expired, invalid, or explicitly requested.
+
+#### Usage
+
+Explain a Figma node:
 
 ```text
 figma_parse_url
 figma_render_nodes
 figma_explain_node
 ```
+
+Implement a design:
 
 ```text
 figma_parse_url
@@ -222,45 +241,21 @@ figma_get_implementation_context
 figma_extract_assets
 ```
 
-#### Authentication
+Useful tools include:
 
-Auth is read from `FIGMA_TOKEN` or `~/.pi/agent/auth.json` at `.figma.token`. Use `/figma-auth --force` or `figma_configure_auth` for masked token setup/update.
+- `figma_get_design_context`
+- `figma_get_node_summary`
+- `figma_extract_text`
+- `figma_get_component_implementation_hints`
+- `figma_find_code_connect_mapping`
 
-#### Install
-
-```bash
-pi install npm:pi-mono-figma
-```
+Rendered/generated image files default to OS temp directories unless `outputDir` is explicitly provided.
 
 ### linear
 
-The `linear` package registers native Linear tools (`linear_workspace_metadata`, `linear_search_issues`, `linear_get_issue`, create/update/comment tools, and metadata helpers) and bundles a Linear workflow skill.
-
 Full details: [extensions/linear/README.md](extensions/linear/README.md).
 
-#### Usage
-
-```text
-/linear-auth --force
-```
-
-Typical tool workflows:
-
-```text
-linear_workspace_metadata
-linear_search_issues
-linear_get_issue
-```
-
-```text
-linear_get_issue
-linear_update_issue
-linear_create_comment
-```
-
-#### Authentication
-
-Auth is read from `LINEAR_API_KEY` or `~/.pi/agent/auth.json` at `.linear.key`. Use `/linear-auth --force` or `linear_configure_auth` for masked key setup/update.
+Registers native Linear tools for workspace metadata, issue search, issue details, create/update/comment operations, projects, cycles, labels, users, documents, and file uploads. It also bundles a Linear workflow skill.
 
 #### Install
 
@@ -268,13 +263,54 @@ Auth is read from `LINEAR_API_KEY` or `~/.pi/agent/auth.json` at `.linear.key`. 
 pi install npm:pi-mono-linear
 ```
 
+#### Authentication
+
+Auth is read from `LINEAR_API_KEY` or `~/.pi/agent/auth.json` at `.linear.key`.
+
+For masked key setup or update, use:
+
+```text
+/linear-auth --force
+```
+
+Agents can also use the `linear_configure_auth` tool when authentication is missing, expired, invalid, or explicitly requested.
+
+#### Usage
+
+Find and inspect issues:
+
+```text
+linear_workspace_metadata
+linear_search_issues
+linear_get_issue
+```
+
+Update or comment on an issue:
+
+```text
+linear_get_issue
+linear_update_issue
+linear_create_comment
+```
+
+Upload a file to an issue comment:
+
+```text
+linear_get_issue
+linear_upload_file_to_issue_comment
+```
+
 ### loop
 
-The `loop` extension adds a `/loop` command that runs a prompt or slash command on a recurring interval.
-
-Adapted from the [`/loop` skill in claude-code](https://github.com/emanuelcasco/claude-code/blob/main/src/skills/bundled/loop.ts). The original relied on Claude Code's Kairos cron system; this version uses JS timers and `pi.sendUserMessage()` instead.
-
 Full details: [extensions/loop/README.md](extensions/loop/README.md).
+
+Adds a `/loop` command that runs a prompt or slash command immediately and then repeats it on a recurring interval.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-loop
+```
 
 #### Usage
 
@@ -285,9 +321,7 @@ Full details: [extensions/loop/README.md](extensions/loop/README.md).
 /loop stop <id>
 ```
 
-Intervals use a number followed by a unit suffix: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Defaults to `10m` when no interval is given.
-
-#### Examples
+Examples:
 
 ```text
 /loop 5m /review
@@ -302,31 +336,17 @@ Intervals use a number followed by a unit suffix: `s` (seconds), `m` (minutes), 
 
 #### Behavior
 
-- The prompt is executed immediately on the first invocation, then repeated at the given interval.
-- If the agent is busy when a timer fires, the next prompt is queued as a follow-up rather than interrupting the current turn.
+- Supports `s`, `m`, `h`, and `d` interval suffixes.
+- Defaults to `10m` when no interval is given.
 - Minimum interval is 10 seconds.
 - Loops auto-expire after 7 days.
-- All timers are cleaned up on session shutdown.
-
-#### Interval parsing
-
-Arguments are parsed using this priority order:
-
-1. **Leading token** — if the first word matches `\d+[smhd]` it is the interval (e.g. `5m /review`)
-2. **Trailing "every" clause** — if the input ends with `every <N><unit>`, that is the interval (e.g. `check the deploy every 20m`)
-3. **Default** — no interval found; uses `10m` and the full input is the prompt
-
-#### Install
-
-```bash
-pi install npm:pi-mono-loop
-```
+- If the agent is busy when a timer fires, the prompt is queued as a follow-up.
 
 ### multi-edit
 
-The `multi-edit` extension replaces the built-in `edit` tool with a version that supports batch edits across multiple files and Codex-style patch payloads, all validated against a virtual filesystem before any real changes are written. Modes: single (classic `oldText → newText`), multi (batch array), and patch (unified-diff style).
-
 Full details: [extensions/multi-edit/README.md](extensions/multi-edit/README.md).
+
+Replaces the built-in `edit` tool with an enhanced version that supports classic single edits, batch edits across multiple files, and Codex-style patch payloads, all validated against a virtual filesystem before real writes occur.
 
 #### Install
 
@@ -334,11 +354,49 @@ Full details: [extensions/multi-edit/README.md](extensions/multi-edit/README.md)
 pi install npm:pi-mono-multi-edit
 ```
 
+#### Usage
+
+Classic edit:
+
+```text
+edit(path, oldText, newText)
+```
+
+Batch edit:
+
+```text
+edit(multi: [
+  { path, oldText, newText },
+  { path, oldText, newText }
+])
+```
+
+Patch edit:
+
+```text
+edit(patch: "*** Begin Patch ... *** End Patch")
+```
+
+#### Features
+
+- preflight validation
+- atomic multi-file rollback
+- same-file positional ordering
+- quote-normalized matching for classic edits
+- redundant edit detection
+- diff generation
+
 ### review
 
-The `review` extension adds both `/review` and `/review-tui`.
-
 Full details: [extensions/review/README.md](extensions/review/README.md).
+
+Adds `/review` and `/review-tui` for reviewing GitHub pull requests or GitLab merge requests and submitting selected comments through an interactive review UI.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-review
+```
 
 #### Usage
 
@@ -350,26 +408,17 @@ Full details: [extensions/review/README.md](extensions/review/README.md).
 
 #### Behavior
 
-- `/review <url>` detects GitHub vs GitLab from the URL
-- fetches the diff under the hood with the appropriate CLI
-- runs the review with the active pi model using a scoped `report_finding` tool when supported, with JSON fallback
-- prints a compact P0–P3 findings summary in the terminal
-- stores the review for `/review-tui`
-- `/review-tui` opens the saved review in a side pane
-- lets you approve, dismiss, or edit each titled finding/comment
-- submits approved comments directly to GitHub or GitLab based on the saved review URL
-
-#### Install
-
-```bash
-pi install npm:pi-mono-review
-```
+- Detects GitHub vs GitLab from the URL.
+- Fetches the diff using the appropriate CLI.
+- Runs review with a scoped `report_finding` tool when supported, with JSON fallback.
+- Prints a compact P0–P3 findings summary.
+- Stores the review for `/review-tui`, where findings can be approved, dismissed, edited, and submitted.
 
 ### sentinel
 
-The `sentinel` extension adds content-aware security guards that intercept tool calls before they execute. It pre-scans files being read for secret patterns (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, PEM keys, high-entropy strings, etc.), tracks files written during the session to block or confirm later indirect execution via `bash`, and provides a local token vault so LLMs can use stored credentials via `$TOKEN_name` placeholders without seeing secret values.
-
 Full details: [extensions/sentinel/README.md](extensions/sentinel/README.md).
+
+Adds content-aware security guards that pre-scan reads for secret patterns, track write/execute correlation, gate risky bash/write/edit operations, and provide a local token vault for `$TOKEN_name` placeholders without exposing secret values to the LLM.
 
 #### Install
 
@@ -377,11 +426,27 @@ Full details: [extensions/sentinel/README.md](extensions/sentinel/README.md).
 pi install npm:pi-mono-sentinel
 ```
 
+#### Usage
+
+Install it and keep working normally. `sentinel` automatically guards supported tool calls.
+
+Examples of guarded behavior:
+
+- blocks or warns on reads that appear to contain secrets
+- asks for confirmation before indirectly executing newly written files
+- lets agents reference stored credentials by placeholder rather than raw secret value
+
 ### simplify
 
-The `simplify` extension adds a `/simplify` command that reviews all git-changed files for code reuse, quality, and efficiency — then fixes any issues found.
-
 Full details: [extensions/simplify/README.md](extensions/simplify/README.md).
+
+Adds a `/simplify` command that reviews git-changed files for code reuse, quality, and efficiency, then fixes any issues found.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-simplify
+```
 
 #### Usage
 
@@ -390,17 +455,7 @@ Full details: [extensions/simplify/README.md](extensions/simplify/README.md).
 /simplify <additional focus>
 ```
 
-#### Behavior
-
-- Runs `git diff` (or `git diff HEAD` for staged changes) to identify what changed
-- Launches three sub-agents **in parallel**, each receiving the full diff:
-  - **Code Reuse** — flags duplicated logic and inline patterns that should use existing utilities
-  - **Code Quality** — detects redundant state, copy-paste blocks, leaky abstractions, stringly-typed code, and unnecessary comments
-  - **Efficiency** — catches N+1s, missed concurrency, hot-path bloat, memory leaks, and overly broad data fetches
-- Aggregates findings, applies fixes directly, and summarizes what changed
-- Passing extra text after `/simplify` appends an **Additional Focus** section to steer all three agents
-
-#### Examples
+Examples:
 
 ```text
 /simplify
@@ -408,17 +463,18 @@ Full details: [extensions/simplify/README.md](extensions/simplify/README.md).
 /simplify pay extra attention to React re-renders
 ```
 
-#### Install
+#### Behavior
 
-```bash
-pi install npm:pi-mono-simplify
-```
+- Runs `git diff` or `git diff HEAD` to identify changed files.
+- Launches parallel review agents for code reuse, code quality, and efficiency.
+- Aggregates findings, applies fixes directly, and summarizes changes.
+- Appends any extra text after `/simplify` as additional review focus.
 
 ### status-line
 
-The `status-line` extension adds a configurable footer with two modes: `basic` (default two-line layout with token stats) and `expert` (rich footer with visual context gauge, enhanced git status, session cost, and subscription usage indicators for Claude Max, Codex, Copilot, and Gemini). Mode is resolved from `PI_STATUS_LINE_MODE`, then `~/.pi/agent/status-line.json`, then defaults to `basic`.
-
 Full details: [extensions/status-line/README.md](extensions/status-line/README.md).
+
+Adds a configurable footer with `basic` and `expert` modes. Basic mode shows a compact two-line layout with token stats; expert mode adds a visual context gauge, enhanced git status, session cost, and subscription usage indicators.
 
 #### Install
 
@@ -426,13 +482,27 @@ Full details: [extensions/status-line/README.md](extensions/status-line/README.m
 pi install npm:pi-mono-status-line
 ```
 
+#### Usage
+
+Install it and start pi normally. Configure the mode with `PI_STATUS_LINE_MODE` or `~/.pi/agent/status-line.json`.
+
+Examples:
+
+```bash
+PI_STATUS_LINE_MODE=expert pi
+```
+
+```json
+{
+  "mode": "basic"
+}
+```
+
 ### team-mode
 
-The `team-mode` extension adds flat peer-agent orchestration: named, addressable workers spawned as isolated pi subprocesses with resumable context, mirroring Claude Code's team-mate model.
-
-A coordinator (the parent LLM session, or human) spawns workers via the `agent` tool, receives `<task-notification>` push messages when they complete, and continues them via `send_message` with full prior context. Workers are event-driven — no polling, no persistent leader subprocess. A shared TODO board with CAS version counters coordinates multi-step DAGs.
-
 Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
+
+Adds flat peer-agent orchestration: named, addressable workers spawned as isolated pi subprocesses with resumable context, task notifications, continuation via `send_message`, and a shared TODO board with CAS version counters.
 
 #### Install
 
@@ -440,17 +510,37 @@ Full details: [extensions/team-mode/README.md](extensions/team-mode/README.md).
 pi install npm:pi-mono-team-mode
 ```
 
+#### Usage
+
+Agents can spawn and coordinate teammates with tools such as:
+
+```text
+agent
+send_message
+task_create
+task_update
+task_list
+```
+
+Typical workflow:
+
+```text
+agent(description: "Research API", name: "api-researcher", prompt: "...")
+# wait for <task-notification>
+send_message(to: "api-researcher", message: "Follow up with ...")
+```
+
+#### Extra
+
+- Supports isolated worktrees for worker edits.
+- Supports teammate role specs from `.pi/teammates/` or `.claude/teammates/`.
+- Supports delegate groups and live progress.
+
 ### usage
 
-The `usage` extension adds a `/usage` command that aggregates local pi session files and renders an inline dashboard with three views:
-
-- **Summary** — totals, top providers (with horizontal bars), and an environmental footprint estimate (kWh, kg CO₂e, real-world equivalences) computed from [`impact-equivalences`](https://www.npmjs.com/package/impact-equivalences).
-- **Providers** — per-provider table that expands into per-model rows on `Enter`.
-- **Patterns** — cost-driver insights for the selected period (parallel sessions, oversized contexts, large uncached prompts, marathon sessions, top-session concentration).
-
-`Tab`/arrows cycle the period (Today / This Week / Last Week / All Time). `v` or `1`/`2`/`3` switch view. `q`/`Esc` close the panel.
-
 Full details: [extensions/usage/README.md](extensions/usage/README.md).
+
+Adds a `/usage` command that aggregates local pi session files and renders an inline dashboard for usage, cost drivers, provider/model breakdowns, and environmental footprint estimates.
 
 #### Install
 
@@ -458,19 +548,59 @@ Full details: [extensions/usage/README.md](extensions/usage/README.md).
 pi install npm:pi-mono-usage
 ```
 
-### web-search
+#### Usage
 
-The `web-search` extension registers native `web_search` and `web_read` tools for online research. Search uses DuckDuckGo result pages, and page reading fetches a URL and extracts readable article text with Mozilla Readability plus a lightweight HTML fallback.
+```text
+/usage
+```
+
+Inside the dashboard:
+
+- `Tab` or arrows cycle the period: Today, This Week, Last Week, All Time.
+- `v` or `1`/`2`/`3` switch views.
+- `q` or `Esc` closes the panel.
+
+#### Views
+
+- **Summary** — totals, top providers, and footprint estimate.
+- **Providers** — per-provider table with expandable per-model rows.
+- **Patterns** — cost-driver insights.
+
+### web-search
 
 Full details: [extensions/web-search/README.md](extensions/web-search/README.md).
 
-#### Tools
-
-- `web_search` — search the web and return titles, URLs, and snippets.
-- `web_read` — fetch a page URL and return cleaned readable content.
+Registers native `web_search` and `web_read` tools for online research. Search uses DuckDuckGo result pages, and page reading extracts readable article text with Mozilla Readability plus a lightweight HTML fallback.
 
 #### Install
 
 ```bash
 pi install npm:pi-mono-web-search
 ```
+
+#### Usage
+
+Search the web:
+
+```text
+web_search(query: "pi coding agent extensions", maxResults: 5)
+```
+
+Read a result or known URL:
+
+```text
+web_read(url: "https://example.com/article")
+```
+
+Typical workflow:
+
+```text
+web_search
+web_read
+summarize or cite findings
+```
+
+#### Tools
+
+- `web_search` — returns titles, URLs, and snippets.
+- `web_read` — fetches a URL and returns cleaned readable content.
