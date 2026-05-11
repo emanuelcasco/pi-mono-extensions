@@ -157,7 +157,7 @@ export function registerLinearTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "linear_create_issue",
 		label: "Linear Create Issue",
-		description: "Create a Linear issue. Use linear_workspace_metadata first if team/state/user/project IDs are unknown.",
+		description: "Create a Linear issue. Accepts a team UUID or team key; keys are resolved before calling Linear. Use linear_workspace_metadata first if team/state/user/project IDs are unknown.",
 		parameters: LinearCreateIssueParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const result = await withLinearAuth(ctx, () => client.createIssue({

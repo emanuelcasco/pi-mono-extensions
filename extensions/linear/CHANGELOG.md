@@ -1,5 +1,12 @@
 # pi-mono-linear
 
+## 0.2.3
+
+### Patch Changes
+
+- Update Project GraphQL selections to use `teams` instead of removed `team` fields.
+- Resolve `linear_create_issue` team keys to UUIDs before calling the Linear mutation and return clearer errors for unknown keys.
+
 ## 0.2.2
 
 ### Patch Changes

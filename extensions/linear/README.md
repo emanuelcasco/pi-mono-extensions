@@ -129,6 +129,7 @@ Linear API keys are sent in the `Authorization` header as the raw key value; do 
 ## Usage tips
 
 - Use `linear_workspace_metadata` first when team/project/state/label/user IDs are unknown.
+- `linear_create_issue` accepts either a team UUID or a team key; keys are resolved to UUIDs before the Linear mutation.
 - Use `linear_search_issues` for keyword lookup.
 - Use `linear_get_issue` before updating an issue or creating a comment.
 - Use `linear_list_issues` for filtered issue lists by team, assignee, status, and limit.

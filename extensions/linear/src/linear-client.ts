@@ -68,6 +68,18 @@ interface FileUploadMutationResponse {
 	};
 }
 
+interface LinearTeamNode {
+	id: string;
+	name?: string;
+	key?: string;
+}
+
+interface ListTeamsResponse {
+	teams?: {
+		nodes?: LinearTeamNode[];
+	};
+}
+
 export interface UploadedFileResult {
 	filename: string;
 	contentType: string;
@@ -134,8 +146,9 @@ export class LinearClient {
 		return this.cached(`myIssues:${limit}`, () => this.graphql(queries.LIST_MY_ISSUES, { first: limit }));
 	}
 
-	createIssue(input: CreateIssueInput): Promise<unknown> {
-		return this.graphql(queries.CREATE_ISSUE, { input: compact(input) });
+	async createIssue(input: CreateIssueInput): Promise<unknown> {
+		const teamId = await this.resolveTeamId(input.teamId);
+		return this.graphql(queries.CREATE_ISSUE, { input: compact({ ...input, teamId }) });
 	}
 
 	updateIssue(issueId: string, input: UpdateIssueInput): Promise<unknown> {
@@ -227,6 +240,24 @@ export class LinearClient {
 		return this.cached(`document:${documentId}`, () => this.graphql(queries.GET_DOCUMENT, { id: documentId }));
 	}
 
+	private async resolveTeamId(teamIdOrKey: string): Promise<string> {
+		const value = teamIdOrKey.trim();
+		if (!value) throw new ApiError("teamId is required", 400, undefined, "Linear");
+		if (isUuid(value)) return value;
+
+		const teams = await this.cached("teams", () => this.graphql<ListTeamsResponse>(queries.LIST_TEAMS));
+		const nodes = teams.teams?.nodes ?? [];
+		const match = nodes.find((team) => team.key?.toLowerCase() === value.toLowerCase());
+		if (match?.id) return match.id;
+
+		throw new ApiError(
+			`teamId must be a Linear team UUID or a known team key; "${value}" did not match any team key`,
+			400,
+			{ providedTeamId: value, availableTeamKeys: nodes.map((team) => team.key).filter(Boolean) },
+			"Linear",
+		);
+	}
+
 	private async graphql<T = unknown>(query: string, variables: Variables = {}): Promise<T> {
 		return this.limiter.schedule(async () => {
 			const response = await this.http.post<GraphQlResponse<T>>("", { query, variables });
@@ -244,6 +275,10 @@ export class LinearClient {
 
 export function readLinearToken(): Promise<string> {
 	return readAuthToken({ envName: "LINEAR_API_KEY", authPath: ["linear", "key"] });
+}
+
+function isUuid(value: string): boolean {
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function buildIssueFilter(options: ListIssuesOptions): Variables {

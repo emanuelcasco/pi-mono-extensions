@@ -5,7 +5,7 @@ export const MaxResponseCharsSchema = Type.Optional(
 );
 
 export const LimitSchema = Type.Optional(Type.Number({ description: "Maximum number of records to fetch", minimum: 1, maximum: 250 }));
-export const TeamIdSchema = Type.String({ description: "Linear team UUID or key where accepted by Linear" });
+export const TeamIdSchema = Type.String({ description: "Linear team UUID or key (keys are resolved to UUIDs for issue creation)" });
 export const IssueIdSchema = Type.String({ description: "Linear issue UUID or identifier such as ENG-123" });
 export const UserIdSchema = Type.String({ description: "Linear user UUID" });
 export const ProjectIdSchema = Type.String({ description: "Linear project UUID" });

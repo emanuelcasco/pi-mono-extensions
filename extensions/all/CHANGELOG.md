@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.3
+
+### Patch Changes
+
+- Bundle `pi-mono-linear@0.2.3` with Linear schema drift fixes and team-key resolution for issue creation.
+
 ## 1.2.2
 
 ### Patch Changes

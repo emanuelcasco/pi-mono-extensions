@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-linear",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Pi extension and skill for Linear GraphQL tools",
   "type": "module",
   "keywords": [

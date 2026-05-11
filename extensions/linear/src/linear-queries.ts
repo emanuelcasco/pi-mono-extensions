@@ -51,9 +51,9 @@ export const UPDATE_ISSUE = `mutation($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success issue { id identifier title priority state { id name } } }
 }`;
 
-export const LIST_PROJECTS = `query { projects { nodes { id name description state team { id name key } } } }`;
+export const LIST_PROJECTS = `query { projects { nodes { id name description state teams { nodes { id name key } } } } }`;
 export const LIST_TEAM_PROJECTS = `query($id: String!) { team(id: $id) { id name projects { nodes { id name description state } } } }`;
-export const GET_PROJECT = `query($id: String!) { project(id: $id) { id name description state url team { id name key } lead { id name } } }`;
+export const GET_PROJECT = `query($id: String!) { project(id: $id) { id name description state url teams { nodes { id name key } } lead { id name } } }`;
 
 export const LIST_STATUSES = `query { workflowStates { nodes { id name type color position team { id name key } } } }`;
 export const LIST_TEAM_STATUSES = `query($id: String!) { team(id: $id) { id name states { nodes { id name type color position } } } }`;
@@ -94,7 +94,7 @@ export const GET_DOCUMENT = `query($id: String!) { document(id: $id) { id title 
 
 export const WORKSPACE_METADATA = `query {
   teams { nodes { id name key } }
-  projects { nodes { id name description state team { id name } } }
+  projects { nodes { id name description state teams { nodes { id name key } } } }
   workflowStates { nodes { id name type color position team { id name key } } }
   issueLabels { nodes { id name color team { id name key } } }
   users { nodes { id name email displayName } }
