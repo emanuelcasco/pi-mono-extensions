@@ -20,6 +20,7 @@ import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
+import { blockToolCall, emitDangerous } from "../events.js";
 import type { SentinelSession } from "../session.js";
 import type { DangerousPattern, WriteEntry } from "../types.js";
 
@@ -221,6 +222,14 @@ export function registerExecutionTracker(
 				continue;
 			}
 
+			emitDangerous(pi, {
+				feature: "executionTracker",
+				toolName: "bash",
+				input: event.input,
+				description: "Bash command executes a session-written file with dangerous content.",
+				labels: currentPatterns,
+			});
+
 			// Dangerous content confirmed — escalate
 			const message = [
 				`About to execute a file written earlier in this session:`,
@@ -239,12 +248,10 @@ export function registerExecutionTracker(
 			}
 
 			// No UI or user denied — block
-			return {
-				block: true,
-				reason:
-					`[sentinel] Blocked: bash executes ${scriptPath}, written this session ` +
-					`with dangerous patterns: ${currentPatterns.join(", ")}.`,
-			};
+			const reason =
+				`[sentinel] Blocked: bash executes ${scriptPath}, written this session ` +
+				`with dangerous patterns: ${currentPatterns.join(", ")}.`;
+			return blockToolCall(pi, { feature: "executionTracker", toolName: "bash", input: event.input, reason, userDenied: ctx.hasUI });
 		}
 	});
 }

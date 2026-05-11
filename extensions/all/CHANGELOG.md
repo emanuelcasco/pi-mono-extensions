@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.2
+
+### Patch Changes
+
+- Bundle `pi-mono-sentinel@1.11.0` with guardrails hardening, path-access grants, event emission, and internal simplifications.
+
 ## 1.2.1
 
 ### Patch Changes

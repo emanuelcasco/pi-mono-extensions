@@ -118,6 +118,10 @@ describe("classifyBashCommand", () => {
 		assert.ok(matched.includes("remote-pipe-exec"));
 	});
 
+	test("does NOT flag dangerous words inside quoted strings", () => {
+		assert.deepEqual(classifyBashCommand('echo "sudo rm -rf /Library"'), []);
+	});
+
 	test("does NOT flag safe commands", () => {
 		assert.deepEqual(classifyBashCommand("echo hello"), []);
 		assert.deepEqual(classifyBashCommand("ls -la"), []);

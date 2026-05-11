@@ -9,6 +9,63 @@ It addresses cross-cutting security gaps that pure command-based guardrails miss
 - **Out-of-scope operations** — a raw `bash` command performs a system-level action (sudo, `curl | bash`, `brew install`, `rm -rf /Library/...`) or a `write`/`edit` targets a file outside the project root (shell config, system directory)
 - **Credential safety** — the LLM never hardcodes API keys or secrets in tool calls
 
+## Configuration
+
+Sentinel reads and merges optional JSON config from three scopes:
+
+1. Global: `$PI_CODING_AGENT_DIR/extensions/sentinel.json` or `~/.pi/agent/extensions/sentinel.json`
+2. Local/project: `.pi/extensions/sentinel.json` under the current working directory
+3. Memory: session-only grants written internally while Pi is running
+
+Merge priority is `memory > local > global > defaults`.
+
+```json
+{
+  "enabled": true,
+  "features": {
+    "outputScanner": true,
+    "executionTracker": true,
+    "permissionGate": true,
+    "pathAccess": false
+  },
+  "pathAccess": {
+    "mode": "ask",
+    "allowedPaths": []
+  },
+  "permissionGate": {
+    "requireConfirmation": true,
+    "allowedPatterns": [],
+    "autoDenyPatterns": []
+  },
+  "outputScanner": {
+    "readAllowedPaths": []
+  }
+}
+```
+
+All fields are optional. Path access is available but disabled by default to avoid surprising existing users.
+
+### Path access grants
+
+When `features.pathAccess` is enabled, Sentinel checks `read`, `write`, `edit`, and path-like `bash` arguments that point outside `ctx.cwd`.
+
+Modes:
+
+- `allow` — no outside-project restrictions
+- `ask` — prompt to allow once, allow file/directory for the session, allow file/directory always, or deny
+- `block` — block outside-project paths unless they match `pathAccess.allowedPaths`
+
+Allowed directory grants use a trailing slash, e.g. `/tmp/shared/`; exact file grants omit it.
+
+### Events
+
+Sentinel emits best-effort extension events for other extensions:
+
+- `sentinel:dangerous` when a guard detects risky content or behavior
+- `sentinel:blocked` when a guard blocks a tool call
+
+Payloads include `feature`, `toolName`, `input`, and either `description`/`labels` or `reason`/`userDenied`.
+
 ## Guards
 
 ### 1. output-scanner — secret detection on read
@@ -40,6 +97,8 @@ If the target file was modified after the tracked write, it is re-read and re-sc
 ### 3. permission-gate — proactive bash / write / edit gate
 
 Where `execution-tracker` only fires for _session-written_ scripts, `permission-gate` intercepts every `bash` command and every `write` / `edit` and matches them against a fixed set of risk classes. It runs in addition to the other two guards.
+
+Bash analysis uses Sentinel's small internal shell parser for quotes, redirects, pipelines, and command boundaries, with regex fallbacks when parsing fails.
 
 **Bash risk classes**
 

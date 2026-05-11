@@ -1,4 +1,5 @@
 import type { ScanResult, WriteEntry } from "./types.js";
+import { configLoader } from "./config.js";
 import {
 	loadReadWhitelist,
 	loadWhitelist,
@@ -85,11 +86,15 @@ export class SentinelSession {
 	}
 
 	isReadWhitelisted(absolutePath: string): boolean {
-		return this.readWhitelist.has(absolutePath);
+		return (
+			this.readWhitelist.has(absolutePath) ||
+			configLoader.getConfig().outputScanner.readAllowedPaths.includes(absolutePath)
+		);
 	}
 
 	addToReadWhitelist(absolutePath: string): void {
 		this.readWhitelist.add(absolutePath);
 		saveReadWhitelist(this.readWhitelist);
+		configLoader.addReadAllowedPath("local", absolutePath);
 	}
 }

@@ -19,6 +19,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
+import { configLoader } from "../config.js";
+import { blockToolCall, emitDangerous } from "../events.js";
 import type { SentinelSession } from "../session.js";
 import {
 	BASH_RISK_DESCRIPTIONS,
@@ -39,8 +41,25 @@ function registerBashGate(pi: ExtensionAPI): void {
 		const command = event.input.command ?? "";
 		if (!command) return;
 
+		const config = configLoader.getConfig();
+		if (config.permissionGate.allowedPatterns.some((pattern) => command.includes(pattern))) return;
+		for (const pattern of config.permissionGate.autoDenyPatterns) {
+			if (command.includes(pattern)) {
+				const reason = `[sentinel] Blocked bash command by auto-deny pattern: ${pattern}`;
+				return blockToolCall(pi, { feature: "permissionGate", toolName: "bash", input: event.input, reason });
+			}
+		}
+
 		const risks = classifyBashCommand(command);
 		if (risks.length === 0) return;
+
+		emitDangerous(pi, {
+			feature: "permissionGate",
+			toolName: "bash",
+			input: event.input,
+			description: `Bash command matched permission-gate risk classes: ${risks.join(", ")}`,
+			labels: risks,
+		});
 
 		const labelLines = risks.map(
 			(risk) => `  - ${risk}: ${BASH_RISK_DESCRIPTIONS[risk]}`,
@@ -55,20 +74,25 @@ function registerBashGate(pi: ExtensionAPI): void {
 			"Allow execution?",
 		].join("\n");
 
+		if (!config.permissionGate.requireConfirmation) {
+			ctx.ui.notify(`Dangerous command detected: ${risks.join(", ")}`, "warning");
+			return;
+		}
+
+		let userDenied = false;
 		if (ctx.hasUI) {
 			const allowed = await ctx.ui.confirm(
 				"[sentinel] Permission gate — bash",
 				message,
 			);
 			if (allowed) return;
+			userDenied = true;
 		}
 
-		return {
-			block: true,
-			reason:
-				`[sentinel] Blocked bash command (${risks.join(", ")}). ` +
-				`Command: ${command}`,
-		};
+		const reason =
+			`[sentinel] Blocked bash command (${risks.join(", ")}). ` +
+			`Command: ${command}`;
+		return blockToolCall(pi, { feature: "permissionGate", toolName: "bash", input: event.input, reason, userDenied });
 	});
 }
 
@@ -124,18 +148,12 @@ function registerPathGate(pi: ExtensionAPI, session: SentinelSession): void {
 			}
 
 			// choice === "Deny" or undefined (user cancelled)
-			return {
-				block: true,
-				reason:
-					`[sentinel] Blocked ${toolName} to ${PATH_CATEGORY_DESCRIPTIONS[category]}: ${absolute}`,
-			};
+			const reason = `[sentinel] Blocked ${toolName} to ${PATH_CATEGORY_DESCRIPTIONS[category]}: ${absolute}`;
+			return blockToolCall(pi, { feature: "permissionGate", toolName, input: { path: rawPath }, reason, userDenied: true });
 		}
 
-		return {
-			block: true,
-			reason:
-				`[sentinel] Blocked ${toolName} to ${PATH_CATEGORY_DESCRIPTIONS[category]}: ${absolute}`,
-		};
+		const reason = `[sentinel] Blocked ${toolName} to ${PATH_CATEGORY_DESCRIPTIONS[category]}: ${absolute}`;
+		return blockToolCall(pi, { feature: "permissionGate", toolName, input: { path: rawPath }, reason });
 	};
 
 	pi.on("tool_call", async (event, ctx) => {

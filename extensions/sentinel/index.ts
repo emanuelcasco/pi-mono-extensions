@@ -20,24 +20,40 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { configLoader } from "./config.js";
 import { SentinelSession } from "./session.js";
 import { registerOutputScanner } from "./guards/output-scanner.js";
 import { registerExecutionTracker } from "./guards/execution-tracker.js";
+import { registerPathAccess } from "./guards/path-access.js";
 import { registerPermissionGate } from "./guards/permission-gate.js";
 
 export default function (pi: ExtensionAPI): void {
+	configLoader.load(process.cwd());
+	const config = configLoader.getConfig();
+	if (!config.enabled) return;
+
 	const session = new SentinelSession();
 
 	pi.on("session_start", async () => {
 		session.reset();
 	});
 
+	if (config.features.pathAccess) {
+		registerPathAccess(pi);
+	}
+
 	// Gap 2: scan file content before reads
-	registerOutputScanner(pi, session);
+	if (config.features.outputScanner) {
+		registerOutputScanner(pi, session);
+	}
 
 	// Gap 3: track writes + correlate with bash execution
-	registerExecutionTracker(pi, session);
+	if (config.features.executionTracker) {
+		registerExecutionTracker(pi, session);
+	}
 
 	// Gap 4: proactive permission gate for bash + out-of-scope writes
-	registerPermissionGate(pi, session);
+	if (config.features.permissionGate) {
+		registerPermissionGate(pi, session);
+	}
 }

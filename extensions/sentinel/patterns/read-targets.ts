@@ -7,6 +7,8 @@
 import { readdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
+const MAX_EXPANDED_PATHS = 100;
+
 /**
  * Strip quoted substrings so they don't confuse the tokenizer.
  */
@@ -97,7 +99,7 @@ export async function expandPaths(
 		if (matches.length === 0) {
 			return [absolutePath];
 		}
-		return matches.map((f) => join(dir, f));
+		return matches.slice(0, MAX_EXPANDED_PATHS).map((f) => join(dir, f));
 	} catch {
 		return [absolutePath];
 	}

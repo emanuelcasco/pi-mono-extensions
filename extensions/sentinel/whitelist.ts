@@ -7,21 +7,11 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
-const WHITELIST_FILENAME = "sentinel-whitelist.json";
-const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+import { getAgentDir } from "./config.js";
 
-function getAgentDir(): string {
-	const envDir = process.env[AGENT_DIR_ENV];
-	if (envDir) {
-		if (envDir === "~") return homedir();
-		if (envDir.startsWith("~/")) return join(homedir(), envDir.slice(2));
-		return envDir;
-	}
-	return join(homedir(), ".pi", "agent");
-}
+const WHITELIST_FILENAME = "sentinel-whitelist.json";
 
 function getWhitelistPath(): string {
 	return join(getAgentDir(), WHITELIST_FILENAME);

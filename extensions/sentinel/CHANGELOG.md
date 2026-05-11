@@ -1,5 +1,20 @@
 # pi-mono-sentinel
 
+## 1.11.0
+
+### Minor Changes
+
+### Enhanced: guardrails hardening
+
+- Added merged Sentinel configuration scopes: global (`~/.pi/agent/extensions/sentinel.json`), local (`.pi/extensions/sentinel.json`), and session memory.
+- Added optional path-access guard with allow/ask/block modes and file/directory grant persistence.
+- Added `sentinel:dangerous` and `sentinel:blocked` event emission from guards.
+- Added internal shell-aware bash command analysis with fallback matching.
+
+### Maintenance
+
+- Simplified Sentinel config persistence, path-access grants, event emission, and shell traversal internals without changing guard behavior.
+
 ## 1.10.2
 
 ### Patch Changes

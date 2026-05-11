@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
+import { blockToolCall, emitDangerous } from "../events.js";
 import type { SentinelSession } from "../session.js";
 import type { ScanMatch } from "../types.js";
 import {
@@ -34,14 +35,31 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Format scan matches into a human-readable confirmation message. */
+const MAX_CONFIRM_MATCHES = 5;
+const MAX_BASH_SCAN_TARGETS = 100;
+
+function summarizeMatchOverflow(total: number, shown: number): string[] {
+	const hidden = total - shown;
+	return hidden > 0 ? [`  ... and ${hidden} more potential secret(s) not shown`] : [];
+}
+
+function formatCompactLabels(matches: ScanMatch[]): string {
+	const unique = [...new Set(matches.map((m) => m.label))];
+	const shown = unique.slice(0, MAX_CONFIRM_MATCHES);
+	const hidden = unique.length - shown.length;
+	return hidden > 0 ? `${shown.join(", ")}, and ${hidden} more type(s)` : shown.join(", ");
+}
+
+/** Format scan matches into a compact human-readable confirmation message. */
 function formatConfirmMessage(matches: ScanMatch[]): string {
-	const lines = matches.map(
+	const shown = matches.slice(0, MAX_CONFIRM_MATCHES);
+	const lines = shown.map(
 		(m) => `  - ${m.label} (line ${m.line}): ${m.snippet}`,
 	);
 	return [
-		"File may contain secrets:",
+		`File may contain ${matches.length} potential secret(s):`,
 		...lines,
+		...summarizeMatchOverflow(matches.length, shown.length),
 		"",
 		"Allow this read?",
 	].join("\n");
@@ -121,6 +139,14 @@ export function registerOutputScanner(
 		const matches = await scanFile(absolutePath, session);
 		if (matches.length === 0) return;
 
+		emitDangerous(pi, {
+			feature: "outputScanner",
+			toolName: "read",
+			input: event.input,
+			description: `File contains ${matches.length} potential secret(s).`,
+			labels: matches.map((m) => m.label),
+		});
+
 		// Secrets found — escalate
 		if (ctx.hasUI) {
 			const choice = await ctx.ui.select(
@@ -141,13 +167,10 @@ export function registerOutputScanner(
 		}
 
 		// No UI or user denied — block
-		return {
-			block: true,
-			reason:
-				`[sentinel] Blocked: file contains ${matches.length} potential secret(s). ` +
-				matches.map((m) => m.label).join(", ") +
-				".",
-		};
+		const reason =
+			`[sentinel] Blocked: file contains ${matches.length} potential secret(s). ` +
+			`Types: ${formatCompactLabels(matches)}.`;
+		return blockToolCall(pi, { feature: "outputScanner", toolName: "read", input: event.input, reason, userDenied: ctx.hasUI });
 	});
 
 	// -----------------------------------------------------------------------
@@ -160,34 +183,48 @@ export function registerOutputScanner(
 		const targets = extractReadTargets(command);
 		if (targets.length === 0) return;
 
-		// Scan all targeted files (with glob expansion)
-		const allMatches: Array<{
-			path: string;
-			absolutePath: string;
-			matches: ScanMatch[];
-		}> = [];
-		for (const target of targets) {
-			const absolutePaths = await expandPaths(ctx.cwd, target);
-			for (const absolutePath of absolutePaths) {
-				if (session.isReadWhitelisted(absolutePath)) continue;
 
-				const matches = await scanFile(absolutePath, session);
-				if (matches.length > 0) {
-					allMatches.push({ path: target, absolutePath, matches });
-				}
-			}
-		}
+		const expandedTargets = (await Promise.all(
+			targets.map(async (target) =>
+				(await expandPaths(ctx.cwd, target)).map((absolutePath) => ({ target, absolutePath })),
+			),
+		)).flat().slice(0, MAX_BASH_SCAN_TARGETS);
+
+		const scanResults = await Promise.all(
+			expandedTargets
+				.filter(({ absolutePath }) => !session.isReadWhitelisted(absolutePath))
+				.map(async ({ target, absolutePath }) => ({
+					path: target,
+					absolutePath,
+					matches: await scanFile(absolutePath, session),
+				})),
+		);
+		const allMatches = scanResults.filter((entry) => entry.matches.length > 0);
 
 		if (allMatches.length === 0) return;
 
-		// Build a combined confirmation message
-		const message = allMatches
-			.flatMap(({ path, matches }) =>
-				matches.map(
-					(m) => `  - ${m.label} in ${path} (line ${m.line}): ${m.snippet}`,
-				),
-			)
-			.join("\n");
+		emitDangerous(pi, {
+			feature: "outputScanner",
+			toolName: "bash",
+			input: event.input,
+			description: "Bash command reads file(s) that may contain secrets.",
+			labels: allMatches.flatMap((entry) => entry.matches.map((m) => m.label)),
+		});
+
+		// Build a compact combined confirmation message. Large .env files can
+		// contain dozens of matches, so show only a small sample to avoid breaking
+		// the confirmation view.
+		const flattenedMatches = allMatches.flatMap(({ path, matches }) =>
+			matches.map((match) => ({ path, match })),
+		);
+		const shownMatches = flattenedMatches.slice(0, MAX_CONFIRM_MATCHES);
+		const message = [
+			...shownMatches.map(
+				({ path, match }) =>
+					`  - ${match.label} in ${path} (line ${match.line}): ${match.snippet}`,
+			),
+			...summarizeMatchOverflow(flattenedMatches.length, shownMatches.length),
+		].join("\n");
 
 		if (ctx.hasUI) {
 			const choice = await ctx.ui.select(
@@ -209,15 +246,9 @@ export function registerOutputScanner(
 			}
 		}
 
-		const totalMatches = allMatches.reduce(
-			(sum, entry) => sum + entry.matches.length,
-			0,
-		);
-		return {
-			block: true,
-			reason:
-				`[sentinel] Blocked: bash command reads file(s) with ${totalMatches} potential secret(s).`,
-		};
+		const totalMatches = flattenedMatches.length;
+		const reason = `[sentinel] Blocked: bash command reads file(s) with ${totalMatches} potential secret(s).`;
+		return blockToolCall(pi, { feature: "outputScanner", toolName: "bash", input: event.input, reason, userDenied: ctx.hasUI });
 	});
 
 	// -----------------------------------------------------------------------
