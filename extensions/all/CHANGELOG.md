@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.4
+
+### Patch Changes
+
+- Bundle `pi-mono-sentinel@1.12.0` with project-scoped config stored under the Pi agent directory instead of the current working directory.
+
 ## 1.2.3
 
 ### Patch Changes

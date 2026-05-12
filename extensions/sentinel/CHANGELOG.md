@@ -1,5 +1,11 @@
 # pi-mono-sentinel
 
+## 1.12.0
+
+### Changed
+
+- Store project-scoped Sentinel config under the Pi agent directory (`~/.pi/agent/extensions/sentinel/projects/`) instead of creating `.pi/extensions/sentinel.json` in the current working directory. Existing cwd-local config files are still read for compatibility.
+
 ## 1.11.0
 
 ### Minor Changes

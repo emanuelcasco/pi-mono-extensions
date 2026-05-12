@@ -44,7 +44,10 @@ describe("path-access helpers", () => {
 	});
 
 	test("derives and persists selected path-access grants with the correct scope and target", () => {
+		const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const agentDir = mkdtempSync(join(tmpdir(), "sentinel-path-access-agent-"));
 		const cwd = mkdtempSync(join(tmpdir(), "sentinel-path-access-cwd-"));
+		process.env.PI_CODING_AGENT_DIR = agentDir;
 		try {
 			configLoader.load(cwd);
 			configLoader.save("memory", { features: { pathAccess: true }, pathAccess: { mode: "ask", allowedPaths: [] } });
@@ -69,6 +72,9 @@ describe("path-access helpers", () => {
 			configLoader.addAllowedPath(localFileGrant.scope, localFileGrant.grant);
 			assert.ok(configLoader.getRawConfig("local")?.pathAccess?.allowedPaths?.includes("/tmp/outside-file.txt"));
 		} finally {
+			if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+			rmSync(agentDir, { recursive: true, force: true });
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});

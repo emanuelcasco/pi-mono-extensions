@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 
 import { SentinelConfigLoader } from "../config.ts";
@@ -39,7 +39,7 @@ describe("SentinelConfigLoader", () => {
 		mkdirSync(join(agentDir, "extensions"), { recursive: true });
 		writeFileSync(loader.getConfigPath("global"), JSON.stringify({ pathAccess: { allowedPaths: ["/global"] } }), { flag: "w" });
 		loader.load(cwd);
-		mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+		mkdirSync(dirname(loader.getConfigPath("local")), { recursive: true });
 		writeFileSync(loader.getConfigPath("local"), JSON.stringify({ features: { pathAccess: true }, pathAccess: { allowedPaths: ["/local"] } }), { flag: "w" });
 		loader.load(cwd);
 		loader.save("memory", { pathAccess: { mode: "block", allowedPaths: ["/memory"] } });
@@ -49,12 +49,26 @@ describe("SentinelConfigLoader", () => {
 		assert.deepEqual(config.pathAccess.allowedPaths, ["/memory"]);
 	});
 
-	test("save writes global and local config files", () => {
+	test("save writes global and cwd-scoped local config files under the agent dir", () => {
 		const loader = new SentinelConfigLoader();
 		loader.load(cwd);
 		loader.save("global", { enabled: false });
 		loader.save("local", { features: { pathAccess: true } });
 		assert.deepEqual(loader.getRawConfig("global"), { enabled: false });
 		assert.deepEqual(loader.getRawConfig("local"), { features: { pathAccess: true } });
+		assert.equal(loader.getConfigPath("local").startsWith(join(agentDir, "extensions", "sentinel", "projects")), true);
+		assert.equal(existsSync(join(cwd, ".pi", "extensions", "sentinel.json")), false);
+	});
+
+	test("reads legacy cwd-local config without writing back to cwd", () => {
+		const loader = new SentinelConfigLoader();
+		mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "extensions", "sentinel.json"), JSON.stringify({ features: { pathAccess: true } }), { flag: "w" });
+
+		loader.load(cwd);
+		assert.equal(loader.getConfig().features.pathAccess, true);
+
+		loader.save("local", { pathAccess: { allowedPaths: ["/outside"] } });
+		assert.equal(existsSync(loader.getConfigPath("local")), true);
 	});
 });

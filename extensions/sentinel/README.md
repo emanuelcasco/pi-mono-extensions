@@ -14,10 +14,12 @@ It addresses cross-cutting security gaps that pure command-based guardrails miss
 Sentinel reads and merges optional JSON config from three scopes:
 
 1. Global: `$PI_CODING_AGENT_DIR/extensions/sentinel.json` or `~/.pi/agent/extensions/sentinel.json`
-2. Local/project: `.pi/extensions/sentinel.json` under the current working directory
+2. Local/project: a current-working-directory scoped file under `$PI_CODING_AGENT_DIR/extensions/sentinel/projects/` or `~/.pi/agent/extensions/sentinel/projects/`
 3. Memory: session-only grants written internally while Pi is running
 
 Merge priority is `memory > local > global > defaults`.
+
+Local/project config is stored in Pi's agent directory instead of the user's working directory, so Sentinel does not create `.pi/` files in arbitrary project folders. Existing legacy `.pi/extensions/sentinel.json` files are still read for compatibility, but new local/project writes go to the agent directory.
 
 ```json
 {

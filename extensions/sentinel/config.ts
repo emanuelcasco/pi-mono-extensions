@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export type SentinelConfigScope = "global" | "local" | "memory";
 export type SentinelPathAccessMode = "allow" | "ask" | "block";
@@ -92,6 +93,20 @@ function writeJson(path: string, value: SentinelConfig): void {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
 }
 
+function localScopeId(cwd: string): string {
+	const normalizedCwd = resolve(cwd);
+	const slug = (basename(normalizedCwd) || "root")
+		.replace(/[^a-zA-Z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 48) || "root";
+	const hash = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 12);
+	return `${slug}-${hash}.json`;
+}
+
+function legacyLocalConfigPath(cwd: string): string {
+	return join(resolve(cwd), ".pi", "extensions", "sentinel.json");
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -127,7 +142,11 @@ export class SentinelConfigLoader {
 	load(cwd = process.cwd()): void {
 		this.localCwd = cwd;
 		this.globalConfig = readJson(this.getConfigPath("global"));
-		this.localConfig = readJson(this.getConfigPath("local"));
+		const legacyLocalConfig = readJson(legacyLocalConfigPath(this.localCwd));
+		const scopedLocalConfig = readJson(this.getConfigPath("local"));
+		this.localConfig = legacyLocalConfig && scopedLocalConfig
+			? mergeConfig(legacyLocalConfig, scopedLocalConfig)
+			: scopedLocalConfig ?? legacyLocalConfig;
 		this.resolvedConfig = undefined;
 	}
 
@@ -152,7 +171,7 @@ export class SentinelConfigLoader {
 	getConfigPath(scope: Exclude<SentinelConfigScope, "memory">): string {
 		return scope === "global"
 			? join(getAgentDir(), "extensions", "sentinel.json")
-			: join(this.localCwd, ".pi", "extensions", "sentinel.json");
+			: join(getAgentDir(), "extensions", "sentinel", "projects", localScopeId(this.localCwd));
 	}
 
 	save(scope: SentinelConfigScope, partial: SentinelConfig): void {
