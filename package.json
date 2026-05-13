@@ -33,5 +33,17 @@
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
     "@types/node": "^25.6.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "basic-ftp@<=5.2.1": ">=5.2.2",
+      "basic-ftp@=5.2.0": ">=5.2.1",
+      "basic-ftp@<=5.2.2": ">=5.3.0",
+      "protobufjs@<7.5.5": ">=7.5.5",
+      "@protobufjs/utf8@<=1.1.0": ">=1.1.1",
+      "protobufjs@<=7.5.5": ">=7.5.6",
+      "basic-ftp@<=5.3.0": ">=5.3.1",
+      "ip-address@<=10.1.0": ">=10.1.1"
+    }
   }
 }
