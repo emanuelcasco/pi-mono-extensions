@@ -255,7 +255,7 @@ Rendered/generated image files default to OS temp directories unless `outputDir`
 
 Full details: [extensions/linear/README.md](extensions/linear/README.md).
 
-Registers native Linear tools for workspace metadata, issue search, issue details, create/update/comment operations, projects, cycles, labels, users, documents, and file uploads. It also bundles a Linear workflow skill.
+Registers native Linear tools for workspace metadata, issue search, issue details, create/update/comment operations, projects, cycles, labels, users, documents, file uploads, and Markdown description image reading for issue screenshots. It also bundles a Linear workflow skill.
 
 #### Install
 
@@ -277,7 +277,7 @@ Agents can also use the `linear_configure_auth` tool when authentication is miss
 
 #### Usage
 
-Find and inspect issues:
+Find and inspect issues, including Markdown screenshots in issue descriptions when the active model supports image input:
 
 ```text
 linear_workspace_metadata

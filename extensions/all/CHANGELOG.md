@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.5
+
+### Patch Changes
+
+- Bundle `pi-mono-linear@0.2.4` with automatic Markdown description image reading for `linear_get_issue` on vision-capable models.
+
 ## 1.2.4
 
 ### Patch Changes

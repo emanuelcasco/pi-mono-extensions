@@ -15,7 +15,13 @@ export const OptionalTeamParams = Type.Object({ teamId: Type.Optional(TeamIdSche
 export const IdParams = Type.Object({ id: Type.String({ description: "Linear object ID" }), maxResponseChars: MaxResponseCharsSchema });
 
 export const LinearGetTeamParams = Type.Object({ teamId: TeamIdSchema, maxResponseChars: MaxResponseCharsSchema });
-export const LinearGetIssueParams = Type.Object({ issueId: IssueIdSchema, maxResponseChars: MaxResponseCharsSchema });
+export const LinearGetIssueParams = Type.Object({
+	issueId: IssueIdSchema,
+	readDescriptionImages: Type.Optional(Type.Boolean({ description: "Read Markdown images embedded in the issue description when the active model supports image input. Defaults to true." })),
+	maxDescriptionImages: Type.Optional(Type.Number({ description: "Maximum number of description images to read. Defaults to 10.", minimum: 1, maximum: 50 })),
+	maxImageBytes: Type.Optional(Type.Number({ description: "Maximum bytes per description image before download is stopped. Defaults to 10 MiB.", minimum: 1 })),
+	maxResponseChars: MaxResponseCharsSchema,
+});
 export const LinearGetProjectParams = Type.Object({ projectId: ProjectIdSchema, maxResponseChars: MaxResponseCharsSchema });
 export const LinearGetUserParams = Type.Object({ userId: UserIdSchema, maxResponseChars: MaxResponseCharsSchema });
 export const LinearGetDocumentParams = Type.Object({ documentId: Type.String({ description: "Linear document UUID" }), maxResponseChars: MaxResponseCharsSchema });

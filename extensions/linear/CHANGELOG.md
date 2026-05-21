@@ -1,5 +1,11 @@
 # pi-mono-linear
 
+## 0.2.4
+
+### Patch Changes
+
+- Added automatic Markdown description image reading to `linear_get_issue` for vision-capable models. Private `uploads.linear.app` images are streamed in memory with Linear auth and attached as native image blocks; text-only models skip downloads with a clear note.
+
 ## 0.2.3
 
 ### Patch Changes

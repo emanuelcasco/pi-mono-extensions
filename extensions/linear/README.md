@@ -132,10 +132,27 @@ Linear API keys are sent in the `Authorization` header as the raw key value; do 
 - `linear_create_issue` accepts either a team UUID or a team key; keys are resolved to UUIDs before the Linear mutation.
 - Use `linear_search_issues` for keyword lookup.
 - Use `linear_get_issue` before updating an issue or creating a comment.
+- `linear_get_issue` automatically parses Markdown images embedded in the issue description. When the active model supports image input, private `uploads.linear.app` images are downloaded in memory with Linear auth and attached to the tool result; images are not written to disk.
+- If the active model does not support image input, `linear_get_issue` does not download images and returns a clear skipped-images note plus image metadata.
 - Use `linear_list_issues` for filtered issue lists by team, assignee, status, and limit.
 - Use `linear_upload_file` to upload a local image, video, or generic file and return a Linear asset URL.
 - Use `linear_upload_file_to_issue_comment` after `linear_get_issue` to upload a local file and post a Markdown comment. Images are rendered with image Markdown; other files use links.
 - File upload tool results return sanitized metadata and the stable Linear asset URL. They do not return local file bytes, signed upload URLs, or upload headers.
+
+## Issue description images
+
+Linear issue screenshots embedded in descriptions are stored as Markdown image links, for example:
+
+```md
+![Screenshot](https://uploads.linear.app/...)
+```
+
+These are part of the issue description Markdown, not GraphQL attachment objects. `linear_get_issue` reads them automatically when possible:
+
+- Vision-capable model: images are streamed into memory, base64-encoded, and returned as native image blocks alongside the Markdown description.
+- Text-only model: image downloads are skipped to avoid unnecessary network and payload work; the response includes a note explaining that a vision-capable model is required.
+- No files are saved locally by default.
+- The default safety limits are 10 description images and 10 MiB per image.
 
 ## Troubleshooting
 

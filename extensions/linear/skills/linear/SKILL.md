@@ -27,6 +27,8 @@ If auth is missing, invalid, or expired, do **not** ask the user to paste the ke
 - Use `linear_workspace_metadata` first when team/project/state/label/user IDs are unknown.
 - Use `linear_search_issues` for keyword lookup.
 - Use `linear_get_issue` before updating or commenting.
+- Use `linear_get_issue` to inspect Linear issues; Markdown images embedded in the issue description are automatically included when the active model supports image input.
+- If `linear_get_issue` reports description images were skipped because the current model does not support images, ask the user to switch to a vision-capable model before interpreting screenshots.
 - Use `linear_list_issues` for filtered issue lists by team, assignee, status, or limit.
 - Use `linear_create_issue` to create issues once the team ID is known.
 - Use `linear_update_issue` to change title, description, priority, state, or assignee.
@@ -75,6 +77,14 @@ If auth is missing, invalid, or expired, do **not** ask the user to paste the ke
 
 - `linear_upload_file`
 - `linear_upload_file_to_issue_comment`
+
+## Issue Description Images
+
+- Linear issue screenshots embedded in descriptions are Markdown images, not necessarily GraphQL attachment objects.
+- `linear_get_issue` parses description Markdown image links like `![Screenshot](https://uploads.linear.app/...)`.
+- When the active model supports image input, `linear_get_issue` downloads private Linear image URLs in memory with Linear auth and attaches native image blocks to the result.
+- When the active model is text-only, image downloads are skipped and the tool returns a note plus image metadata.
+- Description images are not written to disk by default.
 
 ## File Upload Notes
 

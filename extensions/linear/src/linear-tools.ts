@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerAuthConfigurator, runWithAuthRetry, type AuthConfiguratorOptions } from "pi-common/auth-config";
 import { jsonToolResult } from "pi-common/tool-result";
-import { LinearClient, type UploadedFileResult } from "./linear-client.js";
+import { LinearClient, type DownloadedIssueImageResult, type UploadedFileResult } from "./linear-client.js";
+import { extractMarkdownImages, type MarkdownImageReference } from "./linear-markdown-images.js";
 import {
 	EmptyParams,
 	LinearCommentsParams,
@@ -22,6 +23,30 @@ import {
 	LinearUploadFileToIssueCommentParams,
 	OptionalTeamParams,
 } from "./linear-schemas.js";
+
+type LinearToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+interface DescriptionImageManifestEntry {
+	index: number;
+	source: "description";
+	altText: string;
+	url: string;
+	line: number;
+	contextSnippet: string;
+	status: "downloaded" | "skipped";
+	mimeType?: string;
+	size?: number;
+	filename?: string;
+	reason?: string;
+}
+
+interface LinearIssueNodeLike {
+	id?: string;
+	identifier?: string;
+	title?: string;
+	url?: string;
+	description?: string | null;
+}
 
 const LINEAR_AUTH: AuthConfiguratorOptions = {
 	service: "linear",
@@ -55,6 +80,139 @@ function buildFileCommentBody(upload: UploadedFileResult, commentBody?: string, 
 
 function escapeMarkdownAltText(value: string): string {
 	return value.replaceAll("[", "\\[").replaceAll("]", "\\]");
+}
+
+function getIssueNode(result: unknown): LinearIssueNodeLike | undefined {
+	if (!result || typeof result !== "object") return undefined;
+	const issue = (result as { issue?: unknown }).issue;
+	if (!issue || typeof issue !== "object") return undefined;
+	return issue as LinearIssueNodeLike;
+}
+
+function modelSupportsImages(ctx: ExtensionContext): boolean {
+	return ctx.model?.input?.includes("image") ?? false;
+}
+
+function buildSkippedManifestEntry(reference: MarkdownImageReference, reason: string): DescriptionImageManifestEntry {
+	return {
+		index: reference.index,
+		source: reference.source,
+		altText: reference.altText,
+		url: reference.url,
+		line: reference.line,
+		contextSnippet: reference.contextSnippet,
+		status: "skipped",
+		reason,
+	};
+}
+
+function buildDownloadedManifestEntry(image: DownloadedIssueImageResult): DescriptionImageManifestEntry {
+	return {
+		index: image.reference.index,
+		source: image.reference.source,
+		altText: image.reference.altText,
+		url: image.reference.url,
+		line: image.reference.line,
+		contextSnippet: image.reference.contextSnippet,
+		status: "downloaded",
+		mimeType: image.mimeType,
+		size: image.size,
+		filename: image.filename,
+	};
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function appendImageReadingMetadata(result: unknown, imageReading: unknown): unknown {
+	if (!result || typeof result !== "object" || Array.isArray(result)) return { result, imageReading };
+	return { ...(result as Record<string, unknown>), imageReading };
+}
+
+function issueLabel(issue: LinearIssueNodeLike | undefined): string {
+	if (!issue) return "Linear issue";
+	return [issue.identifier, issue.title].filter(Boolean).join(" — ") || issue.id || "Linear issue";
+}
+
+function imageNote(reference: MarkdownImageReference, image: DownloadedIssueImageResult): string {
+	return [
+		`[Description image ${reference.index}: alt=${JSON.stringify(reference.altText || "image")}, line=${reference.line}, mimeType=${image.mimeType}, size=${image.size} bytes]`,
+		"Markdown context:",
+		reference.contextSnippet,
+	].join("\n");
+}
+
+async function buildIssueResultWithDescriptionImages(options: {
+	client: LinearClient;
+	result: unknown;
+	ctx: ExtensionContext;
+	readDescriptionImages?: boolean;
+	maxDescriptionImages?: number;
+	maxImageBytes?: number;
+	maxResponseChars?: number;
+	signal?: AbortSignal;
+}): Promise<{ content: LinearToolContent[]; details: Record<string, unknown> }> {
+	const issue = getIssueNode(options.result);
+	const description = issue?.description ?? "";
+	const references = typeof description === "string" ? extractMarkdownImages(description, { source: "description" }) : [];
+	const shouldReadImages = options.readDescriptionImages ?? true;
+	if (!references.length || !shouldReadImages) {
+		return jsonToolResult(options.result, { maxChars: options.maxResponseChars });
+	}
+
+	const maxImages = options.maxDescriptionImages ?? 10;
+	const selected = references.slice(0, maxImages);
+	const overflow = references.slice(maxImages);
+	const supportsImages = modelSupportsImages(options.ctx);
+	const manifest: DescriptionImageManifestEntry[] = [];
+	const imageContents: LinearToolContent[] = [];
+
+	if (!supportsImages) {
+		manifest.push(...references.map((reference) => buildSkippedManifestEntry(reference, "model_does_not_support_images")));
+		const note = `Description images detected but not downloaded because the current model does not support image input. Switch to a vision-capable model to inspect them.`;
+		const data = appendImageReadingMetadata(options.result, {
+			modelSupportsImages: false,
+			descriptionImagesFound: references.length,
+			descriptionImages: manifest,
+			note,
+		});
+		const base = jsonToolResult(data, { maxChars: options.maxResponseChars });
+		return {
+			content: [...base.content, { type: "text", text: `\n[${note}]` }],
+			details: { ...base.details, imageReading: { issue: issue ? { id: issue.id, identifier: issue.identifier, title: issue.title, url: issue.url } : undefined, descriptionImages: manifest } },
+		};
+	}
+
+	for (const reference of selected) {
+		try {
+			const image = await options.client.downloadIssueImage({ reference, maxBytes: options.maxImageBytes, signal: options.signal });
+			manifest.push(buildDownloadedManifestEntry(image));
+			imageContents.push({ type: "text", text: imageNote(reference, image) }, { type: "image", mimeType: image.mimeType, data: image.data });
+		} catch (error) {
+			manifest.push(buildSkippedManifestEntry(reference, errorMessage(error)));
+			imageContents.push({ type: "text", text: `[Description image ${reference.index} skipped: ${errorMessage(error)}]` });
+		}
+	}
+	for (const reference of overflow) {
+		manifest.push(buildSkippedManifestEntry(reference, `maxDescriptionImages limit (${maxImages}) reached`));
+	}
+
+	const data = appendImageReadingMetadata(options.result, {
+		modelSupportsImages: true,
+		descriptionImagesFound: references.length,
+		descriptionImagesRead: manifest.filter((entry) => entry.status === "downloaded").length,
+		descriptionImages: manifest,
+	});
+	const base = jsonToolResult(data, { maxChars: options.maxResponseChars });
+	const preamble: LinearToolContent = {
+		type: "text",
+		text: `\nRead ${manifest.filter((entry) => entry.status === "downloaded").length} of ${references.length} Markdown description image(s) for ${issueLabel(issue)}. Images are attached below in description order.`,
+	};
+	return {
+		content: [...base.content, preamble, ...imageContents],
+		details: { ...base.details, imageReading: { issue: issue ? { id: issue.id, identifier: issue.identifier, title: issue.title, url: issue.url } : undefined, descriptionImages: manifest } },
+	};
 }
 
 export function registerLinearTools(pi: ExtensionAPI): void {
@@ -127,10 +285,24 @@ export function registerLinearTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "linear_get_issue",
 		label: "Linear Get Issue",
-		description: "Get full Linear issue details by UUID or identifier like ENG-123.",
+		description: "Get full Linear issue details by UUID or identifier like ENG-123. Markdown images embedded in the issue description are read and attached when the active model supports image input.",
+		promptGuidelines: [
+			"Use linear_get_issue to inspect Linear issues; if the issue description contains Markdown images and the active model supports image input, the images are downloaded in memory and attached to the tool result.",
+			"When linear_get_issue reports description images were skipped because the model does not support images, ask the user to switch to a vision-capable model before interpreting screenshots.",
+		],
 		parameters: LinearGetIssueParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return jsonToolResult(await withLinearAuth(ctx, () => client.getIssue(params.issueId)), { maxChars: params.maxResponseChars });
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const result = await withLinearAuth(ctx, () => client.getIssue(params.issueId));
+			return buildIssueResultWithDescriptionImages({
+				client,
+				result,
+				ctx,
+				readDescriptionImages: params.readDescriptionImages,
+				maxDescriptionImages: params.maxDescriptionImages,
+				maxImageBytes: params.maxImageBytes,
+				maxResponseChars: params.maxResponseChars,
+				signal,
+			});
 		},
 	});
 
