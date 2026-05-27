@@ -18,9 +18,11 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { existsSync, statSync } from "node:fs";
 
 import { configLoader } from "../config.js";
 import { blockToolCall, emitDangerous } from "../events.js";
+import { directoryGrantFor, toStoragePath } from "../path-access.js";
 import type { SentinelSession } from "../session.js";
 import {
 	BASH_RISK_DESCRIPTIONS,
@@ -100,6 +102,43 @@ function registerBashGate(pi: ExtensionAPI): void {
 // Write / edit gating
 // ---------------------------------------------------------------------------
 
+type PathGateChoice = "allow_once" | "allow_session" | "allow_always" | "deny";
+
+function pathGateChoices(absolutePath: string, toolName: "write" | "edit"): Array<{ value: PathGateChoice; label: string; directoryGrant: boolean }> {
+	let isDirectory = false;
+	try {
+		isDirectory = existsSync(absolutePath) && statSync(absolutePath).isDirectory();
+	} catch {
+		isDirectory = false;
+	}
+	const isNewFile = toolName === "write" && !existsSync(absolutePath);
+
+	if (isNewFile) {
+		return [
+			{ value: "allow_once", label: "Allow once", directoryGrant: false },
+			{ value: "allow_session", label: "Allow creating files in this folder for this session", directoryGrant: true },
+			{ value: "allow_always", label: "Always allow creating files in this folder", directoryGrant: true },
+			{ value: "deny", label: "Deny", directoryGrant: false },
+		];
+	}
+
+	if (isDirectory) {
+		return [
+			{ value: "allow_once", label: "Allow once", directoryGrant: false },
+			{ value: "allow_session", label: "Allow this folder for this session", directoryGrant: true },
+			{ value: "allow_always", label: "Always allow this folder", directoryGrant: true },
+			{ value: "deny", label: "Deny", directoryGrant: false },
+		];
+	}
+
+	return [
+		{ value: "allow_once", label: "Allow once", directoryGrant: false },
+		{ value: "allow_session", label: "Allow this file for this session", directoryGrant: false },
+		{ value: "allow_always", label: "Always allow this file", directoryGrant: false },
+		{ value: "deny", label: "Deny", directoryGrant: false },
+	];
+}
+
 function registerPathGate(pi: ExtensionAPI, session: SentinelSession): void {
 	const handler = async (
 		rawPath: string | undefined,
@@ -132,18 +171,18 @@ function registerPathGate(pi: ExtensionAPI, session: SentinelSession): void {
 		].join("\n");
 
 		if (ctx.hasUI) {
-			const choice = await ctx.ui.select(title, [
-				"Allow once",
-				"Always allow this path",
-				"Deny",
-			]);
+			const choices = pathGateChoices(absolute, toolName);
+			const selectedLabel = await ctx.ui.select(title, choices.map((choice) => choice.label));
+			const choice = choices.find((item) => item.label === selectedLabel);
 
-			if (choice === "Allow once") {
+			if (choice?.value === "allow_once") {
 				return;
 			}
 
-			if (choice === "Always allow this path") {
-				session.addToWhitelist(absolute);
+			if (choice?.value === "allow_session" || choice?.value === "allow_always") {
+				const grant = choice.directoryGrant ? directoryGrantFor(absolute) : toStoragePath(absolute);
+				if (choice.value === "allow_session") session.addToSessionWhitelist(grant);
+				else session.addToWhitelist(grant);
 				return;
 			}
 

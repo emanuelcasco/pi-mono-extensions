@@ -33,6 +33,24 @@ export function pathAccessGrantForChoice(choice: string, absolutePath: string, c
 	};
 }
 
+export function pathAccessGrantsForChoice(choice: string, absolutePaths: readonly string[], cwd: string): Array<{ grant: string; broadCheckPath: string; scope: "memory" | "local"; directory: boolean }> {
+	if (absolutePaths.length === 0) return [];
+	const match = /^allow_(file|directory|files)_(session|always)$/.exec(choice);
+	if (!match) return [];
+
+	if (match[1] === "files") {
+		return absolutePaths.map((absolutePath) => ({
+			grant: toStoragePath(absolutePath),
+			broadCheckPath: absolutePath,
+			scope: match[2] === "always" ? "local" : "memory",
+			directory: false,
+		}));
+	}
+
+	const grant = pathAccessGrantForChoice(choice, absolutePaths[0], cwd);
+	return grant ? [grant] : [];
+}
+
 export function isTooBroadGrant(absolutePath: string): boolean {
 	const normalized = normalize(absolutePath).replace(/[\\/]+$/, "");
 	return normalized === "/" || normalized === homedir();

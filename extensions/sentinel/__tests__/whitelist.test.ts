@@ -50,6 +50,17 @@ describe("SentinelSession whitelist", () => {
 		assert.equal(session.isWhitelisted("/persisted/path"), true);
 	});
 
+	test("session directory grants are recursive and reset-scoped", () => {
+		const session = new SentinelSession();
+		session.addToSessionWhitelist("/tmp/sentinel-session-dir/");
+		assert.equal(session.isWhitelisted("/tmp/sentinel-session-dir/file.md"), true);
+		assert.equal(session.isWhitelisted("/tmp/sentinel-session-dir/nested/file.md"), true);
+		assert.equal(session.isWhitelisted("/tmp/sentinel-session-dir-sibling/file.md"), false);
+
+		session.reset();
+		assert.equal(session.isWhitelisted("/tmp/sentinel-session-dir/file.md"), false);
+	});
+
 	test("read whitelist is separate from permission whitelist", () => {
 		const session = new SentinelSession();
 		session.addToReadWhitelist("/safe/example-doc.md");

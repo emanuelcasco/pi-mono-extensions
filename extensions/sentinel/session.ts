@@ -1,5 +1,6 @@
 import type { ScanResult, WriteEntry } from "./types.js";
 import { configLoader } from "./config.js";
+import { isPathAllowed } from "./path-access.js";
 import {
 	loadReadWhitelist,
 	loadWhitelist,
@@ -27,6 +28,9 @@ export class SentinelSession {
 	/** Persistent whitelist of paths the user chose to remember. */
 	private whitelist = loadWhitelist();
 
+	/** Session-only whitelist of paths the user allowed until reset. */
+	private sessionWhitelist = new Set<string>();
+
 	/** Persistent whitelist of read paths that are safe despite secret matches. */
 	private readWhitelist = loadReadWhitelist();
 
@@ -34,6 +38,7 @@ export class SentinelSession {
 	reset(): void {
 		this.writeRegistry.clear();
 		this.scanCache.clear();
+		this.sessionWhitelist.clear();
 		// whitelist is intentionally NOT cleared here so it persists across sessions
 	}
 
@@ -77,11 +82,18 @@ export class SentinelSession {
 	// -- Whitelist (permission-gate persistence) -------------------------------
 
 	isWhitelisted(absolutePath: string): boolean {
-		return this.whitelist.has(absolutePath);
+		return (
+			isPathAllowed(absolutePath, [...this.sessionWhitelist], process.cwd()) ||
+			isPathAllowed(absolutePath, [...this.whitelist], process.cwd())
+		);
 	}
 
-	addToWhitelist(absolutePath: string): void {
-		this.whitelist.add(absolutePath);
+	addToSessionWhitelist(pathGrant: string): void {
+		this.sessionWhitelist.add(pathGrant);
+	}
+
+	addToWhitelist(pathGrant: string): void {
+		this.whitelist.add(pathGrant);
 		saveWhitelist(this.whitelist);
 	}
 

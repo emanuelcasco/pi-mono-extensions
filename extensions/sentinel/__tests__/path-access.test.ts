@@ -10,6 +10,7 @@ import {
 	directoryGrantFor,
 	isInsideCwd,
 	isPathAllowed,
+	pathAccessGrantsForChoice,
 	pathAccessGrantForChoice,
 	toStoragePath,
 } from "../path-access.ts";
@@ -77,5 +78,25 @@ describe("path-access helpers", () => {
 			rmSync(agentDir, { recursive: true, force: true });
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	test("derives grants for multiple exact files", () => {
+		assert.deepEqual(
+			pathAccessGrantsForChoice("allow_files_session", ["/tmp/a/one.txt", "/tmp/a/two.txt"], CWD),
+			[
+				{
+					grant: "/tmp/a/one.txt",
+					broadCheckPath: "/tmp/a/one.txt",
+					scope: "memory",
+					directory: false,
+				},
+				{
+					grant: "/tmp/a/two.txt",
+					broadCheckPath: "/tmp/a/two.txt",
+					scope: "memory",
+					directory: false,
+				},
+			],
+		);
 	});
 });
