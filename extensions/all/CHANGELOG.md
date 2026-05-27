@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.6
+
+### Patch Changes
+
+- Bundle `pi-mono-sentinel@1.13.0` with smarter path-access prompts, session-scoped grants, and exact multi-file grants.
+
 ## 1.2.5
 
 ### Patch Changes

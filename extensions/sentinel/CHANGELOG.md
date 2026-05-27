@@ -1,5 +1,15 @@
 # pi-mono-sentinel
 
+## 1.13.0
+
+### Minor Changes
+
+### Enhanced: path-access grants
+
+- Added smarter path-access prompts that distinguish existing files, new files, directories, and multiple same-folder file targets.
+- Added session-only permission grants for `write` / `edit`, including recursive directory grants that reset with the session.
+- Added exact multi-file grants for bash commands that reference several outside-project files in the same directory.
+
 ## 1.12.0
 
 ### Changed
