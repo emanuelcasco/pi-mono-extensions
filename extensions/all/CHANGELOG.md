@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.2.7
+
+### Patch Changes
+
+- Bundle `pi-mono-auto-fix@0.3.2` with Windows command quoting, local npm shim resolution, and OS temp-directory fallback fixes.
+
 ## 1.2.6
 
 ### Patch Changes

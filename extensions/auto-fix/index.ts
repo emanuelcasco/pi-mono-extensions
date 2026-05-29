@@ -19,7 +19,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +101,9 @@ function loadConfig(): Config {
 // ---------------------------------------------------------------------------
 
 function shellQuote(s: string): string {
+  if (process.platform === "win32") {
+    return `"${s.replace(/"/g, '\\"')}"`;
+  }
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
@@ -135,8 +138,17 @@ function findLocalBin(
 ): { binPath: string; projectRoot: string } | undefined {
   let dir = startDir;
   while (true) {
-    const binPath = `${dir}/node_modules/.bin/${tool}`;
-    if (existsSync(binPath)) return { binPath, projectRoot: dir };
+    const candidates =
+      process.platform === "win32"
+        ? [
+            `${dir}/node_modules/.bin/${tool}.cmd`,
+            `${dir}/node_modules/.bin/${tool}.exe`,
+            `${dir}/node_modules/.bin/${tool}.bat`,
+            `${dir}/node_modules/.bin/${tool}`,
+          ]
+        : [`${dir}/node_modules/.bin/${tool}`];
+    const binPath = candidates.find((candidate) => existsSync(candidate));
+    if (binPath) return { binPath, projectRoot: dir };
     const parent = dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;
@@ -285,8 +297,8 @@ function resolveEslintCommand(
  * If `command` starts with `npx <tool>`, attempt to resolve a project-local
  * binary by walking up from the first file. On hit, rewrite the command to
  * exec the local bin directly and return the project root as cwd. On miss,
- * fall back to `/tmp` so npx can fetch the latest from the registry without
- * being delegated through pnpm.
+ * fall back to the OS temp directory so npx can fetch the latest from the
+ * registry without being delegated through pnpm.
  */
 function resolveSpawnTarget(
   command: string,
@@ -308,7 +320,7 @@ function resolveSpawnTarget(
     }
   }
   // No local install — neutral cwd avoids pnpm delegating npx.
-  return { command, spawnCwd: "/tmp" };
+  return { command, spawnCwd: tmpdir() };
 }
 
 async function runFixer(

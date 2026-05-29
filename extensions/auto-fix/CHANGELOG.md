@@ -1,5 +1,13 @@
 # pi-mono-auto-fix
 
+## 0.3.2
+
+### Patch Changes
+
+### Fixed
+
+- Fix Windows auto-fix execution for paths containing spaces by using `cmd.exe`-compatible quoting, resolving local `.cmd`/`.exe`/`.bat` npm shims, and using the OS temp directory instead of hardcoded `/tmp` for npx fallbacks.
+
 ## 0.3.1
 
 ### Patch Changes
