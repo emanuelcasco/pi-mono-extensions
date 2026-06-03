@@ -94,6 +94,22 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// -------------------------------------------------------------------------
+	// Clear cache before compaction — file contents are lost but cache
+	// entries would still block re-reads with "File unchanged since last read".
+	// -------------------------------------------------------------------------
+	pi.on("session_before_compact", async () => {
+		readCache.clear();
+	});
+
+	// -------------------------------------------------------------------------
+	// Cache clear — allows external extensions to invalidate the dedup cache.
+	// Emitted via pi.events.emit("context-guard:clear-cache").
+	// -------------------------------------------------------------------------
+	pi.events.on("context-guard:clear-cache", () => {
+		readCache.clear();
+	});
+
+	// -------------------------------------------------------------------------
 	// Reset cache on new session
 	// -------------------------------------------------------------------------
 	pi.on("session_start", async () => {
