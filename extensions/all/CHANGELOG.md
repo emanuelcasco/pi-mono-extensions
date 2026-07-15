@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.4.2
+
+### Patch Changes
+
+- Bundle `pi-mono-usage@0.1.2` with team-mode worker transcripts included in usage aggregation.
+
 ## 1.4.1
 
 ### Patch Changes

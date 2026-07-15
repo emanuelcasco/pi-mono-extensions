@@ -31,7 +31,7 @@ Tab between `Today`, `This Week`, `Last Week`, and `All Time`. Each period is co
 
 ## Data source
 
-Reads `~/.pi/agent/sessions/**/*.jsonl` (or `$PI_CODING_AGENT_DIR/sessions`). For each `assistant` message with a `usage` block, the extension records cost and token counts. Duplicate turns from branched session files are deduplicated by a fingerprint over timestamp + token counts.
+Reads `~/.pi/agent/sessions/**/*.jsonl` (or `$PI_CODING_AGENT_DIR/sessions`) plus team-mode worker transcripts under `~/.pi/agent/extensions/team-mode/teammates/**/sessions/*.jsonl`. For each `assistant` message with a `usage` block, the extension records cost and token counts. Duplicate turns from branched session files are deduplicated by a fingerprint over timestamp + token counts.
 
 ## Sustainability estimate
 

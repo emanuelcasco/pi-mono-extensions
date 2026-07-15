@@ -174,9 +174,21 @@ const BUILT_IN_TOOLS = new Set([
 // Path helpers
 // ---------------------------------------------------------------------------
 
-const sessionsRoot = (): string => {
+const agentRoot = (): string => {
 	const root = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-	return join(root, "sessions");
+	return root;
+};
+
+const sessionRoots = (): string[] => {
+	const root = agentRoot();
+	return [
+		join(root, "sessions"),
+		// Team-mode runs durable subprocess workers with explicit --session files
+		// under its own storage tree, not under pi's default sessions directory.
+		// Include them so /usage reflects delegate/agent spend the same way tools
+		// like ccusage do when they scan pi session history recursively.
+		join(root, "extensions", "team-mode", "teammates"),
+	];
 };
 
 async function listSessionFiles(root: string, signal?: AbortSignal): Promise<string[]> {
@@ -563,7 +575,10 @@ async function buildReport(signal?: AbortSignal): Promise<UsageReport | null> {
 		lifespans: new Map(),
 	};
 
-	const files = await listSessionFiles(sessionsRoot(), signal);
+	const roots = sessionRoots();
+	const files = (
+		await Promise.all(roots.map((root) => listSessionFiles(root, signal)))
+	).flat();
 	if (signal?.aborted) return null;
 
 	const seen = new Set<string>();

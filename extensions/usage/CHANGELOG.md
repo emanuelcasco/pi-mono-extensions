@@ -1,5 +1,12 @@
 # pi-mono-usage
 
+## 0.1.2
+
+### Patch Changes
+
+- Include team-mode worker transcript sessions in `/usage` cost and token aggregation.
+- Document the additional team-mode session source scanned by the usage dashboard.
+
 ## 0.1.1
 
 ### Patch Changes
