@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-all",
-  "version": "1.2.8",
+  "version": "1.3.0",
   "description": "All pi-mono extensions and bundled skills",
   "type": "module",
   "keywords": [
@@ -16,6 +16,7 @@
     "pi-mono-context": "workspace:*",
     "pi-mono-context-guard": "workspace:*",
     "pi-mono-figma": "workspace:*",
+    "pi-mono-goal": "workspace:*",
     "pi-mono-linear": "workspace:*",
     "pi-common": "workspace:*",
     "pi-mono-loop": "workspace:*",
@@ -36,6 +37,7 @@
     "pi-mono-context",
     "pi-mono-context-guard",
     "pi-mono-figma",
+    "pi-mono-goal",
     "pi-mono-linear",
     "pi-common",
     "pi-mono-loop",
@@ -63,6 +65,7 @@
       "./node_modules/pi-mono-context/index.ts",
       "./node_modules/pi-mono-context-guard/index.ts",
       "./node_modules/pi-mono-figma/index.ts",
+      "./node_modules/pi-mono-goal/index.ts",
       "./node_modules/pi-mono-linear/index.ts",
       "./node_modules/pi-mono-loop/index.ts",
       "./node_modules/pi-mono-multi-edit/index.ts",

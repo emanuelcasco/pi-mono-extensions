@@ -1,0 +1,27 @@
+{
+  "name": "pi-mono-goal",
+  "version": "0.2.0",
+  "description": "Pi extension for Codex-style persistent session goals and bounded auto-continuation",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
+    "directory": "extensions/goal"
+  },
+  "bugs": {
+    "url": "https://github.com/emanuelcasco/pi-mono-extensions/issues"
+  },
+  "homepage": "https://github.com/emanuelcasco/pi-mono-extensions#readme"
+}

@@ -16,6 +16,7 @@ You can install the full bundle with one command, or install only the extensions
   - [context-guard](#context-guard)
   - [figma](#figma)
   - [linear](#linear)
+  - [goal](#goal)
   - [loop](#loop)
   - [multi-edit](#multi-edit)
   - [review](#review)
@@ -298,6 +299,32 @@ Upload a file to an issue comment:
 ```text
 linear_get_issue
 linear_upload_file_to_issue_comment
+```
+
+### goal
+
+Full details: [extensions/goal/README.md](extensions/goal/README.md).
+
+Adds a Codex-style `/goal` command with persistent session state, model tools (`get_goal`, `create_goal`, `update_goal`), hidden steering prompts, bounded auto-continuation, basic accounting, and a compact status/widget UI.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-goal
+```
+
+#### Usage
+
+```text
+/goal <goal text>
+/goal show
+/goal pause
+/goal resume
+/goal edit <new text>
+/goal auto on
+/goal budget turns 10
+/goal done <summary>
+/goal clear
 ```
 
 ### loop

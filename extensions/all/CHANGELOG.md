@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.3.0
+
+### Minor Changes
+
+- Bundle `pi-mono-goal@0.2.0` with persistent goal tools, plans, blockers, budgets, accounting, bounded auto-continuation, and status/widget UI.
+
 ## 1.2.8
 
 ### Patch Changes

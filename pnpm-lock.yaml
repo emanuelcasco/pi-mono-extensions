@@ -79,6 +79,9 @@ importers:
       pi-mono-figma:
         specifier: workspace:*
         version: link:../figma
+      pi-mono-goal:
+        specifier: workspace:*
+        version: link:../goal
       pi-mono-linear:
         specifier: workspace:*
         version: link:../linear
@@ -208,6 +211,15 @@ importers:
       pi-common:
         specifier: workspace:*
         version: link:../common
+
+  extensions/goal:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
+      '@sinclair/typebox':
+        specifier: '*'
+        version: 0.34.49
 
   extensions/linear:
     dependencies:
