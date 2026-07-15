@@ -1,6 +1,6 @@
 {
   "name": "pi-mono-all",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "All pi-mono extensions and bundled skills",
   "type": "module",
   "keywords": [
@@ -21,6 +21,7 @@
     "pi-common": "workspace:*",
     "pi-mono-loop": "workspace:*",
     "pi-mono-multi-edit": "workspace:*",
+    "pi-mono-provider-request-options": "workspace:*",
     "pi-mono-review": "workspace:*",
     "pi-mono-sentinel": "workspace:*",
     "pi-mono-simplify": "workspace:*",
@@ -42,6 +43,7 @@
     "pi-common",
     "pi-mono-loop",
     "pi-mono-multi-edit",
+    "pi-mono-provider-request-options",
     "pi-mono-review",
     "pi-mono-sentinel",
     "pi-mono-simplify",
@@ -69,6 +71,7 @@
       "./node_modules/pi-mono-linear/index.ts",
       "./node_modules/pi-mono-loop/index.ts",
       "./node_modules/pi-mono-multi-edit/index.ts",
+      "./node_modules/pi-mono-provider-request-options/index.ts",
       "./node_modules/pi-mono-review/index.ts",
       "./node_modules/pi-mono-sentinel/index.ts",
       "./node_modules/pi-mono-simplify/index.ts",

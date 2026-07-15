@@ -19,6 +19,7 @@ You can install the full bundle with one command, or install only the extensions
   - [goal](#goal)
   - [loop](#loop)
   - [multi-edit](#multi-edit)
+  - [provider-request-options](#provider-request-options)
   - [review](#review)
   - [sentinel](#sentinel)
   - [simplify](#simplify)
@@ -412,6 +413,32 @@ edit(patch: "*** Begin Patch ... *** End Patch")
 - quote-normalized matching for classic edits
 - redundant edit detection
 - diff generation
+
+### provider-request-options
+
+Full details: [extensions/provider-request-options/README.md](extensions/provider-request-options/README.md).
+
+Deep-merges provider-native fields from `providerRequestOptions` in Pi's active global `settings.json` into serialized API request payloads. Settings are read on every request, and provider keys are matched exactly.
+
+#### Install
+
+```bash
+pi install npm:pi-mono-provider-request-options
+```
+
+#### Usage
+
+```json
+{
+  "providerRequestOptions": {
+    "openai-codex": {
+      "text": { "verbosity": "low" }
+    }
+  }
+}
+```
+
+The extension performs no provider-specific validation or translation. Plain objects merge recursively; arrays, scalars, booleans, and `null` replace existing values.
 
 ### review
 

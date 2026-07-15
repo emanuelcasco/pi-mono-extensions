@@ -91,6 +91,9 @@ importers:
       pi-mono-multi-edit:
         specifier: workspace:*
         version: link:../multi-edit
+      pi-mono-provider-request-options:
+        specifier: workspace:*
+        version: link:../provider-request-options
       pi-mono-review:
         specifier: workspace:*
         version: link:../review
@@ -256,6 +259,12 @@ importers:
       diff:
         specifier: ^8.0.4
         version: 8.0.4
+
+  extensions/provider-request-options:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
 
   extensions/review:
     dependencies:

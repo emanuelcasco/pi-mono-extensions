@@ -1,0 +1,27 @@
+{
+  "name": "pi-mono-provider-request-options",
+  "version": "0.2.0",
+  "description": "Merge provider-specific settings into Pi API request payloads",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "provider",
+    "request-options"
+  ],
+  "scripts": {
+    "test": "npx tsx --test '__tests__/**/*.test.ts'"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emanuelcasco/pi-mono-extensions.git",
+    "directory": "extensions/provider-request-options"
+  }
+}

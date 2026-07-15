@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.5.0
+
+### Minor Changes
+
+- Bundle `pi-mono-provider-request-options@0.2.0` with settings-driven deep merges of provider-native request payload options.
+
 ## 1.4.2
 
 ### Patch Changes
