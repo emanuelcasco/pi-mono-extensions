@@ -1,5 +1,12 @@
 # pi-mono-all
 
+## 1.5.1
+
+### Patch Changes
+
+- Updated dependencies
+  - pi-mono-team-mode@2.4.1
+
 ## 1.5.0
 
 ### Minor Changes

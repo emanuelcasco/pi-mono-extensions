@@ -114,6 +114,17 @@ agent({
 });
 ```
 
+## Direct model mentions
+
+Use `@@model` in the editor to delegate a prompt directly to one or more selected models:
+
+```text
+@@claude-sonnet-4-5 review current changes
+@@gpt-5.4 what do you think about the proposal above?
+```
+
+An `@@model` mention selects a worker model; it does not classify the task. The parent orchestrator interprets the request using its full conversation, generates a self-contained prompt with the relevant context, execution boundaries, and expected output, and launches the selected worker. Worker prompts omit the routing mention and prohibit recursive delegation. This keeps references such as “the last message” and “above” meaningful without treating words such as `review` as repository-specific instructions.
+
 Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Team-mode passes the selected level to the teammate subprocess as `pi --thinking <level>`. Token budgets remain pi's responsibility via `~/.pi/agent/settings.json` `thinkingBudgets`.
 
 `model-config.json` can define compact role/tier defaults:

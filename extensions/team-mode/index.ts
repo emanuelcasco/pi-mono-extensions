@@ -782,6 +782,7 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 ]);
 
 const MODEL_MENTION_DELEGATION_MESSAGE = "team-mode-delegation";
+const MODEL_MENTION_ORCHESTRATION_MESSAGE = "team-mode-delegation-orchestration";
 
 function registerModelMentionHooks(pi: ExtensionAPI): void {
 	let autocompleteRegistered = false;
@@ -819,40 +820,38 @@ function registerModelMentionHooks(pi: ExtensionAPI): void {
 			return { action: "handled" as const };
 		}
 
-		const { agents } = getParentManagers();
-		const review = isReviewRequest(taskText);
-		const prompt = buildMentionDelegationPrompt(taskText, review);
-		pi.sendMessage({
-			customType: MODEL_MENTION_DELEGATION_MESSAGE,
-			content: formatModelMentionDelegationMessage(event.text, resolved.models),
-			display: true,
-			details: {
-				originalText: event.text,
-				taskText,
-				models: resolved.models.map((target) => ({
-					label: target.label,
-					provider: target.model.provider,
-					model: target.model.id,
-					thinkingLevel: target.thinkingLevel,
-				})),
+		const models = resolved.models.map((target) => ({
+			label: target.label,
+			provider: target.model.provider,
+			model: target.model.id,
+			thinkingLevel: target.thinkingLevel,
+		}));
+		const deliverAs = event.streamingBehavior ?? "steer";
+		pi.sendMessage(
+			{
+				customType: MODEL_MENTION_DELEGATION_MESSAGE,
+				content: formatModelMentionDelegationMessage(event.text, resolved.models),
+				display: true,
+				details: {
+					originalText: event.text,
+					taskText,
+					models,
+				},
 			},
-		});
-		await Promise.all(
-			resolved.models.map((target) =>
-				agents.spawn({
-					description: review ? "review current changes" : "handle delegated task",
-					prompt,
-					model: `${target.model.provider}/${target.model.id}`,
-					thinkingLevel: target.thinkingLevel,
-					subagentType: review ? "reviewer" : undefined,
-					background: true,
-					runtime: "subprocess",
-				}),
-			),
+			{ deliverAs },
+		);
+		pi.sendMessage(
+			{
+				customType: MODEL_MENTION_ORCHESTRATION_MESSAGE,
+				content: buildModelMentionOrchestrationMessage(taskText, models),
+				display: false,
+				details: { taskText, models },
+			},
+			{ deliverAs, triggerTurn: true },
 		);
 
 		ctx.ui.notify(
-			`Delegated to ${resolved.models.map((target) => target.label).join(", ")}.`,
+			`Routing delegation to ${resolved.models.map((target) => target.label).join(", ")}.`,
 			"info",
 		);
 		return { action: "handled" as const };
@@ -1217,29 +1216,37 @@ function normalizeModelRef(value: string): string {
 	return value.trim().toLowerCase();
 }
 
-function isReviewRequest(text: string): boolean {
-	return /\b(code\s+review|review|audit|inspect)\b/i.test(text);
-}
-
-function buildMentionDelegationPrompt(taskText: string, review: boolean): string {
-	if (review) {
-		return [
-			"The user delegated this code review to you:",
-			"",
-			taskText,
-			"",
-			"Review the current repository changes. Inspect git status, staged changes, unstaged changes, and relevant surrounding code as needed.",
-			"Return actionable findings only. Include file paths, line references when possible, severity, rationale, and a concrete fix suggestion.",
-			"Do not edit files.",
-		].join("\n");
-	}
-
+export function buildModelMentionOrchestrationMessage(
+	taskText: string,
+	models: Array<{
+		label: string;
+		provider: string;
+		model: string;
+		thinkingLevel?: ThinkingLevel;
+	}>,
+): string {
+	const targets = models.map((target) => {
+		const thinking = target.thinkingLevel ? `, thinking: ${target.thinkingLevel}` : "";
+		return `- ${target.label}: model ${target.provider}/${target.model}${thinking}`;
+	});
 	return [
-		"The user delegated this task to you:",
+		"The user explicitly requested subagent delegation with an @@ model mention.",
+		"@@ selects the worker model only; it does not imply code review or any other task type.",
 		"",
+		"Delegated request:",
 		taskText,
 		"",
-		"Work in the current repository. Be concise in the final result and include the important files/commands you used.",
+		"Selected worker target(s):",
+		...targets,
+		"",
+		"Interpret the request using the full parent conversation, including references such as ‘the last message’, ‘above’, or ‘that proposal’.",
+		"Then call agent once for each selected target. Generate a concise description and a self-contained worker prompt using this contract:",
+		"- Task: preserve the user's actual intent, request, and explicit constraints verbatim.",
+		"- Relevant context: include only what is needed to resolve references; when context conflicts, prefer the most recent explicit instruction.",
+		"- Execution boundaries: state whether repository or tool access is needed, and tell the worker to execute directly without delegating or spawning another agent.",
+		"- Expected output: state the requested format and level of detail.",
+		"Do not copy the routing @@model mention into the worker prompt.",
+		"Use the exact model and thinking level listed for each target, run the worker in the background, and do not answer the delegated task yourself.",
 	].join("\n");
 }
 

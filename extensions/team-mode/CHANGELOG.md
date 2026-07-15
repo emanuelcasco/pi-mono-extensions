@@ -1,5 +1,11 @@
 # pi-mono-team-mode
 
+## 2.4.1
+
+### Patch Changes
+
+- Route `@@model` requests through the parent orchestrator so it can interpret any task using the full conversation and generate a self-contained prompt for the selected worker model.
+
 ## 2.4.0
 
 ### Minor Changes
