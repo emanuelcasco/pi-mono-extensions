@@ -21,47 +21,62 @@ import { applyPatchOperations, parsePatch } from "./patch.ts";
 import type { EditItem } from "./types.ts";
 import { createRealWorkspace, createVirtualWorkspace } from "./workspace.ts";
 
-const editItemSchema = Type.Object({
-  path: Type.Optional(
-    Type.String({
-      description:
-        "Path to the file to edit (relative or absolute). Inherits from top-level path if omitted.",
-    }),
-  ),
-  oldText: Type.String({
-    description: "Exact text to find and replace (must match exactly)",
-  }),
-  newText: Type.String({
-    description: "New text to replace the old text with",
-  }),
-});
-
-const multiEditSchema = Type.Object({
-  path: Type.Optional(
-    Type.String({
-      description: "Path to the file to edit (relative or absolute)",
-    }),
-  ),
-  oldText: Type.Optional(
-    Type.String({
+const editItemSchema = Type.Object(
+  {
+    path: Type.Optional(
+      Type.String({
+        description:
+          "Path to the file to edit (relative or absolute). Inherits from top-level path if omitted.",
+      }),
+    ),
+    oldText: Type.String({
       description: "Exact text to find and replace (must match exactly)",
     }),
-  ),
-  newText: Type.Optional(
-    Type.String({ description: "New text to replace the old text with" }),
-  ),
-  multi: Type.Optional(
-    Type.Array(editItemSchema, {
-      description:
-        "Multiple edits to apply in sequence. Each item has path, oldText, and newText.",
+    newText: Type.String({
+      description: "New text to replace the old text with",
     }),
-  ),
-  patch: Type.Optional(
-    Type.String({
+  },
+  { additionalProperties: false },
+);
+
+const classicEditSchema = Type.Object(
+  {
+    path: Type.Optional(
+      Type.String({
+        description: "Path to the file to edit (relative or absolute)",
+      }),
+    ),
+    oldText: Type.Optional(
+      Type.String({
+        description: "Exact text to find and replace (must match exactly)",
+      }),
+    ),
+    newText: Type.Optional(
+      Type.String({ description: "New text to replace the old text with" }),
+    ),
+    multi: Type.Optional(
+      Type.Array(editItemSchema, {
+        description:
+          "Multiple edits to apply in sequence. Each item has path, oldText, and newText.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const patchEditSchema = Type.Object(
+  {
+    patch: Type.String({
       description:
-        "Codex-style apply_patch payload (*** Begin Patch ... *** End Patch). Mutually exclusive with path/oldText/newText/multi.",
+        "Codex-style apply_patch payload (*** Begin Patch ... *** End Patch). Do not provide path, oldText, newText, or multi when using patch.",
     }),
-  ),
+  },
+  { additionalProperties: false },
+);
+
+export const multiEditSchema = Type.Union([patchEditSchema, classicEditSchema], {
+  description:
+    "Choose exactly one editing mode: patch by itself, or classic path/oldText/newText/multi parameters without patch.",
 });
 
 export default function (pi: ExtensionAPI) {
@@ -69,13 +84,14 @@ export default function (pi: ExtensionAPI) {
     name: "edit",
     label: "edit",
     description:
-      "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits. Supports a `multi` parameter for batch edits across one or more files, and a `patch` parameter for Codex-style patches.",
+      "Edit files using exact replacement, multi-edit, or Codex-style patch mode. When using `patch`, do not provide `path`, `oldText`, `newText`, or `multi`.",
     promptSnippet:
       "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
     promptGuidelines: [
       "Use edit for precise changes (old text must match exactly)",
       "Use the `multi` parameter to apply multiple edits in a single tool call",
       "Use the `patch` parameter for Codex-style multi-file / hunk-based edits",
+      "When using edit's `patch` parameter, do not provide `path`, `oldText`, `newText`, or `multi`",
     ],
     parameters: multiEditSchema,
 

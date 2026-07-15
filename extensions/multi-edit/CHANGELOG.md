@@ -1,5 +1,13 @@
 # pi-mono-multi-edit
 
+## 1.7.4
+
+### Patch Changes
+
+- Reject edit calls that combine Codex-style `patch` mode with classic or `multi` parameters during schema validation.
+- Clarify patch-mode tool guidance and retain runtime validation as defense in depth.
+- Add regression coverage for valid patch/classic payloads and invalid mixed-mode payloads.
+
 ## 1.7.3
 
 ### Patch Changes

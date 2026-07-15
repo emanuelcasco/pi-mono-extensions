@@ -22,7 +22,7 @@ Identical to the built-in `edit` tool. Provide `path`, `oldText`, and `newText`.
 {
   "path": "src/index.ts",
   "oldText": "const foo = 1;",
-  "newText": "const foo = 2;",
+  "newText": "const foo = 2;"
 }
 ```
 
@@ -36,14 +36,14 @@ Pass a `multi` array of edit objects. Each item has `path`, `oldText`, and `newT
   "multi": [
     {
       "oldText": "import foo from 'foo';",
-      "newText": "import foo from '@scope/foo';",
+      "newText": "import foo from '@scope/foo';"
     },
     {
       "path": "src/other.ts", // overrides the top-level path
       "oldText": "const bar = 0;",
-      "newText": "const bar = 42;",
-    },
-  ],
+      "newText": "const bar = 42;"
+    }
+  ]
 }
 ```
 
@@ -54,7 +54,7 @@ You can also mix a top-level single edit with `multi` — the top-level edit is 
   "path": "src/index.ts",
   "oldText": "version: 1",
   "newText": "version: 2",
-  "multi": [{ "oldText": "// old comment", "newText": "// new comment" }],
+  "multi": [{ "oldText": "// old comment", "newText": "// new comment" }]
 }
 ```
 
@@ -88,13 +88,13 @@ Pass a `patch` string delimited by `*** Begin Patch` / `*** End Patch`. This for
 
 The patch engine implements a pragmatic subset of the Codex `apply_patch` format. The following edge cases are intentionally **not** supported and raise a parse error instead of degrading silently:
 
-| Feature                           | Status    | Notes                                                                                     |
-| --------------------------------- | --------- | ----------------------------------------------------------------------------------------- |
-| `@@` hunk header                  | Required  | Every hunk inside an `*** Update File:` block must start with `@@`                        |
-| Trailing-whitespace tolerance     | Supported | Hunks fall back to per-line `trimEnd` matching when exact `indexOf` misses                |
-| Full trim / unicode-normalized    | Dropped   | Only `trimEnd` is supported — normalize curly quotes or dashes in the patch before sending |
-| `*** End of File` sentinel hunks  | Dropped   | Use a normal hunk anchored on the last real line                                          |
-| `*** Move to:` rename             | Rejected  | Emit an Add + Delete pair instead                                                         |
+| Feature                          | Status    | Notes                                                                                      |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------ |
+| `@@` hunk header                 | Required  | Every hunk inside an `*** Update File:` block must start with `@@`                         |
+| Trailing-whitespace tolerance    | Supported | Hunks fall back to per-line `trimEnd` matching when exact `indexOf` misses                 |
+| Full trim / unicode-normalized   | Dropped   | Only `trimEnd` is supported — normalize curly quotes or dashes in the patch before sending |
+| `*** End of File` sentinel hunks | Dropped   | Use a normal hunk anchored on the last real line                                           |
+| `*** Move to:` rename            | Rejected  | Emit an Add + Delete pair instead                                                          |
 
 These restrictions keep the parser simpler and more predictable than a full 4-pass fuzzy matcher while still catching the most common class of whitespace mismatch.
 
@@ -158,23 +158,23 @@ In `multi` mode, items that omit `path` automatically inherit the top-level `pat
 
 ## Dependencies
 
-| Package                         | Role                                                |
-| ------------------------------- | --------------------------------------------------- |
+| Package                           | Role                                                |
+| --------------------------------- | --------------------------------------------------- |
 | `@earendil-works/pi-coding-agent` | `ExtensionAPI` type and tool registration           |
-| `@sinclair/typebox`             | Runtime JSON Schema / TypeBox parameter definitions |
-| `diff`                          | Line-level diff generation for result output        |
+| `@sinclair/typebox`               | Runtime JSON Schema / TypeBox parameter definitions |
+| `diff`                            | Line-level diff generation for result output        |
 
 ## Error Handling
 
-| Situation                                                            | Behaviour                                              |
-| -------------------------------------------------------------------- | ------------------------------------------------------ |
-| `patch` used together with `path`/`oldText`/`newText`/`multi`        | Throws immediately — parameters are mutually exclusive |
-| Incomplete top-level edit (e.g. `path` + `oldText` but no `newText`) | Throws listing the missing fields                      |
-| `multi` item missing `path` and no top-level `path` set              | Throws identifying which item is affected              |
-| `oldText` not found in file                                          | Preflight throws; no files are modified                |
-| `patch` context line not found                                       | Preflight throws; no files are modified                |
-| File does not exist or is not writable                               | Throws before any mutations                            |
-| Patch `*** Move to:` operation                                       | Throws — not supported                                 |
+| Situation                                                            | Behaviour                                                                |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `patch` used together with `path`/`oldText`/`newText`/`multi`        | Rejected by schema validation; runtime guard remains as defense in depth |
+| Incomplete top-level edit (e.g. `path` + `oldText` but no `newText`) | Throws listing the missing fields                                        |
+| `multi` item missing `path` and no top-level `path` set              | Throws identifying which item is affected                                |
+| `oldText` not found in file                                          | Preflight throws; no files are modified                                  |
+| `patch` context line not found                                       | Preflight throws; no files are modified                                  |
+| File does not exist or is not writable                               | Throws before any mutations                                              |
+| Patch `*** Move to:` operation                                       | Throws — not supported                                                   |
 
 ## Performance vs Base Edit
 
