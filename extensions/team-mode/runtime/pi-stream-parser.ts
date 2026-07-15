@@ -11,7 +11,7 @@ export type PiUsage = {
 };
 
 export type PiStreamEvent =
-	| { type: "assistant_message"; text: string; usage?: PiUsage; stopReason?: string }
+	| { type: "assistant_message"; text: string; usage?: PiUsage; stopReason?: string; errorMessage?: string }
 	| { type: "assistant_delta"; text: string }
 	| { type: "tool_start"; toolName: string; argsPreview?: string }
 	| { type: "tool_end"; toolName?: string; isError?: boolean; resultPreview?: string }
@@ -65,11 +65,31 @@ function mapEvent(event: Record<string, unknown>): PiStreamEvent | undefined {
 	if (eventType === "message_end") {
 		const assistant = assistantMessage(event);
 		if (!assistant) return undefined;
+		const message = obj(event.message);
+		const errorMessage = str(event.errorMessage) ?? str(message?.errorMessage);
 		return {
 			type: "assistant_message",
-			text: assistant.text,
+			text: assistant.text || (errorMessage ? `[assistant error] ${errorMessage}` : ""),
 			usage: assistant.usage,
-			stopReason: str(event.stopReason),
+			stopReason: str(event.stopReason) ?? str(message?.stopReason),
+			errorMessage,
+		};
+	}
+
+	// Session JSONL uses durable `message` records, while streaming JSON has
+	// historically emitted `message_end`. Subprocess collection may see either
+	// shape depending on the pi version, so handle persisted records directly.
+	if (eventType === "message") {
+		const assistant = assistantMessage(event);
+		if (!assistant) return undefined;
+		const message = obj(event.message);
+		const errorMessage = str(event.errorMessage) ?? str(message?.errorMessage);
+		return {
+			type: "assistant_message",
+			text: assistant.text || (errorMessage ? `[assistant error] ${errorMessage}` : ""),
+			usage: assistant.usage,
+			stopReason: str(event.stopReason) ?? str(message?.stopReason),
+			errorMessage,
 		};
 	}
 

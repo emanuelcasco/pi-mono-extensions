@@ -1,6 +1,7 @@
 // Pi Team-Mode — Agent Manager
 
 import type { TeamMateStore } from "../core/store.js";
+import { readFile } from "node:fs/promises";
 import { generateTeammateId } from "../core/store.js";
 import {
 	type ExecutionRuntime,
@@ -19,10 +20,11 @@ import { runTransientSession, type TransientSessionOpts } from "../runtime/trans
 import { cleanupWorktree, createWorktree, type WorktreeHandle } from "../runtime/worktree.js";
 import { loadTeammateSpec } from "../core/teammate-specs.js";
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from "../core/prompts.js";
-import type { PiStreamEvent } from "../runtime/pi-stream-parser.js";
+import { PiStreamParser, type PiStreamEvent } from "../runtime/pi-stream-parser.js";
 import {
 	isModelTier,
 	loadModelConfig,
+	resolveBareModelOverride,
 	resolveModel,
 	splitThinkingSuffix,
 	type ModelTier,
@@ -267,7 +269,8 @@ export class AgentManager {
 	/** Read the latest output of a teammate (used by the task_output tool). */
 	async output(nameOrId: string): Promise<TeammateRecord | null> {
 		try {
-			return await this.resolveTeammate(nameOrId);
+			const record = await this.resolveTeammate(nameOrId);
+			return await this.withTranscriptFallback(record);
 		} catch {
 			return null;
 		}
@@ -340,11 +343,13 @@ export class AgentManager {
 					rationale: "explicit spawn_agent.model override",
 				};
 			}
+			const resolvedBare = resolveBareModelOverride(config, trimmed);
+			if (resolvedBare) return packResolved(resolvedBare);
 			const split = splitThinkingSuffix(trimmed);
 			return {
 				model: split.model,
 				thinkingLevel: split.thinkingLevel,
-				rationale: "explicit spawn_agent.model override (bare id)",
+				rationale: "explicit spawn_agent.model override (bare id; no provider match found)",
 			};
 		}
 
@@ -423,13 +428,17 @@ export class AgentManager {
 				metric.finishedAt = Date.now();
 			}
 
-			const status: TeammateStatus = deriveStatus(runResult, runError, record.status);
 			const stderrTail = runResult?.stderr?.trim();
+			const status: TeammateStatus = deriveStatus(runResult, runError, record.status);
 			const finalMessage =
 				runResult?.finalMessage ||
+				(runResult?.errorMessage ? `[assistant error] ${runResult.errorMessage}` : "") ||
 				(runError ? `[subprocess error] ${runError.message}` : "") ||
 				(status !== "completed" && stderrTail
 					? `[pi exited ${runResult?.exitCode ?? "?"}] stderr:\n${stderrTail}`
+					: "") ||
+				(status !== "completed" && runResult?.exitCode === 0
+					? "[empty output] pi exited 0 but produced no assistant text."
 					: "");
 
 			let worktreeInfo: { path: string; branch: string } | undefined;
@@ -559,6 +568,33 @@ export class AgentManager {
 		this.scheduleNotify();
 	}
 
+	private async withTranscriptFallback(record: TeammateRecord): Promise<TeammateRecord> {
+		if (record.lastResult?.trim()) return record;
+		const fallback = await this.readLastAssistantFromTranscript(record.id);
+		if (!fallback) return record;
+		return {
+			...record,
+			lastResult: fallback,
+		};
+	}
+
+	private async readLastAssistantFromTranscript(teammateId: string): Promise<string | undefined> {
+		try {
+			const raw = await readFile(this.deps.store.teammateSessionFile(teammateId), "utf8");
+			const parser = new PiStreamParser();
+			const events = parser.push(raw.endsWith("\n") ? raw : `${raw}\n`).concat(parser.flush());
+			let latest: string | undefined;
+			for (const event of events) {
+				if (event.type !== "assistant_message") continue;
+				if (event.text.trim()) latest = event.text;
+				else if (event.errorMessage) latest = `[assistant error] ${event.errorMessage}`;
+			}
+			return latest;
+		} catch {
+			return undefined;
+		}
+	}
+
 	private scheduleNotify(): void {
 		if (this.notifyTimer) return;
 		this.notifyTimer = setTimeout(() => {
@@ -629,7 +665,10 @@ function deriveStatus(
 ): TeammateStatus {
 	if (error || !result) return "failed";
 	if (result.exitSignal) return previous === "stopped" ? "stopped" : "failed";
-	return result.exitCode === 0 ? "completed" : "failed";
+	if (result.exitCode !== 0) return "failed";
+	if (result.stopReason?.toLowerCase() === "error" || result.errorMessage) return "failed";
+	if (!result.finalMessage.trim()) return "failed";
+	return "completed";
 }
 
 function mapExitReason(status: TeammateStatus): LiveTeammateMetrics["exitReason"] {

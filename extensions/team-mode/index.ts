@@ -16,7 +16,13 @@
 //   - Teammate subprocesses get the TEAMMATE_SYSTEM_PROMPT_ADDENDUM, so they
 //     know to communicate via send_message rather than free text.
 
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join, relative, sep } from "node:path";
+
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
+import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 import { TeamMateStore } from "./core/store.js";
@@ -27,7 +33,7 @@ import {
 	getCoordinatorSystemPrompt,
 	isCoordinatorMode,
 } from "./core/prompts.js";
-import type { TeammateRunResult, TeammateStatus } from "./core/types.js";
+import type { TeammateRunResult, TeammateStatus, ThinkingLevel } from "./core/types.js";
 import { AgentManager, type TeammateEndMetrics } from "./managers/agent-manager.js";
 import { DelegationManager, type DelegationResult } from "./managers/delegation-manager.js";
 import { TeamManager } from "./managers/team-manager.js";
@@ -150,6 +156,7 @@ async function pushTaskNotification(
 			metrics: metrics.metrics,
 			transcriptPath: metrics.transcriptPath,
 			summary,
+			result: record.lastResult,
 		};
 		parentPi.sendMessage(
 			{
@@ -306,6 +313,7 @@ function activateParent(pi: ExtensionAPI): void {
 	registerTeamTools(pi);
 	registerTaskTools(pi);
 	registerCommands(pi);
+	registerModelMentionHooks(pi);
 	registerLifecycle(pi);
 	registerCoordinatorPromptHook(pi);
 }
@@ -323,14 +331,6 @@ function registerAgentTools(pi: ExtensionAPI): void {
 		label: "Spawn Worker",
 		description:
 			"Spawn a worker as an isolated pi subprocess. Returns the task_id immediately. The coordinator should end its turn after launching; a `<task-notification>` will arrive as a user-role message when the worker finishes. Use send_message to continue an existing worker with its loaded context. Parallel calls in one turn run concurrently.",
-		promptSnippet: "Spawn a worker to research, implement, or verify",
-		promptGuidelines: [
-			"Pass `name` to address the worker later via send_message.",
-			"`isolation: \"worktree\"` sandboxes edits in a git worktree.",
-			"Launch multiple workers in parallel when the work is independent.",
-			"After launching, briefly tell the user what you launched and end your turn — completion arrives as <task-notification>.",
-			"Never predict worker results — wait for the notification.",
-		],
 		parameters: AgentParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { agents } = getParentManagers();
@@ -359,11 +359,6 @@ function registerAgentTools(pi: ExtensionAPI): void {
 		label: "Message Worker",
 		description:
 			"Continue an existing worker with full prior context (reuses pi --session). Pass the worker's task_id or name as `to`. Use `to: \"*\"` (swarm only) to broadcast.",
-		promptSnippet: "Continue a worker",
-		promptGuidelines: [
-			"Use send_message when you want the worker to remember what it already did.",
-			"Synthesize findings into a specific spec — never write \"based on your findings\".",
-		],
 		parameters: SendMessageParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { agents } = getParentManagers();
@@ -551,13 +546,6 @@ function registerTaskTools(pi: ExtensionAPI): void {
 		label: "Create Task",
 		description:
 			"Create a structured task in the shared TODO list. Tasks are created with status 'pending' and no owner — the coordinator assigns owners via task_update.",
-		promptSnippet: "Track a multi-step task",
-		promptGuidelines: [
-			"Use for complex multi-step tasks (3+ steps) or when the user provides a list.",
-			"Mark a task in_progress BEFORE beginning work, completed when done.",
-			"Include enough detail in `description` for another agent to understand and complete the task.",
-			"Use task_update to set dependencies (addBlocks / addBlockedBy).",
-		],
 		parameters: TaskCreateParams,
 		async execute(_toolCallId, params) {
 			const task = await getTaskManager().create({
@@ -578,12 +566,6 @@ function registerTaskTools(pi: ExtensionAPI): void {
 		label: "Update Task",
 		description:
 			"Update a task's status, owner, fields, or dependencies. Pass `expected_version` (from task_get/task_list) to guard concurrent edits. Transition to 'completed' fires the TaskCompleted hook — non-zero exit reverts the task to 'failed'.",
-		promptSnippet: "Update a task",
-		promptGuidelines: [
-			"Mark the current task in_progress when you start; completed when done.",
-			"Assign workers by setting `owner` to their teammate name.",
-			"ONLY mark a task completed when fully done — tests passing, no partial work.",
-		],
 		parameters: TaskUpdateParams,
 		async execute(_toolCallId, params) {
 			try {
@@ -770,6 +752,495 @@ function registerCoordinatorPromptHook(pi: ExtensionAPI): void {
 			: addition;
 		return { systemPrompt: combined };
 	});
+}
+
+// --- @@ model mentions ---
+
+type MentionModelTarget = {
+	model: Model<any>;
+	thinkingLevel?: ThinkingLevel;
+	/** Where this model list came from. Used only for autocomplete/help text. */
+	source: "scoped" | "available";
+};
+
+type ResolvedMention = MentionModelTarget & {
+	mention: string;
+	label: string;
+};
+
+type SettingsWithEnabledModels = {
+	enabledModels?: string[];
+};
+
+const THINKING_LEVELS = new Set<ThinkingLevel>([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+]);
+
+const MODEL_MENTION_DELEGATION_MESSAGE = "team-mode-delegation";
+
+function registerModelMentionHooks(pi: ExtensionAPI): void {
+	let autocompleteRegistered = false;
+	let latestCtx: ExtensionContext | undefined;
+
+	pi.on("session_start", async (_event, ctx) => {
+		latestCtx = ctx;
+		if (!ctx.hasUI || autocompleteRegistered) return;
+		ctx.ui.addAutocompleteProvider((current) =>
+			createModelMentionAutocompleteProvider(current, () => latestCtx),
+		);
+		autocompleteRegistered = true;
+	});
+
+	pi.on("session_shutdown", async () => {
+		latestCtx = undefined;
+		autocompleteRegistered = false;
+	});
+
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension") return { action: "continue" as const };
+
+		const mentions = parseModelMentions(event.text);
+		if (mentions.length === 0) return { action: "continue" as const };
+
+		const resolved = await resolveModelMentions(ctx, mentions);
+		if (resolved.errors.length > 0) {
+			ctx.ui.notify(resolved.errors.join("\n"), "error");
+			return { action: "handled" as const };
+		}
+
+		const taskText = stripModelMentions(event.text).trim();
+		if (!taskText) {
+			ctx.ui.notify("Add a task after the @@ model mention(s).", "warning");
+			return { action: "handled" as const };
+		}
+
+		const { agents } = getParentManagers();
+		const review = isReviewRequest(taskText);
+		const prompt = buildMentionDelegationPrompt(taskText, review);
+		pi.sendMessage({
+			customType: MODEL_MENTION_DELEGATION_MESSAGE,
+			content: formatModelMentionDelegationMessage(event.text, resolved.models),
+			display: true,
+			details: {
+				originalText: event.text,
+				taskText,
+				models: resolved.models.map((target) => ({
+					label: target.label,
+					provider: target.model.provider,
+					model: target.model.id,
+					thinkingLevel: target.thinkingLevel,
+				})),
+			},
+		});
+		await Promise.all(
+			resolved.models.map((target) =>
+				agents.spawn({
+					description: review ? "review current changes" : "handle delegated task",
+					prompt,
+					model: `${target.model.provider}/${target.model.id}`,
+					thinkingLevel: target.thinkingLevel,
+					subagentType: review ? "reviewer" : undefined,
+					background: true,
+					runtime: "subprocess",
+				}),
+			),
+		);
+
+		ctx.ui.notify(
+			`Delegated to ${resolved.models.map((target) => target.label).join(", ")}.`,
+			"info",
+		);
+		return { action: "handled" as const };
+	});
+}
+
+export function formatModelMentionDelegationMessage(
+	originalText: string,
+	models: Array<{ label: string }>,
+): string {
+	const targets = models.map((target) => target.label).join(", ");
+	return [`User delegated to ${targets}:`, "", originalText.trim()].join("\n");
+}
+
+export function createModelMentionAutocompleteProvider(
+	current: AutocompleteProvider,
+	getCtx: () => ExtensionContext | undefined,
+): AutocompleteProvider {
+	const currentWithTriggers = current as AutocompleteProvider & { triggerCharacters?: string[] };
+	const provider: AutocompleteProvider & { triggerCharacters?: string[] } = {
+		triggerCharacters: [...new Set([...(currentWithTriggers.triggerCharacters ?? []), "@"])],
+		async getSuggestions(lines, cursorLine, cursorCol, options): Promise<AutocompleteSuggestions | null> {
+			const mention = extractDoubleAtPrefix(lines, cursorLine, cursorCol);
+			if (!mention) {
+				const suggestions = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+				if (suggestions && suggestions.items.length > 0) return suggestions;
+
+				// Keep the built-in single-@ file autocomplete resilient. Pi normally
+				// serves this via fd-backed fuzzy search; if that provider returns no
+				// results (for example because fd is unavailable/broken), fall back to a
+				// lightweight filesystem scan instead of letting the @@ wrapper shadow @.
+				const atPrefix = extractSingleAtPrefix(lines, cursorLine, cursorCol);
+				const ctx = getCtx();
+				if (!atPrefix || !ctx || options.signal.aborted) return suggestions;
+				const items = getFallbackAtFileSuggestions(ctx.cwd, atPrefix.query);
+				return items.length > 0 ? { prefix: atPrefix.prefix, items } : suggestions;
+			}
+
+			const ctx = getCtx();
+			if (!ctx) return { prefix: mention.prefix, items: [] };
+
+			const targets = await getMentionModelTargets(ctx);
+			const normalizedQuery = normalizeModelRef(mention.query);
+			const items = targets
+				.map((target): AutocompleteItem => {
+					const mentionId = mentionIdForModel(target.model, targets);
+					return {
+						value: `@@${mentionId}`,
+						label: mentionId,
+						description: `${target.model.provider}/${target.model.id}${target.thinkingLevel ? ` · ${target.thinkingLevel}` : ""}${target.source === "available" ? " · available" : ""}`,
+					};
+				})
+				.filter((item) => {
+					if (!normalizedQuery) return true;
+					const haystack = normalizeModelRef(`${item.label} ${item.description ?? ""}`);
+					return haystack.includes(normalizedQuery);
+				})
+				.slice(0, 80);
+
+			return { prefix: mention.prefix, items };
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			if (prefix.startsWith("@@")) {
+				return replacePrefixAtCursor(lines, cursorLine, cursorCol, prefix, `${item.value} `);
+			}
+			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+		},
+		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+			if (extractDoubleAtPrefix(lines, cursorLine, cursorCol)) return true;
+			return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+		},
+	};
+	return provider;
+}
+
+function extractDoubleAtPrefix(
+	lines: string[],
+	cursorLine: number,
+	cursorCol: number,
+): { prefix: string; query: string } | null {
+	const line = lines[cursorLine] ?? "";
+	const beforeCursor = line.slice(0, cursorCol);
+	const match = beforeCursor.match(/(?:^|[\s([{,;])(@@([A-Za-z0-9_.:/+\-]*))$/);
+	if (!match) return null;
+	return { prefix: match[1] ?? "@@", query: match[2] ?? "" };
+}
+
+function extractSingleAtPrefix(
+	lines: string[],
+	cursorLine: number,
+	cursorCol: number,
+): { prefix: string; query: string } | null {
+	const line = lines[cursorLine] ?? "";
+	const beforeCursor = line.slice(0, cursorCol);
+	const match = beforeCursor.match(/(?:^|[\s([{,;])(@(?!@)([^\s"'`]*))$/);
+	if (!match) return null;
+	return { prefix: match[1] ?? "@", query: match[2] ?? "" };
+}
+
+type FileSuggestionCandidate = {
+	relativePath: string;
+	isDirectory: boolean;
+	score: number;
+};
+
+function getFallbackAtFileSuggestions(basePath: string, query: string): AutocompleteItem[] {
+	const normalizedBase = basePath || process.cwd();
+	const normalizedQuery = query.toLowerCase();
+	const candidates: FileSuggestionCandidate[] = [];
+	let visited = 0;
+	const maxVisited = 5000;
+	const maxDepth = 6;
+	const ignoredDirs = new Set([".git", "node_modules", ".pnpm"]);
+
+	const visit = (dirPath: string, depth: number): void => {
+		if (visited >= maxVisited || depth > maxDepth) return;
+		let entries;
+		try {
+			entries = readdirSync(dirPath, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			if (visited >= maxVisited) return;
+			if (entry.name === ".DS_Store") continue;
+
+			const fullPath = join(dirPath, entry.name);
+			const relativePath = toDisplayPath(relative(normalizedBase, fullPath));
+			const isDirectory = entry.isDirectory();
+			const score = scoreFileSuggestion(relativePath, isDirectory, normalizedQuery);
+			visited += 1;
+
+			if (score > 0) candidates.push({ relativePath, isDirectory, score });
+			if (isDirectory && !ignoredDirs.has(entry.name)) visit(fullPath, depth + 1);
+		}
+	};
+
+	visit(normalizedBase, 0);
+
+	return candidates
+		.sort((a, b) => {
+			if (b.score !== a.score) return b.score - a.score;
+			if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+			return a.relativePath.localeCompare(b.relativePath);
+		})
+		.slice(0, 20)
+		.map((candidate) => {
+			const completionPath = candidate.isDirectory ? `${candidate.relativePath}/` : candidate.relativePath;
+			const value = completionPath.includes(" ") ? `@"${completionPath}"` : `@${completionPath}`;
+			return {
+				value,
+				label: `${basename(candidate.relativePath)}${candidate.isDirectory ? "/" : ""}`,
+				description: completionPath,
+			};
+		});
+}
+
+function scoreFileSuggestion(relativePath: string, isDirectory: boolean, normalizedQuery: string): number {
+	if (!normalizedQuery) return isDirectory ? 2 : 1;
+	const fileName = basename(relativePath).toLowerCase();
+	const haystack = relativePath.toLowerCase();
+	let score = 0;
+	if (fileName === normalizedQuery) score = 100;
+	else if (fileName.startsWith(normalizedQuery)) score = 80;
+	else if (fileName.includes(normalizedQuery)) score = 50;
+	else if (haystack.includes(normalizedQuery)) score = 30;
+	return isDirectory && score > 0 ? score + 10 : score;
+}
+
+function toDisplayPath(path: string): string {
+	return sep === "/" ? path : path.split(sep).join("/");
+}
+
+function replacePrefixAtCursor(
+	lines: string[],
+	cursorLine: number,
+	cursorCol: number,
+	prefix: string,
+	replacement: string,
+): { lines: string[]; cursorLine: number; cursorCol: number } {
+	const next = [...lines];
+	const line = next[cursorLine] ?? "";
+	const start = Math.max(0, cursorCol - prefix.length);
+	next[cursorLine] = `${line.slice(0, start)}${replacement}${line.slice(cursorCol)}`;
+	return { lines: next, cursorLine, cursorCol: start + replacement.length };
+}
+
+function parseModelMentions(text: string): string[] {
+	const seen = new Set<string>();
+	const mentions: string[] = [];
+	for (const match of text.matchAll(/@@([A-Za-z0-9][A-Za-z0-9_.:/+\-]*)/g)) {
+		const mention = match[1]?.trim();
+		if (!mention) continue;
+		const key = normalizeModelRef(mention);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		mentions.push(mention);
+	}
+	return mentions;
+}
+
+function stripModelMentions(text: string): string {
+	return text
+		.replace(/@@[A-Za-z0-9][A-Za-z0-9_.:/+\-]*/g, "")
+		.replace(/\bby\s+(?:and\s+)?(?=($|[.,;!?]))/gi, "")
+		.replace(/\s+and\s+(?=($|[.,;!?]))/gi, "")
+		.replace(/[ \t]{2,}/g, " ")
+		.replace(/\s+([.,;!?])/g, "$1")
+		.trim();
+}
+
+async function resolveModelMentions(
+	ctx: ExtensionContext,
+	mentions: string[],
+): Promise<{ models: ResolvedMention[]; errors: string[] }> {
+	const targets = await getMentionModelTargets(ctx);
+	const models: ResolvedMention[] = [];
+	const errors: string[] = [];
+
+	if (targets.length === 0) {
+		return {
+			models,
+			errors: ["No authenticated models are available for @@ mentions."],
+		};
+	}
+
+	for (const mention of mentions) {
+		const matches = findMentionMatches(mention, targets);
+		if (matches.length === 0) {
+			errors.push(`Unknown @@ model: ${mention}`);
+			continue;
+		}
+		if (matches.length > 1) {
+			errors.push(
+				`Ambiguous @@ model "${mention}". Use one of: ${matches
+					.map((target) => mentionIdForModel(target.model, targets))
+					.join(", ")}`,
+			);
+			continue;
+		}
+		const target = matches[0]!;
+		models.push({
+			...target,
+			mention,
+			label: mentionIdForModel(target.model, targets),
+		});
+	}
+
+	return { models, errors };
+}
+
+async function getMentionModelTargets(ctx: ExtensionContext): Promise<MentionModelTarget[]> {
+	const direct = getDirectScopedModels(ctx);
+	if (direct.length > 0) return direct;
+
+	const available = ctx.modelRegistry.getAvailable();
+	const patterns = readEnabledModelPatterns();
+	if (patterns && patterns.length > 0) {
+		const scoped = resolveModelPatterns(patterns, available);
+		if (scoped.length > 0) return scoped.map((target) => ({ ...target, source: "scoped" as const }));
+	}
+
+	return available.map((model) => ({ model, source: "available" as const }));
+}
+
+function getDirectScopedModels(ctx: ExtensionContext): MentionModelTarget[] {
+	const maybeCtx = ctx as unknown as {
+		scopedModels?: unknown;
+		session?: { scopedModels?: unknown };
+		agentSession?: { scopedModels?: unknown };
+	};
+	const candidates = [maybeCtx.scopedModels, maybeCtx.session?.scopedModels, maybeCtx.agentSession?.scopedModels];
+	for (const candidate of candidates) {
+		if (!Array.isArray(candidate)) continue;
+		const targets = candidate
+			.map((entry): MentionModelTarget | null => {
+				const maybeEntry = entry as { model?: Model<any>; thinkingLevel?: ThinkingLevel };
+				if (!maybeEntry.model?.id || !maybeEntry.model.provider) return null;
+				return {
+					model: maybeEntry.model,
+					thinkingLevel: maybeEntry.thinkingLevel,
+					source: "scoped",
+				};
+			})
+			.filter((target): target is MentionModelTarget => target !== null);
+		if (targets.length > 0) return targets;
+	}
+	return [];
+}
+
+function readEnabledModelPatterns(): string[] | undefined {
+	const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
+	if (!existsSync(settingsPath)) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsWithEnabledModels;
+		return Array.isArray(parsed.enabledModels) ? parsed.enabledModels.filter((item) => typeof item === "string") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function resolveModelPatterns(patterns: string[], available: Model<any>[]): Array<Omit<MentionModelTarget, "source">> {
+	const resolved: Array<Omit<MentionModelTarget, "source">> = [];
+	const seen = new Set<string>();
+	for (const pattern of patterns) {
+		const { reference, thinkingLevel } = splitModelThinkingSuffix(pattern.trim());
+		const matches = findMentionMatches(reference, available.map((model) => ({ model, source: "scoped" as const })));
+		for (const match of matches) {
+			const key = modelKey(match.model);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			resolved.push({ model: match.model, thinkingLevel: thinkingLevel ?? match.thinkingLevel });
+		}
+	}
+	return resolved;
+}
+
+function splitModelThinkingSuffix(value: string): { reference: string; thinkingLevel?: ThinkingLevel } {
+	const colon = value.lastIndexOf(":");
+	if (colon < 0) return { reference: value };
+	const suffix = value.slice(colon + 1);
+	if (!THINKING_LEVELS.has(suffix as ThinkingLevel)) return { reference: value };
+	return { reference: value.slice(0, colon), thinkingLevel: suffix as ThinkingLevel };
+}
+
+function findMentionMatches(mention: string, targets: MentionModelTarget[]): MentionModelTarget[] {
+	const query = normalizeModelRef(mention.replace(/^@@/, ""));
+	if (!query) return [];
+
+	const exact = targets.filter((target) => {
+		const refs = modelRefs(target.model).map(normalizeModelRef);
+		return refs.includes(query);
+	});
+	if (exact.length > 0) return exact;
+
+	return targets.filter((target) => {
+		const refs = modelRefs(target.model).map(normalizeModelRef);
+		return refs.some((ref) => ref.includes(query));
+	});
+}
+
+function modelRefs(model: Model<any>): string[] {
+	return [
+		model.id,
+		`${model.provider}/${model.id}`,
+		model.name ?? "",
+		`${model.provider}/${model.name ?? ""}`,
+	].filter(Boolean);
+}
+
+function mentionIdForModel(model: Model<any>, targets: MentionModelTarget[]): string {
+	const duplicates = targets.filter((target) => target.model.id === model.id).length > 1;
+	return duplicates ? `${model.provider}/${model.id}` : model.id;
+}
+
+function modelKey(model: Model<any>): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function normalizeModelRef(value: string): string {
+	return value.trim().toLowerCase();
+}
+
+function isReviewRequest(text: string): boolean {
+	return /\b(code\s+review|review|audit|inspect)\b/i.test(text);
+}
+
+function buildMentionDelegationPrompt(taskText: string, review: boolean): string {
+	if (review) {
+		return [
+			"The user delegated this code review to you:",
+			"",
+			taskText,
+			"",
+			"Review the current repository changes. Inspect git status, staged changes, unstaged changes, and relevant surrounding code as needed.",
+			"Return actionable findings only. Include file paths, line references when possible, severity, rationale, and a concrete fix suggestion.",
+			"Do not edit files.",
+		].join("\n");
+	}
+
+	return [
+		"The user delegated this task to you:",
+		"",
+		taskText,
+		"",
+		"Work in the current repository. Be concise in the final result and include the important files/commands you used.",
+	].join("\n");
 }
 
 function registerLifecycle(pi: ExtensionAPI): void {

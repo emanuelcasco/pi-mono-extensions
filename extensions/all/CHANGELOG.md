@@ -1,5 +1,11 @@
 # pi-mono-all
 
+## 1.4.0
+
+### Minor Changes
+
+- Bundle `pi-mono-team-mode@2.4.0` with `@@model` delegation/autocomplete, provider-qualified model resolution, richer completion notifications, and resilient transcript output parsing.
+
 ## 1.3.0
 
 ### Minor Changes

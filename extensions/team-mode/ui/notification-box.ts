@@ -11,6 +11,7 @@ export type TaskNotificationDetails = {
 	metrics?: LiveTeammateMetrics;
 	transcriptPath?: string;
 	summary?: string;
+	result?: string;
 };
 
 export function renderTaskNotification(
@@ -34,11 +35,12 @@ export function renderTaskNotification(
 	const lines = [
 		theme.fg(color, `${icon} ${details.summary ?? `Task ${details.taskId} ${details.status}`}`),
 		chips.length > 0 ? `  ${chips.join(" · ")}` : "",
+		details.result?.trim() ? `  └ ${summarizeResult(details.result)}` : "",
 		details.transcriptPath ? `  transcript: ${details.transcriptPath}` : "",
 		details.status !== "completed" && options.expanded ? "" : "",
 	].filter(Boolean);
 
-	if (message.content && typeof message.content === "string") {
+	if (!details.result && message.content && typeof message.content === "string") {
 		const summary = summarizeResult(message.content);
 		if (summary && summary !== details.summary) {
 			lines.push(`  └ ${summary}`);

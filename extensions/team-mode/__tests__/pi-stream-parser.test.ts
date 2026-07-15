@@ -41,6 +41,49 @@ describe("PiStreamParser", () => {
 		assert.equal(events[2].usage?.totalTokens, 42);
 	});
 
+	test("maps persisted assistant message records", () => {
+		const parser = new PiStreamParser();
+		const events = parser.push(
+			`${JSON.stringify({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Persisted answer" }],
+					usage: { totalTokens: 7 },
+					stopReason: "end_turn",
+				},
+			})}\n`,
+		);
+		assert.equal(events.length, 1);
+		assert.equal(events[0]?.type, "assistant_message");
+		if (events[0]?.type !== "assistant_message") return;
+		assert.equal(events[0].text, "Persisted answer");
+		assert.equal(events[0].usage?.totalTokens, 7);
+		assert.equal(events[0].stopReason, "end_turn");
+	});
+
+	test("maps persisted assistant errors into visible output", () => {
+		const parser = new PiStreamParser();
+		const events = parser.push(
+			`${JSON.stringify({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [],
+					usage: { totalTokens: 0 },
+					stopReason: "error",
+					errorMessage: "400 usage limit reached",
+				},
+			})}\n`,
+		);
+		assert.equal(events.length, 1);
+		assert.equal(events[0]?.type, "assistant_message");
+		if (events[0]?.type !== "assistant_message") return;
+		assert.equal(events[0].text, "[assistant error] 400 usage limit reached");
+		assert.equal(events[0].stopReason, "error");
+		assert.equal(events[0].errorMessage, "400 usage limit reached");
+	});
+
 	test("maps tool-only assistant messages so tool-use turns count", () => {
 		const parser = new PiStreamParser();
 		const events = parser.push(

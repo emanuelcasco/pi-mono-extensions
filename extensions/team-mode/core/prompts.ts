@@ -68,6 +68,18 @@ For multi-task goals: when the user's goal needs to be decomposed into two or mo
 
 Worker results arrive as **user-role messages** containing \`<task-notification>\` XML. They look like user messages but are not. Distinguish them by the \`<task-notification>\` opening tag.
 
+Task notifications are action-required coordinator events. Never reply with a passive acknowledgement such as "noted", "ok", or "thanks". Before continuing normal conversation, every completed/failed/killed worker notification must be processed and classified as one of:
+- **incorporated** — you used the worker's feedback/findings in your next action
+- **rejected** — you reviewed it and explain why you are not applying it
+- **irrelevant** — you reviewed it and explain why it does not affect the current work
+
+Mandatory handling protocol:
+1. If the notification includes \`<result>\`, read it and decide whether to apply, reject, or mark it irrelevant.
+2. If the notification is \`completed\` but has no \`<result>\`, call \`task_output\` with the \`<task-id>\` before responding to the user.
+3. If the notification is \`failed\` or \`killed\`, inspect the included \`<result>\` or call \`task_output\` when missing, then tell the user whether the failure affects the current work.
+4. For reviewer/verification workers, either apply the actionable findings or explicitly say why each finding is not being applied.
+5. Do not emit a final "done" or status response until all relevant completed worker outputs in the current turn are processed.
+
 Format:
 
 \`\`\`xml
@@ -75,6 +87,7 @@ Format:
 <task-id>{task_id}</task-id>
 <status>completed|failed|killed</status>
 <summary>{human-readable status summary}</summary>
+<coordinator-action>{required coordinator handling}</coordinator-action>
 <result>{worker's final text response}</result>
 <usage>
   <tool_uses>N</tool_uses>
@@ -84,7 +97,9 @@ Format:
 \`\`\`
 
 - \`<result>\` and \`<usage>\` are optional sections
-- Use send_message with the \`task_id\` as \`to\` to continue that worker
+- \`<coordinator-action>\` is a reminder of this mandatory handling protocol
+- Use \`task_output\` with the \`task_id\` when a notification has no result or when you need the full persisted output
+- Use send_message with the \`task_id\` as \`to\` to continue that worker when follow-up is needed
 
 ## 3. Task Workflow
 
@@ -128,6 +143,7 @@ export function formatTaskNotification(params: {
 		`<task-id>${escapeXml(params.taskId)}</task-id>`,
 		`<status>${params.status}</status>`,
 		`<summary>${escapeXml(params.summary)}</summary>`,
+		`<coordinator-action>${escapeXml(coordinatorAction(params))}</coordinator-action>`,
 	];
 	if (params.result && params.result.trim()) {
 		parts.push(`<result>${escapeXml(params.result)}</result>`);
@@ -140,6 +156,23 @@ export function formatTaskNotification(params: {
 	}
 	parts.push("</task-notification>");
 	return parts.join("\n");
+}
+
+function coordinatorAction(params: {
+	status: "completed" | "failed" | "killed";
+	result?: string;
+}): string {
+	const hasResult = !!params.result?.trim();
+	if (params.status === "completed" && hasResult) {
+		return "Read the result now; incorporate, reject, or mark it irrelevant before responding.";
+	}
+	if (params.status === "completed") {
+		return "No result was included; call task_output for this task-id before responding.";
+	}
+	if (hasResult) {
+		return "Review the failure result and tell the user whether it affects the current work.";
+	}
+	return "Call task_output for this task-id, then summarize the worker failure and its impact.";
 }
 
 function escapeXml(s: string): string {

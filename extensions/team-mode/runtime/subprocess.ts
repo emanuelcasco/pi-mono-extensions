@@ -38,6 +38,8 @@ export type PiRunResult = {
 	exitCode: number | null;
 	exitSignal: NodeJS.Signals | null;
 	stderr: string;
+	stopReason?: string;
+	errorMessage?: string;
 };
 
 export type PiRun = {
@@ -126,6 +128,8 @@ function collect(proc: ChildProcess, onEvent?: (event: PiStreamEvent) => void): 
 	const parser = new PiStreamParser();
 	let stderr = "";
 	let finalMessage = "";
+	let stopReason: string | undefined;
+	let errorMessage: string | undefined;
 	const deltaBuffer: string[] = [];
 
 	const emit = (events: PiStreamEvent[]) => {
@@ -136,6 +140,10 @@ function collect(proc: ChildProcess, onEvent?: (event: PiStreamEvent) => void): 
 			}
 			if (event.type === "assistant_message" && event.text) {
 				finalMessage = event.text;
+			}
+			if (event.type === "assistant_message") {
+				stopReason = event.stopReason ?? stopReason;
+				errorMessage = event.errorMessage ?? errorMessage;
 			}
 		}
 	};
@@ -155,11 +163,14 @@ function collect(proc: ChildProcess, onEvent?: (event: PiStreamEvent) => void): 
 			if (!finalMessage && deltaBuffer.length > 0) {
 				finalMessage = deltaBuffer.join("");
 			}
-			resolve({ finalMessage, exitCode: code, exitSignal: signal, stderr });
+			if (!finalMessage && errorMessage) {
+				finalMessage = `[assistant error] ${errorMessage}`;
+			}
+			resolve({ finalMessage, exitCode: code, exitSignal: signal, stderr, stopReason, errorMessage });
 		});
 		proc.on("error", (err) => {
 			stderr += `\n[spawn error] ${err.message}`;
-			resolve({ finalMessage, exitCode: null, exitSignal: null, stderr });
+			resolve({ finalMessage, exitCode: null, exitSignal: null, stderr, stopReason, errorMessage });
 		});
 	});
 }

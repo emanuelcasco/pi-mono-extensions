@@ -109,6 +109,12 @@ export type ResolvedModel = {
 	rationale: string;
 };
 
+type PiSettings = {
+	defaultProvider?: string;
+	defaultModel?: string;
+	enabledModels?: string[];
+};
+
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 	provider: "auto",
 	providers: {
@@ -296,6 +302,104 @@ export function resolveModel(
 }
 
 /**
+ * Resolve a caller-provided bare model id (for example `gpt-5.5`) to a
+ * provider-qualified selection before spawning a teammate subprocess.
+ *
+ * Without this, team-mode would pass only `--model gpt-5.5` to pi and pi's
+ * global model matcher could choose a same-named model on an unauthenticated
+ * gateway (for example Azure or OpenCode) instead of the user's configured
+ * provider (`openai-codex/gpt-5.5`, `opencode-go/glm-5.2`, etc.).
+ */
+export function resolveBareModelOverride(
+	config: ModelConfig,
+	override: string,
+): ResolvedModel | null {
+	const requested = splitThinkingSuffix(override.trim());
+	if (!requested.model || requested.model.includes("/")) return null;
+
+	const piAgentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	const settings = readJsonFileSync<PiSettings>(join(piAgentDir, SETTINGS_FILENAME));
+	const detectedProvider = detectProvider(config.provider);
+	const candidates: Array<{
+		provider: string;
+		model: string;
+		thinkingLevel?: ThinkingLevel;
+		source: string;
+	}> = [];
+
+	for (const [providerKey, catalog] of Object.entries(config.providers)) {
+		for (const fqn of Object.values(catalog)) {
+			const split = splitFqn(fqn);
+			const candidate = splitThinkingSuffix(split.id);
+			if (candidate.model !== requested.model) continue;
+			candidates.push({
+				provider: split.provider ?? providerKey,
+				model: candidate.model,
+				thinkingLevel: candidate.thinkingLevel,
+				source: "model-config catalog",
+			});
+		}
+	}
+
+	for (const fqn of settings?.enabledModels ?? []) {
+		const split = splitFqn(fqn);
+		if (!split.provider) continue;
+		const candidate = splitThinkingSuffix(split.id);
+		if (candidate.model !== requested.model) continue;
+		candidates.push({
+			provider: split.provider,
+			model: candidate.model,
+			thinkingLevel: candidate.thinkingLevel,
+			source: "pi settings enabledModels",
+		});
+	}
+
+	const defaultModel = settings?.defaultModel ? splitThinkingSuffix(settings.defaultModel) : null;
+	if (
+		settings?.defaultProvider &&
+		defaultModel &&
+		!settings.defaultModel.includes("/") &&
+		defaultModel.model === requested.model
+	) {
+		candidates.push({
+			provider: settings.defaultProvider,
+			model: defaultModel.model,
+			thinkingLevel: defaultModel.thinkingLevel,
+			source: "pi settings defaultProvider/defaultModel",
+		});
+	}
+
+	const unique = dedupeCandidates(candidates);
+	const preferred =
+		unique.find((c) => c.provider === detectedProvider) ??
+		unique.find((c) => c.provider === settings?.defaultProvider) ??
+		unique[0];
+
+	if (preferred) {
+		return {
+			provider: preferred.provider,
+			model: preferred.model,
+			tier: "explicit",
+			thinkingLevel: requested.thinkingLevel ?? preferred.thinkingLevel,
+			rationale: `bare model override "${requested.model}" → ${preferred.provider}/${preferred.model} via ${preferred.source}`,
+		};
+	}
+
+	const hintedProvider = providerFromModelHint(requested.model);
+	if (hintedProvider) {
+		return {
+			provider: hintedProvider,
+			model: requested.model,
+			tier: "explicit",
+			thinkingLevel: requested.thinkingLevel,
+			rationale: `bare model override "${requested.model}" → ${hintedProvider}/${requested.model} via model-name hint`,
+		};
+	}
+
+	return null;
+}
+
+/**
  * Infer which provider to use when `config.provider === "auto"`.
  * Priority: env > pi settings.json defaultProvider > auth.json > api keys > anthropic.
  */
@@ -405,6 +509,18 @@ function splitFqn(fqn: string): { provider?: string; id: string } {
 	const idx = fqn.indexOf("/");
 	if (idx < 0) return { id: fqn };
 	return { provider: fqn.slice(0, idx), id: fqn.slice(idx + 1) };
+}
+
+function dedupeCandidates<T extends { provider: string; model: string }>(candidates: T[]): T[] {
+	const seen = new Set<string>();
+	const out: T[] = [];
+	for (const candidate of candidates) {
+		const key = `${candidate.provider}/${candidate.model}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(candidate);
+	}
+	return out;
 }
 
 export function splitThinkingSuffix(model: string): { model: string; thinkingLevel?: ThinkingLevel } {

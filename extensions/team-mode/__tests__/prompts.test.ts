@@ -40,6 +40,9 @@ describe("getCoordinatorSystemPrompt", () => {
 		assert.match(prompt, /<task-notification>/);
 		assert.match(prompt, /end your response/i);
 		assert.match(prompt, /Never fabricate or predict/);
+		assert.match(prompt, /passive acknowledgement/i);
+		assert.match(prompt, /incorporated/);
+		assert.match(prompt, /call `task_output`/i);
 	});
 	test("avoids TODO overhead for a single task", () => {
 		assert.match(prompt, /single coherent task/i);
@@ -60,8 +63,18 @@ describe("formatTaskNotification", () => {
 		assert.match(xml, /<task-notification>/);
 		assert.match(xml, /<task-id>agent-researcher-abc<\/task-id>/);
 		assert.match(xml, /<status>completed<\/status>/);
+		assert.match(xml, /<coordinator-action>Read the result now/);
 		assert.match(xml, /<duration_ms>1234<\/duration_ms>/);
 		assert.match(xml, /<result>Found null pointer at validate.ts:42<\/result>/);
+	});
+
+	test("completion without result asks coordinator to read task output", () => {
+		const xml = formatTaskNotification({
+			taskId: "agent-x",
+			status: "completed",
+			summary: "done",
+		});
+		assert.match(xml, /<coordinator-action>No result was included; call task_output/);
 	});
 
 	test("escapes XML special chars", () => {

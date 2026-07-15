@@ -1,5 +1,18 @@
 # pi-mono-team-mode
 
+## 2.4.0
+
+### Minor Changes
+
+- Add `@@model` mention handling and autocomplete to delegate prompts or reviews directly to selected models as background teammates.
+- Resolve bare model overrides to provider-qualified IDs from team-mode configuration and Pi settings while preserving thinking-level suffixes.
+
+### Patch Changes
+
+- Preserve slash-command and single-`@` file autocomplete behavior, with a filesystem fallback when built-in file suggestions are unavailable.
+- Include worker result text in completion notifications and strengthen coordinator guidance for completed and failed workers.
+- Parse persisted assistant messages and errors from transcripts, fail empty/error outputs correctly, and let `task_output` recover missing in-memory results from transcripts.
+
 ## 2.3.2
 
 ### Patch Changes

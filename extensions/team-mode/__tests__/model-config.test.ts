@@ -18,6 +18,7 @@ import {
 	isModelTier,
 	loadModelConfig,
 	modelConfigPath,
+	resolveBareModelOverride,
 	resolveModel,
 	saveModelConfig,
 	type ModelConfig,
@@ -241,6 +242,78 @@ describe("resolveModel — user's real config", () => {
 			provider: "missing-provider",
 		};
 		assert.equal(resolveModel(noOpenAI, "backend"), null);
+	});
+});
+
+describe("resolveBareModelOverride", () => {
+	test("qualifies a bare GPT override through the configured catalog", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "team-mode-agent-dir-"));
+		const prev = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = dir;
+		try {
+			await writeFile(
+				join(dir, "settings.json"),
+				JSON.stringify({ defaultProvider: "openai-codex", defaultModel: "gpt-5.5" }),
+				"utf8",
+			);
+			const resolved = resolveBareModelOverride(
+				{
+					...USER_CONFIG,
+					provider: "auto",
+					providers: {
+						...USER_CONFIG.providers,
+						"openai-codex": { md: "openai-codex/gpt-5.5" },
+					},
+				},
+				"gpt-5.5",
+			);
+			assert.ok(resolved);
+			assert.equal(resolved.provider, "openai-codex");
+			assert.equal(resolved.model, "gpt-5.5");
+			assert.match(resolved.rationale, /openai-codex\/gpt-5\.5/);
+		} finally {
+			if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = prev;
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("uses pi settings enabledModels for bare provider aliases", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "team-mode-agent-dir-"));
+		const prev = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = dir;
+		try {
+			await writeFile(
+				join(dir, "settings.json"),
+				JSON.stringify({
+					defaultProvider: "openai-codex",
+					enabledModels: ["openai-codex/gpt-5.5", "opencode-go/glm-5.2"],
+				}),
+				"utf8",
+			);
+			const resolved = resolveBareModelOverride(USER_CONFIG, "glm-5.2");
+			assert.ok(resolved);
+			assert.equal(resolved.provider, "opencode-go");
+			assert.equal(resolved.model, "glm-5.2");
+			assert.match(resolved.rationale, /enabledModels/);
+		} finally {
+			if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = prev;
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("preserves explicit thinking suffixes", () => {
+		const resolved = resolveBareModelOverride(
+			{
+				...USER_CONFIG,
+				providers: { "openai-codex": { md: "openai-codex/gpt-5.5" } },
+			},
+			"gpt-5.5:xhigh",
+		);
+		assert.ok(resolved);
+		assert.equal(resolved.provider, "openai-codex");
+		assert.equal(resolved.thinkingLevel, "xhigh");
 	});
 });
 
